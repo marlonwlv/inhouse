@@ -1,0 +1,63 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+/** Porta da UI. Escuta APENAS em 127.0.0.1 (decisão de segurança — ver ARCHITECTURE.md). */
+export const PORT = Number(process.env.INHOUSE_PORT ?? 4400);
+export const HOST = "127.0.0.1";
+
+/** Onde ficam os projetos abertos/criados pelo builder (visível ao usuário). */
+export const PROJECTS_DIR = process.env.INHOUSE_PROJECTS_DIR ?? join(homedir(), "Inhouse");
+/** Worktrees ("espaços") ficam fora do checkout principal. */
+export const ESPACOS_DIR = join(PROJECTS_DIR, ".espacos");
+/** Estado e transcripts. */
+export const DATA_DIR = process.env.INHOUSE_DATA_DIR ?? join(homedir(), ".inhouse");
+export const TRANSCRIPTS_DIR = join(DATA_DIR, "transcripts");
+
+/** Faixa de portas para previews (dev servers dos espaços). */
+export const PREVIEW_PORT_BASE = 4500;
+
+/** Timeout para pedidos de permissão sem resposta humana (nega ao expirar). */
+export const PERMISSION_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** Rodadas máximas de auto-correção quando as verificações falham. */
+export const MAX_GATE_FIX_ROUNDS = 2;
+
+export function ensureDirs(): void {
+  for (const d of [PROJECTS_DIR, ESPACOS_DIR, DATA_DIR, TRANSCRIPTS_DIR]) {
+    mkdirSync(d, { recursive: true });
+  }
+}
+
+let cachedClaudePath: string | null | undefined;
+/**
+ * Caminho do Claude Code genuíno da máquina (login do usuário).
+ * Override: INHOUSE_CLAUDE_PATH. Se não achar, retorna null (UI mostra aviso).
+ */
+export function claudePath(): string | null {
+  if (cachedClaudePath !== undefined) return cachedClaudePath;
+  if (process.env.INHOUSE_CLAUDE_PATH) return (cachedClaudePath = process.env.INHOUSE_CLAUDE_PATH);
+  try {
+    const p = execFileSync("which", ["claude"], { encoding: "utf8" }).trim();
+    cachedClaudePath = p.length > 0 ? p : null;
+  } catch {
+    cachedClaudePath = null;
+  }
+  return cachedClaudePath;
+}
+
+/**
+ * Ambiente para processos que falam com o Claude: NUNCA deixar vazar API key —
+ * a autenticação deve vir do login do CLI (subscription). Padrão vibe-kanban.
+ */
+export function claudeEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.ANTHROPIC_API_KEY;
+  delete env.ANTHROPIC_AUTH_TOKEN;
+  delete env.ANTHROPIC_BASE_URL;
+  // Evita que a sessão-mãe (este app rodando dentro de um Claude Code) confunda o filho.
+  delete env.CLAUDECODE;
+  delete env.CLAUDE_CODE_ENTRYPOINT;
+  return env;
+}
