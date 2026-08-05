@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.2.2";
+const UI_VERSION = "0.2.3";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -700,7 +700,8 @@ function taskCardHtml(t) {
     <div class="task-head">
       <b>${esc(t.title)}</b>
       ${statusChip(t)}
-      <div class="meta"><span class="chip">espaço ${t.espaco}</span> ${timeAgo(t.updatedAt)}</div>
+      <div class="meta"><span class="chip">espaço ${t.espaco}</span>
+      <button class="btn sm ${t.autoAprovar ? "primary" : "ghost"}" data-act="auto-toggle" data-task="${esc(t.id)}" title="Com o modo auto ligado, ações sensíveis não pedem permissão">${t.autoAprovar ? "🟢 Auto ligado" : "Auto: desligado"}</button> ${timeAgo(t.updatedAt)}</div>
     </div>
     ${t.status === "concluida" || t.status === "cancelada" ? "" : flowHtml(t)}
     ${taskFootHtml(t, perm)}
@@ -899,6 +900,7 @@ function permCardHtml(p) {
     <div class="acts">
       <button class="btn sm primary" data-act="perm-allow" data-perm="${esc(p.id)}">Permitir</button>
       <button class="btn sm ghost" data-act="perm-deny" data-perm="${esc(p.id)}">Agora não</button>
+      <button class="btn sm ghost" data-act="auto-on" data-task="${esc(p.taskId)}" title="Permite este e todos os próximos pedidos desta tarefa">Permitir tudo (modo auto)</button>
     </div>
     <label class="remember"><input type="checkbox" id="perm-remember-${esc(p.id)}"> Sempre permitir ações como esta nesta tarefa</label>
   </div>`;
@@ -1063,6 +1065,11 @@ const actions = {
   "approve-plan": (btn) => taskAction(btn.dataset.task, { action: "approve_plan" }),
   "approve-test": (btn) => taskAction(btn.dataset.task, { action: "approve_test" }),
   "retry": (btn) => taskAction(btn.dataset.task, { action: "retry" }),
+  "auto-toggle": (btn) => {
+    const t = getTask(btn.dataset.task);
+    taskAction(btn.dataset.task, { action: "auto_mode", on: !t?.autoAprovar });
+  },
+  "auto-on": (btn) => taskAction(btn.dataset.task, { action: "auto_mode", on: true }),
   "cancel": (btn) => {
     if (window.confirm("Cancelar esta tarefa? O Claude para de trabalhar nela; o que já foi feito fica guardado.")) {
       taskAction(btn.dataset.task, { action: "cancel" });

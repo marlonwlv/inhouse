@@ -84,6 +84,12 @@ export interface Task {
   pausadaPorTempo?: boolean;
   /** Porte julgado na espec — controla a cadeia de skills do plano. */
   porte?: Porte;
+  /** A TAREFA mexe em interface/jornada de usuário? (julgado na espec e re-julgado pós-plano) */
+  temUi?: boolean;
+  /** Skills de plano já rodadas nesta tarefa (evita repetir no re-julgamento/feedback). */
+  skillsRodadas?: string[];
+  /** Modo auto: permissões desta tarefa são concedidas sem perguntar (com registro no chat). */
+  autoAprovar?: boolean;
   /** Histórico de passos com início/fim — mostra quanto tempo cada etapa levou. */
   historico?: { step: Step; inicio: string; fim?: string }[];
   createdAt: string;
@@ -144,6 +150,7 @@ export type TaskAction =
   | { action: "approve_test" } // teste -> publicar (fica aguardando o clique de publicar)
   | { action: "publish"; createPr?: boolean } // merge no main (+ PR opcional)
   | { action: "retry" } // re-roda o passo que falhou
+  | { action: "auto_mode"; on: boolean } // permissões automáticas para esta tarefa
   | { action: "cancel" };
 
 // ---------- Config por projeto (inhouse.config.json na raiz) ----------

@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => {
     added,
     events,
     removed,
+    tasks: {} as Record<string, { autoAprovar?: boolean }>,
+    transcripts: [] as string[],
     addPermission: (p: { id: string; taskId: string; toolName: string; friendly: string }) => {
       added.push(p);
       return p;
@@ -33,6 +35,7 @@ vi.mock("../server/store.js", () => ({
   newId: mocks.newId,
   removePermission: mocks.removePermission,
   transcriptAppend: mocks.transcriptAppend,
+  getTask: (id: string) => mocks.tasks[id],
 }));
 vi.mock("../server/events.js", () => ({ broadcast: mocks.broadcast, addClient: () => {} }));
 
@@ -189,6 +192,15 @@ describe("createPermissionGate", () => {
     expect(res).toMatchObject({ behavior: "deny" });
     if (res?.behavior === "deny") expect(res.message).toContain("interrompida");
     expect(mocks.removed).toContain(pedido.id);
+  });
+
+  it("modo auto: concede sem criar pedido, com registro no chat", async () => {
+    mocks.tasks["task-auto"] = { autoAprovar: true };
+    const gate = createPermissionGate("task-auto");
+    const resultado = await gate("Bash", { command: "npm test" }, opcoes());
+    expect(resultado).toMatchObject({ behavior: "allow" });
+    expect(mocks.added.length).toBe(0);
+    delete mocks.tasks["task-auto"];
   });
 
   it("descrições amigáveis por tipo de ferramenta", async () => {

@@ -7,7 +7,7 @@ import type { CanUseTool, PermissionResult } from "@anthropic-ai/claude-agent-sd
 import type { PermissionRequest } from "../../shared/types.js";
 import { PERMISSION_TIMEOUT_MS } from "../config.js";
 import { broadcast } from "../events.js";
-import { addPermission, newId, removePermission } from "../store.js";
+import { addPermission, getTask, newId, removePermission, transcriptAppend } from "../store.js";
 
 interface Decision {
   allow: boolean;
@@ -81,6 +81,21 @@ export function finishAllForTask(taskId: string, denyMessage = "A tarefa foi can
  */
 export function createPermissionGate(taskId: string): CanUseTool {
   return async (toolName, input, options): Promise<PermissionResult> => {
+    // Modo auto da tarefa: concede sem perguntar, registrando no chat.
+    if (getTask(taskId)?.autoAprovar) {
+      const item = {
+        kind: "system" as const,
+        text: `Permitido automaticamente (modo auto): ${friendlyFor(toolName, input)}`,
+        at: new Date().toISOString(),
+      };
+      transcriptAppend(taskId, item);
+      broadcast({ type: "transcript", taskId, item });
+      return {
+        behavior: "allow",
+        updatedInput: input,
+        ...(options.suggestions ? { updatedPermissions: options.suggestions } : {}),
+      };
+    }
     const id = newId();
     const request: PermissionRequest = {
       id,

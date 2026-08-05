@@ -30,6 +30,9 @@ export function consolidarPlanoPrompt(): string {
     "FINAL de implementação: passos numerados, arquivos afetados em cada passo, e uma",
     "seção curta 'O que os reviews mudaram no plano'. Não implemente nada ainda.",
     "Escreva para uma pessoa não-técnica aprovar: português simples, sem jargão.",
+    "",
+    "Depois do plano, REAVALIE os julgamentos com base em tudo que você aprendeu e",
+    "termine com duas linhas exatas: PORTE: simples|media|grande e UI: sim|nao.",
   ].join("\n");
 }
 
@@ -78,12 +81,15 @@ export function especPrompt(task: Task): string {
     "",
     "Seja curto e direto: quem vai ler é uma pessoa não-técnica.",
     "",
-    "Depois da especificação, classifique o PORTE da tarefa e termine com UMA linha exata:",
+    "Depois da especificação, faça DOIS julgamentos independentes e termine com DUAS linhas exatas:",
     "PORTE: simples | media | grande",
-    "Rubrica: simples = mudança pequena e óbvia (1–3 arquivos, sem decisão de produto,",
+    "UI: sim | nao",
+    "Rubrica do PORTE: simples = mudança pequena e óbvia (1–3 arquivos, sem decisão de produto,",
     "arquitetura ou dados novos — ex.: criar uma página em branco, trocar um texto).",
     "grande = feature nova com decisões de produto/UX/dados ou que atravessa módulos.",
     "media = todo o resto. Na dúvida entre dois, escolha o menor.",
+    "Rubrica do UI: sim = ESTA tarefa cria/altera telas, componentes visuais ou jornada",
+    "de usuário. nao = só backend/dados/config, mesmo que o projeto tenha frontend.",
   ].join("\n");
 }
 
@@ -143,4 +149,30 @@ export function parsePorte(text: string): Porte {
   if (!m) return "media";
   const v = m[1]!.toLowerCase();
   return v === "média" ? "media" : (v as Porte);
+}
+
+/** Lê a linha "UI: sim|nao". Ausente → undefined (cai na heurística do projeto). */
+export function parseUi(text: string): boolean | undefined {
+  const m = /(?:^|\n)\s*UI:\s*(sim|s[ií]|nao|n[aã]o)\b/i.exec(text);
+  if (!m) return undefined;
+  return /^s/i.test(m[1]!);
+}
+
+/** Remove as linhas de julgamento (PORTE:/UI:) do fim do plano exibido ao usuário. */
+export function limparJulgamento(plano: string): string {
+  return plano.replace(/\n\s*(PORTE|UI):[^\n]*$/gim, "").trim();
+}
+
+/** Feedback humano na aprovação do plano: re-planejar E re-julgar. */
+export function planoFeedbackPrompt(msg: string): string {
+  return [
+    "O usuário revisou o plano e pediu mudanças:",
+    "",
+    msg,
+    "",
+    "Ajuste o plano de acordo (sem perder o que já estava bom) e reapresente-o completo.",
+    "Ao final, REAVALIE e termine com duas linhas exatas:",
+    "PORTE: simples|media|grande",
+    "UI: sim|nao",
+  ].join("\n");
 }
