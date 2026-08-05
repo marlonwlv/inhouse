@@ -17,7 +17,7 @@ import { startPreview, stopPreview } from "../services/preview.js";
 import { publishTask } from "../services/publish.js";
 import { createEspaco, slugify } from "../services/worktrees.js";
 import * as store from "../store.js";
-import { loadConfig, temUi } from "./config.js";
+import { loadConfigCascata, temUi } from "./config.js";
 import {
   changesPrompt,
   consolidarPlanoPrompt,
@@ -189,7 +189,10 @@ async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
   // Cadeia de skills de planejamento configurada no projeto (inhouse.config.json)?
   // Re-planejamento por feedback humano NÃO re-roda a cadeia inteira: o feedback
   // vai direto pra sessão, que já tem todo o contexto das skills.
-  const skillsPlano = feedback ? undefined : loadConfig(task.worktreePath)?.skills?.plano;
+  const projPlano = store.getProject(task.projectId);
+  const skillsPlano = feedback
+    ? undefined
+    : loadConfigCascata(task.worktreePath, projPlano?.path)?.skills?.plano;
   if (skillsPlano) {
     const ui = temUi(task.worktreePath);
     for (const step of skillsPlano) {
@@ -301,7 +304,9 @@ async function runVerificacoes(taskId: string): Promise<boolean> {
   // Gates de skill (ex.: /review, /qa via gstack) só rodam se os do projeto passaram —
   // não faz sentido pagar um review de código que nem compila.
   if (results.every((g) => g.ok)) {
-    const skillGates = loadConfig(task.worktreePath)?.skills?.verificacoes ?? [];
+    const projGates = store.getProject(task.projectId);
+    const skillGates =
+      loadConfigCascata(task.worktreePath, projGates?.path)?.skills?.verificacoes ?? [];
     const ui = temUi(task.worktreePath);
     for (const step of skillGates) {
       if (step.quando === "ui" && !ui) continue;

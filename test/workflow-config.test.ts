@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseVeredito } from "../server/workflow/phases.js";
-import { loadConfig, temUi } from "../server/workflow/config.js";
+import { loadConfig, loadConfigCascata, temUi } from "../server/workflow/config.js";
 
 function dir(): string {
   return mkdtempSync(join(tmpdir(), "inhouse-config-"));
@@ -50,6 +50,33 @@ describe("loadConfig (inhouse.config.json)", () => {
       "plan-design-review",
     ]);
     expect(cfg?.skills?.verificacoes?.map((s) => s.skill)).toEqual(["review", "qa"]);
+  });
+});
+
+describe("loadConfigCascata", () => {
+  it("espaço sem config cai para a pasta principal do projeto (mesmo sem commit)", () => {
+    const worktree = dir();
+    const projeto = dir();
+    writeFileSync(
+      join(projeto, "inhouse.config.json"),
+      JSON.stringify({ skills: { plano: [{ skill: "office-hours" }] } }),
+    );
+    const cfg = loadConfigCascata(worktree, projeto);
+    expect(cfg?.skills?.plano?.[0]?.skill).toBe("office-hours");
+  });
+
+  it("o espaço tem precedência sobre a pasta do projeto", () => {
+    const worktree = dir();
+    const projeto = dir();
+    writeFileSync(
+      join(worktree, "inhouse.config.json"),
+      JSON.stringify({ skills: { plano: [{ skill: "do-espaco" }] } }),
+    );
+    writeFileSync(
+      join(projeto, "inhouse.config.json"),
+      JSON.stringify({ skills: { plano: [{ skill: "do-projeto" }] } }),
+    );
+    expect(loadConfigCascata(worktree, projeto)?.skills?.plano?.[0]?.skill).toBe("do-espaco");
   });
 });
 

@@ -6,8 +6,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { InhouseConfig, SkillStepConfig } from "../../shared/types.js";
+import { DATA_DIR } from "../config.js";
 
 const CONFIG_FILE = "inhouse.config.json";
+/** Config global da máquina: vale para todos os projetos que não têm a própria. */
+export const GLOBAL_CONFIG_FILE = join(DATA_DIR, "config.json");
 
 function sanitizeSteps(raw: unknown): SkillStepConfig[] | undefined {
   if (!Array.isArray(raw)) return undefined;
@@ -27,8 +30,28 @@ function sanitizeSteps(raw: unknown): SkillStepConfig[] | undefined {
   return steps.length > 0 ? steps : undefined;
 }
 
+/**
+ * Cascata de configuração — ninguém precisa lembrar de copiar/commitar nada:
+ * 1. arquivo commitado no espaço da tarefa (projeto manda);
+ * 2. arquivo na pasta principal do projeto (mesmo sem commit);
+ * 3. config global da máquina (~/.inhouse/config.json ou legado) — vale pra todos.
+ */
+export function loadConfigCascata(
+  ...dirs: (string | undefined)[]
+): InhouseConfig | null {
+  for (const d of dirs) {
+    if (!d) continue;
+    const cfg = loadConfigFile(join(d, CONFIG_FILE));
+    if (cfg) return cfg;
+  }
+  return loadConfigFile(GLOBAL_CONFIG_FILE);
+}
+
 export function loadConfig(worktreePath: string): InhouseConfig | null {
-  const file = join(worktreePath, CONFIG_FILE);
+  return loadConfigFile(join(worktreePath, CONFIG_FILE));
+}
+
+export function loadConfigFile(file: string): InhouseConfig | null {
   if (!existsSync(file)) return null;
   try {
     const raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
