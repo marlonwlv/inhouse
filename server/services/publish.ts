@@ -51,6 +51,13 @@ async function doPublish(
       );
     }
   }
+  // Arquivos gerados na pasta principal pelo próprio builder (ex.: package-lock.json
+  // do npm install pós-criação) não podem travar o merge: commita antes.
+  const sujoMain = await git(project.path, "status", "--porcelain");
+  if (sujoMain.length > 0) {
+    await git(project.path, "add", "-A");
+    await gitCommit(project.path, "Arquivos gerados automaticamente (Inhouse Builder)");
+  }
   try {
     await git(
       project.path,
@@ -63,6 +70,13 @@ async function doPublish(
   } catch (err) {
     await tryGit(project.path, "merge", "--abort");
     const texto = err instanceof RunError ? err.stdout + err.stderr : String(err);
+    // Main "sujo": alguém editou arquivos na pasta principal por fora do builder
+    // e o git se recusa a fazer o merge por cima ("would be overwritten").
+    if (/would be overwritten/i.test(texto)) {
+      throw new Error(
+        "Há alterações não salvas na pasta principal do projeto (feitas por fora do builder). Guarde ou descarte essas alterações e publique de novo.",
+      );
+    }
     if (/conflict|Automatic merge failed/i.test(texto)) {
       throw new Error(
         "As mudanças conflitam com o que já está no projeto. Peça uma atualização da tarefa ou fale com o time técnico.",

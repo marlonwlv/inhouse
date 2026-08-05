@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { Project } from "../../shared/types.js";
-import { ESPACOS_DIR } from "../config.js";
+import { ESPACOS_DIR, claudeEnv } from "../config.js";
 import { broadcast } from "../events.js";
 import { withProjectLock } from "./locks.js";
 import { git, gitCommit, lastLines, tryGit } from "./proc.js";
@@ -120,9 +120,11 @@ export async function ensureDeps(worktreePath: string, projectName: string): Pro
   });
 
   await new Promise<void>((resolve, reject) => {
+    // claudeEnv(): scripts postinstall de dependências rodam código arbitrário
+    // do projeto — não podem ver ANTHROPIC_API_KEY/AUTH_TOKEN.
     const child = spawn("npm", ["install"], {
       cwd: worktreePath,
-      env: process.env,
+      env: claudeEnv(),
       stdio: ["ignore", "ignore", "pipe"],
     });
     let stderrTail = "";

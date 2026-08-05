@@ -5,10 +5,11 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { cp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Project } from "../../shared/types.js";
-import { PROJECTS_DIR, ensureDirs } from "../config.js";
+import { DATA_DIR, ESPACOS_DIR, PROJECTS_DIR, claudeEnv, ensureDirs } from "../config.js";
 import { broadcast } from "../events.js";
 import * as store from "../store.js";
 import { git, gitCommit, lastLines, tryGit } from "./proc.js";
@@ -56,8 +57,11 @@ export async function cloneProject(url: string): Promise<Project> {
 
   try {
     await new Promise<void>((resolvePromise, reject) => {
+      // GIT_TERMINAL_PROMPT=0: um link errado (ou repositório privado) faz o
+      // GitHub pedir usuário/senha; sem isso o git ficaria travado para sempre
+      // esperando um prompt que ninguém vê — e o request nunca responderia.
       const child = spawn("git", ["clone", "--progress", limpo, target], {
-        env: process.env,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
         stdio: ["ignore", "ignore", "pipe"],
       });
       let resto = "";
@@ -181,9 +185,11 @@ export async function createFromTemplate(name: string, template: string): Promis
   broadcast({ type: "project_updated", project });
 
   // Instala dependências em background: o usuário já pode ver o projeto na UI.
+  // claudeEnv(): scripts postinstall rodam código arbitrário — não podem ver
+  // ANTHROPIC_API_KEY/AUTH_TOKEN (decisão 1 da arquitetura).
   const child = spawn("npm", ["install"], {
     cwd: dest,
-    env: process.env,
+    env: claudeEnv(),
     stdio: ["ignore", "ignore", "pipe"],
   });
   backgroundInstalls.add(child);
@@ -212,9 +218,32 @@ export async function createFromTemplate(name: string, template: string): Promis
   return project;
 }
 
+/** `a` é o próprio `b` ou uma pasta dentro de `b`? */
+function dentroDe(a: string, b: string): boolean {
+  const rel = relative(b, a);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
 export async function openProject(path: string): Promise<Project> {
   ensureDirs();
   const alvo = resolve(path.trim());
+
+  // Pasta pessoal (ou qualquer pasta acima dela, como "/"): abrir aqui faria
+  // `git init` + `git add -A` engolir a pasta inteira do usuário — incluindo
+  // chaves e segredos (~/.ssh etc.) — para dentro de um repositório. Nunca.
+  if (dentroDe(homedir(), alvo)) {
+    throw new Error(
+      "Essa pasta é ampla demais (sua pasta pessoal ou uma acima dela). Escolha a pasta específica do projeto.",
+    );
+  }
+  // Pastas internas do builder (espaços de tarefas, estado) não são projetos —
+  // abri-las quebraria o ciclo de vida das tarefas.
+  if (alvo === PROJECTS_DIR || dentroDe(alvo, ESPACOS_DIR) || dentroDe(alvo, DATA_DIR)) {
+    throw new Error(
+      "Essa pasta é usada internamente pelo Inhouse Builder. Escolha a pasta de um projeto específico.",
+    );
+  }
+
   let st;
   try {
     st = await stat(alvo);

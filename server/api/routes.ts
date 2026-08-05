@@ -3,7 +3,7 @@
  * Erros sempre em JSON {error} com mensagem amigável em português.
  */
 import express, { Router } from "express";
-import type { Request, RequestHandler, Response } from "express";
+import type { ErrorRequestHandler, Request, RequestHandler, Response } from "express";
 import type { ServerEvent, TaskAction } from "../../shared/types.js";
 import { resolvePermission } from "../claude/permissions.js";
 import { claudeStatus } from "../claude/runner.js";
@@ -218,6 +218,23 @@ export function buildRouter(): Router {
       res.json({ ok: true });
     }),
   );
+
+  // Erros lançados por middlewares (ex.: JSON malformado ou grande demais no
+  // body) não passam pelo wrapper h() — sem isto, o Express devolveria uma
+  // página HTML em inglês, quebrando o contrato "erro sempre em JSON pt-BR".
+  const erroDeMiddleware: ErrorRequestHandler = (err, req, res, _next) => {
+    const bruto = (err as { status?: unknown }).status;
+    const status = typeof bruto === "number" && bruto >= 400 && bruto < 600 ? bruto : 500;
+    if (status >= 500) console.error(`[api] ${req.method} ${req.path}:`, err);
+    const msg =
+      status === 413
+        ? "Os dados enviados são grandes demais."
+        : status < 500
+          ? "Não conseguimos entender os dados enviados. Recarregue a página e tente de novo."
+          : "Algo deu errado no servidor. Tente de novo.";
+    if (!res.headersSent) res.status(status).json({ error: msg });
+  };
+  router.use(erroDeMiddleware);
 
   return router;
 }

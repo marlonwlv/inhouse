@@ -108,5 +108,13 @@ export function transcriptRead(taskId: string): TranscriptItem[] {
   return readFileSync(f, "utf8")
     .split("\n")
     .filter(Boolean)
-    .map((l) => JSON.parse(l) as TranscriptItem);
+    .flatMap((l) => {
+      // Linha corrompida (ex.: escrita interrompida por queda do servidor) é
+      // pulada — não pode deixar o histórico inteiro da tarefa ilegível (500).
+      try {
+        return [JSON.parse(l) as TranscriptItem];
+      } catch {
+        return [];
+      }
+    });
 }

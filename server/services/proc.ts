@@ -54,7 +54,13 @@ export function run(cmd: string, args: string[], opts: RunOpts = {}): Promise<Ru
 
 /** Roda git em `cwd` e retorna o stdout sem espaços nas pontas. */
 export async function git(cwd: string, ...args: string[]): Promise<string> {
-  const { stdout } = await run("git", args, { cwd });
+  // GIT_TERMINAL_PROMPT=0: o servidor não tem ninguém olhando o terminal — um
+  // repositório privado sem credenciais deve falhar na hora, com erro claro,
+  // em vez de travar esperando usuário/senha num prompt invisível.
+  const { stdout } = await run("git", args, {
+    cwd,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  });
   return stdout.trim();
 }
 

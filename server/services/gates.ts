@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GateResult } from "../../shared/types.js";
+import { claudeEnv } from "../config.js";
 import { broadcast } from "../events.js";
 import { transcriptAppend } from "../store.js";
 import { lastLines } from "./proc.js";
@@ -63,9 +64,11 @@ function runGate(gate: { name: string; command: string[] }, cwd: string): Promis
     const inicio = Date.now();
     const [cmd, ...args] = gate.command;
     // CI=1 evita que test runners (vitest etc.) entrem em modo watch e nunca terminem.
+    // claudeEnv(): os scripts do projeto rodam código arbitrário — não podem
+    // ver ANTHROPIC_API_KEY/AUTH_TOKEN (decisão 1 da arquitetura).
     const child = spawn(cmd ?? "", args, {
       cwd,
-      env: { ...process.env, CI: "1" },
+      env: { ...claudeEnv(), CI: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";

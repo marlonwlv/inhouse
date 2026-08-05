@@ -3,7 +3,7 @@
  * O config lê INHOUSE_DATA_DIR no momento do import, então cada teste importa
  * o módulo do zero (vi.resetModules + import dinâmico) com env já apontado.
  */
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -183,5 +183,14 @@ describe("store: transcript", () => {
 
     const store2 = await restart();
     expect(store2.transcriptRead("t-abc")).toEqual(items);
+  });
+
+  it("linha corrompida (escrita interrompida) é pulada — o resto do histórico continua legível", async () => {
+    const store = await freshStore();
+    const item: TranscriptItem = { kind: "user", text: "quero um botão", at: "2026-08-05T12:00:00.000Z" };
+    store.transcriptAppend("t-corrompido", item);
+    // Simula o servidor caindo no meio de um append (linha pela metade).
+    appendFileSync(join(dataDir, "transcripts", "t-corrompido.jsonl"), '{"kind":"assistant","te');
+    expect(store.transcriptRead("t-corrompido")).toEqual([item]);
   });
 });

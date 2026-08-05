@@ -112,6 +112,29 @@ describe("runGates", () => {
     expect(emitidos).toHaveLength(2);
   });
 
+  it("não vaza ANTHROPIC_API_KEY/AUTH_TOKEN para os comandos das verificações", async () => {
+    process.env.ANTHROPIC_API_KEY = "sk-teste-vazamento";
+    process.env.ANTHROPIC_AUTH_TOKEN = "tok-teste-vazamento";
+    try {
+      const dir = fixture({
+        "package.json": JSON.stringify({
+          name: "fixture",
+          version: "1.0.0",
+          scripts: {
+            // Sai com erro se enxergar qualquer um dos segredos.
+            test: 'node -e "process.exit(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN ? 1 : 0)"',
+          },
+        }),
+      });
+      const results = await runGates("t-env", dir);
+      expect(results).toHaveLength(1);
+      expect(results[0]!.ok).toBe(true);
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+    }
+  });
+
   it("comando que nem existe conta como falha, não como exceção", async () => {
     const dir = fixture({
       "package.json": JSON.stringify({

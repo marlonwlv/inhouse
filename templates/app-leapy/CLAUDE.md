@@ -15,4 +15,6 @@ Siga estas regras em todas as tarefas:
    Não invente cores novas sem pedido explícito.
 6. **Todo texto visível na interface deve estar em pt-BR** — botões, títulos,
    mensagens de erro, placeholders, tudo.
-7. Depois de mudanças de código, garanta que `npm run typecheck` passa.
+7. **Não rode verificações você mesmo** (`npm run typecheck`, lint, build, testes):
+   o Inhouse Builder roda tudo automaticamente ao final da tarefa e te devolve os erros
+   se houver. Rodar por conta própria só gasta tempo e pede permissão à toa.
