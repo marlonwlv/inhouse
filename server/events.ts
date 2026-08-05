@@ -10,6 +10,9 @@ export function addClient(res: Response): void {
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders?.();
+  // Padding anti-buffer: proxies/camadas que seguram streaming costumam liberar
+  // a resposta após ~2KB. Comentários SSE são ignorados pelo EventSource.
+  res.write(`: ${" ".repeat(2048)}\n\n`);
   res.write(": conectado\n\n");
   clients.add(res);
   res.on("close", () => clients.delete(res));

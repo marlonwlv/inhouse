@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.1.2";
+const UI_VERSION = "0.1.3";
 console.log(`Inhouse Builder UI v${UI_VERSION}`);
 
 const state = {
@@ -162,13 +162,30 @@ async function fetchState() {
   render();
 }
 
-// ---------- SSE ----------
+// ---------- SSE (com fallback para polling) ----------
+// Alguns browsers/proxies bufferizam respostas de streaming: a conexão abre,
+// mas nenhum evento chega à página — enquanto fetches normais funcionam.
+// O servidor manda um evento "state" imediatamente ao conectar; se nada chegar
+// em 8s, o canal está inutilizável NESTE ambiente e caímos para polling,
+// tentando voltar ao SSE de tempos em tempos.
 let es;
+let sseGotMessage = false;
+let sseFallbackTimer;
+let pollTimer;
+let sseRetryTimer;
+
 function connectSSE() {
   // Nunca deixar duas conexões vivas: um handler antigo disparando "offline"
   // depois da nova conexão abrir prendia o banner para sempre (e duplicava eventos).
   if (es) es.close();
+  clearTimeout(sseFallbackTimer);
+  sseGotMessage = false;
   const mine = (es = new EventSource("/api/events"));
+  sseFallbackTimer = setTimeout(() => {
+    if (es !== mine || sseGotMessage) return;
+    mine.close();
+    startPolling();
+  }, 8000);
   mine.onopen = () => {
     if (es !== mine) return;
     setOnline(true);
@@ -177,16 +194,56 @@ function connectSSE() {
     if (es !== mine) return;
     let ev;
     try { ev = JSON.parse(e.data); } catch { return; }
+    sseGotMessage = true;
+    stopPolling();
     // Evento recebido = servidor vivo, independente de qualquer falha anterior.
     setOnline(true);
     handleEvent(ev);
   };
   mine.onerror = () => {
     if (es !== mine) return;
-    setOnline(false);
+    // Com o polling ativo e funcionando, o SSE falhar não significa offline.
+    if (!pollTimer) setOnline(false);
     // EventSource reconecta sozinho; se fechou de vez, recriamos.
     if (mine.readyState === EventSource.CLOSED) setTimeout(connectSSE, 3000);
   };
+}
+
+function startPolling() {
+  if (pollTimer) return;
+  console.log(
+    "Inhouse Builder: canal de eventos bloqueado neste browser — usando atualização periódica.",
+  );
+  pollTimer = setInterval(poll, 2500);
+  poll();
+  // De tempos em tempos tenta voltar ao SSE (instantâneo é melhor que polling).
+  sseRetryTimer = setInterval(() => {
+    if (pollTimer) connectSSE();
+  }, 30000);
+}
+
+function stopPolling() {
+  if (!pollTimer) return;
+  clearInterval(pollTimer);
+  clearInterval(sseRetryTimer);
+  pollTimer = undefined;
+  sseRetryTimer = undefined;
+}
+
+async function poll() {
+  await fetchState();
+  // Na tela de uma tarefa, o transcript também precisa acompanhar.
+  const r = route();
+  if (r.name === "editor") await refreshTranscript(r.id);
+}
+
+async function refreshTranscript(taskId) {
+  const items = await api(`/api/tasks/${encodeURIComponent(taskId)}/transcript`);
+  if (!Array.isArray(items)) return;
+  const c = tcache(taskId);
+  c.items = items;
+  c.loaded = true;
+  if (isEditorOf(taskId)) renderChat(taskId);
 }
 
 function handleEvent(ev) {
