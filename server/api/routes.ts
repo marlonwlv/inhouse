@@ -5,6 +5,7 @@
 import express, { Router } from "express";
 import type { ErrorRequestHandler, Request, RequestHandler, Response } from "express";
 import type { ServerEvent, TaskAction } from "../../shared/types.js";
+import { TASK_ACTIONS } from "../../shared/types.js";
 import { resolvePermission } from "../claude/permissions.js";
 import { claudeStatus } from "../claude/runner.js";
 import { addClient } from "../events.js";
@@ -56,14 +57,7 @@ async function cachedClaudeStatus(): Promise<Awaited<ReturnType<typeof claudeSta
   return value;
 }
 
-const ACTIONS: ReadonlySet<string> = new Set([
-  "approve_plan",
-  "request_changes",
-  "approve_test",
-  "publish",
-  "retry",
-  "cancel",
-]);
+const ACTIONS: ReadonlySet<string> = new Set(TASK_ACTIONS);
 
 export function buildRouter(): Router {
   const router = Router();

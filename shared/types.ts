@@ -144,6 +144,18 @@ export type ServerEvent =
 // POST /api/tasks/:id/preview/start     -> { url }
 // POST /api/tasks/:id/preview/stop      -> 200
 
+/** Fonte única dos nomes de ação — rotas validam por aqui; a trava de tipo abaixo
+ *  quebra a compilação se este array e o union TaskAction saírem de sincronia. */
+export const TASK_ACTIONS = [
+  "approve_plan",
+  "request_changes",
+  "approve_test",
+  "publish",
+  "retry",
+  "auto_mode",
+  "cancel",
+] as const;
+
 export type TaskAction =
   | { action: "approve_plan" }
   | { action: "request_changes"; message: string } // volta pra execucao (ou plano se veio da aprovacao)
@@ -152,6 +164,11 @@ export type TaskAction =
   | { action: "retry" } // re-roda o passo que falhou
   | { action: "auto_mode"; on: boolean } // permissões automáticas para esta tarefa
   | { action: "cancel" };
+
+// Travas de sincronia (compile-time; sem custo em runtime):
+type _TodasAsAcoesNaLista = TaskAction["action"] extends (typeof TASK_ACTIONS)[number] ? true : never;
+type _NadaSobrandoNaLista = (typeof TASK_ACTIONS)[number] extends TaskAction["action"] ? true : never;
+export const _travaAcoes: [_TodasAsAcoesNaLista, _NadaSobrandoNaLista] = [true, true];
 
 // ---------- Config por projeto (inhouse.config.json na raiz) ----------
 // Mapeia etapas da esteira para skills do Claude Code da máquina (ex.: gstack).
