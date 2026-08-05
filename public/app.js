@@ -19,6 +19,9 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
+const UI_VERSION = "0.1.2";
+console.log(`Inhouse Builder UI v${UI_VERSION}`);
+
 const state = {
   projects: [],
   tasks: [],

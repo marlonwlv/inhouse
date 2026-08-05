@@ -18,7 +18,15 @@ const app = express();
 app.use(buildRouter());
 
 const publicDir = fileURLToPath(new URL("../public", import.meta.url));
-app.use(express.static(publicDir));
+// Ferramenta local: frescor importa mais que cache — browsers com cache teimoso
+// já nos entregaram UI velha com bug corrigido no disco.
+app.use(
+  express.static(publicDir, {
+    etag: false,
+    lastModified: false,
+    setHeaders: (res) => res.set("Cache-Control", "no-store"),
+  }),
+);
 
 // Rotas não-API caem no index.html (a UI cuida do resto). API desconhecida → 404 JSON.
 app.use((req, res) => {
