@@ -8,8 +8,8 @@
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import type { Task, TaskAction, TranscriptItem } from "../../shared/types.js";
 import { isHumanStep } from "../../shared/types.js";
-import { createPermissionGate } from "../claude/permissions.js";
-import { runPhase } from "../claude/runner.js";
+import { createPermissionGate, finishAllForTask } from "../claude/permissions.js";
+import { abortPhase, runPhase } from "../claude/runner.js";
 import { MAX_GATE_FIX_ROUNDS } from "../config.js";
 import { broadcast } from "../events.js";
 import { runGates } from "../services/gates.js";
@@ -346,6 +346,15 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
         usuario(taskId, msg);
         patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
         fireAndForget(taskId, () => runExecucao(taskId, changesPrompt(msg)));
+      } else if (
+        (task.step === "execucao" || task.step === "verificacoes") &&
+        task.status === "falhou"
+      ) {
+        // A mensagem de falha das verificações sugere "pedir mudanças" — aceita
+        // aqui, voltando para a execução com a orientação do usuário.
+        usuario(taskId, msg);
+        patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
+        fireAndForget(taskId, () => runExecucao(taskId, changesPrompt(msg)));
       } else {
         throw new Error("Esta tarefa não está num ponto em que dá para pedir mudanças.");
       }
@@ -401,10 +410,12 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
           task.step === "espec" ? pipelineFromEspec(taskId) : runPlano(taskId),
         );
       } else if (task.step === "execucao") {
-        patch(taskId, { status: "rodando", error: undefined });
+        // Zera as rodadas de correção: sem isso, um gate com erro determinístico
+        // falharia de novo na hora, sem nenhuma tentativa de auto-correção.
+        patch(taskId, { status: "rodando", gateFixRounds: 0, error: undefined });
         fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(task)));
       } else if (task.step === "verificacoes") {
-        patch(taskId, { status: "rodando", error: undefined });
+        patch(taskId, { status: "rodando", gateFixRounds: 0, error: undefined });
         fireAndForget(taskId, () => runVerificacoes(taskId));
       } else {
         throw new Error("Este passo não pode ser re-executado.");
@@ -417,9 +428,15 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
         throw new Error("Esta tarefa já foi finalizada.");
       }
       steerQueue.delete(taskId);
+      // Marca cancelada ANTES de abortar: quem estiver no meio de runPhase vê
+      // o status novo e não sobrescreve com "falhou".
+      patch(taskId, { status: "cancelada" });
+      // Encerra a sessão do Claude em andamento (mata o processo filho) e
+      // resolve os pedidos de permissão pendentes (não ficam órfãos na UI).
+      abortPhase(taskId);
+      finishAllForTask(taskId);
       await stopPreview(taskId);
       // O espaço fica no disco para inspeção (decisão da arquitetura).
-      patch(taskId, { status: "cancelada" });
       sistema(taskId, "Tarefa cancelada. O que já foi feito fica guardado no espaço da tarefa.");
       break;
     }

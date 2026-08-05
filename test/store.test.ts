@@ -96,6 +96,20 @@ describe("store: persistência", () => {
     expect(store2.getTask("b")?.status).toBe("aguardando");
   });
 
+  it("tarefa 'aguardando' num passo automático (permissão pendente) vira 'falhou' no restart", async () => {
+    const store = await freshStore();
+    // Esperava decisão de permissão durante a execução quando o server caiu.
+    store.addTask(tarefa({ id: "a", step: "execucao", status: "aguardando" }));
+    // Porteira humana de verdade: não pode ser tocada.
+    store.addTask(tarefa({ id: "b", step: "aprovacao", status: "aguardando" }));
+
+    const store2 = await restart();
+    const a = store2.getTask("a");
+    expect(a?.status).toBe("falhou");
+    expect(a?.error).toMatch(/reiniciado/);
+    expect(store2.getTask("b")?.status).toBe("aguardando");
+  });
+
   it("state.json corrompido: guarda backup, começa limpo e volta a persistir", async () => {
     const lixo = "{isso não é json";
     const store = await freshStore((dir) => {

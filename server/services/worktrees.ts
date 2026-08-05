@@ -9,7 +9,8 @@ import { join } from "node:path";
 import type { Project } from "../../shared/types.js";
 import { ESPACOS_DIR } from "../config.js";
 import { broadcast } from "../events.js";
-import { git, lastLines, tryGit } from "./proc.js";
+import { withProjectLock } from "./locks.js";
+import { git, gitCommit, lastLines, tryGit } from "./proc.js";
 
 const NPM_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -26,7 +27,16 @@ export function slugify(title: string): string {
   return slug.length >= 2 ? slug : "tarefa";
 }
 
-export async function createEspaco(
+export function createEspaco(
+  project: Project,
+  espaco: number,
+  slug: string,
+): Promise<{ branch: string; worktreePath: string }> {
+  // Serializa com publish e outros createEspaco do mesmo projeto (index.lock).
+  return withProjectLock(project.id, () => doCreateEspaco(project, espaco, slug));
+}
+
+async function doCreateEspaco(
   project: Project,
   espaco: number,
   slug: string,
@@ -36,6 +46,17 @@ export async function createEspaco(
 
   // Sobra de uma tarefa anterior no mesmo número de espaço: limpa antes.
   if (existsSync(worktreePath)) {
+    // Trabalho não commitado (ex.: tarefa cancelada no meio da execução) é
+    // preservado no branch antigo antes do remove — senão seria destruído.
+    const pendente = await tryGit(worktreePath, "status", "--porcelain");
+    if (pendente !== null && pendente.length > 0) {
+      await tryGit(worktreePath, "add", "-A");
+      try {
+        await gitCommit(worktreePath, "Trabalho preservado automaticamente pelo Inhouse Builder");
+      } catch {
+        // Melhor esforço: um commit impossível não pode impedir a criação do espaço.
+      }
+    }
     try {
       await git(project.path, "worktree", "remove", "--force", worktreePath);
     } catch {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PermissionRequest, Project, Task, TranscriptItem } from "../shared/types.js";
+import { isHumanStep } from "../shared/types.js";
 import { DATA_DIR, TRANSCRIPTS_DIR, ensureDirs } from "./config.js";
 
 interface State {
@@ -22,8 +23,10 @@ export function load(): void {
       const raw = JSON.parse(readFileSync(STATE_FILE, "utf8")) as State;
       state = { projects: raw.projects ?? [], tasks: raw.tasks ?? [] };
       // Tarefas que estavam "rodando" quando o server caiu ficam pendentes de retry.
+      // "Aguardando" num passo automático = esperava permissão (efêmera, Map em
+      // memória): após o restart não há processo claude nem pedido vivo — vira retry.
       for (const t of state.tasks) {
-        if (t.status === "rodando") {
+        if (t.status === "rodando" || (t.status === "aguardando" && !isHumanStep(t.step))) {
           t.status = "falhou";
           t.error = "O Inhouse Builder foi reiniciado no meio deste passo. Clique em Tentar de novo.";
         }

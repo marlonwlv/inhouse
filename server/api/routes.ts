@@ -181,11 +181,13 @@ export function buildRouter(): Router {
     "/api/permissions/:id/decision",
     h(async (req, res) => {
       const id = req.params.id ?? "";
-      const allow = (req.body as Record<string, unknown> | null | undefined)?.["allow"];
+      const body = req.body as Record<string, unknown> | null | undefined;
+      const allow = body?.["allow"];
       if (typeof allow !== "boolean") {
         throw new HttpError(400, "Informe se a ação foi permitida (allow: true ou false).");
       }
-      if (!resolvePermission(id, allow)) {
+      const remember = body?.["remember"] === true;
+      if (!resolvePermission(id, allow, remember)) {
         throw new HttpError(404, "Este pedido de permissão não existe mais (ou já foi respondido).");
       }
       res.json({ ok: true });

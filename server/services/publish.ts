@@ -5,6 +5,7 @@
 import type { Project, Task } from "../../shared/types.js";
 import { broadcast } from "../events.js";
 import { transcriptAppend } from "../store.js";
+import { withProjectLock } from "./locks.js";
 import { RunError, git, gitCommit, run, tryGit } from "./proc.js";
 import { stopPreview } from "./preview.js";
 import { removeEspaco } from "./worktrees.js";
@@ -15,7 +16,17 @@ function sistema(taskId: string, text: string): void {
   broadcast({ type: "transcript", taskId, item });
 }
 
-export async function publishTask(
+export function publishTask(
+  task: Task,
+  project: Project,
+  createPr: boolean,
+): Promise<{ prUrl?: string }> {
+  // Uma operação git de cada vez por projeto (publish concorrente com outro
+  // publish/createEspaco no mesmo repo colide em index.lock/checkout).
+  return withProjectLock(project.id, () => doPublish(task, project, createPr));
+}
+
+async function doPublish(
   task: Task,
   project: Project,
   createPr: boolean,

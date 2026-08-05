@@ -22,6 +22,7 @@ const h = vi.hoisted(() => {
     gateRuns: 0,
     publishCalls: [] as { createPr: boolean }[],
     stopPreviewCalls: [] as string[],
+    abortCalls: [] as string[],
   };
   return {
     state,
@@ -83,6 +84,10 @@ const h = vi.hoisted(() => {
 
 vi.mock("../server/claude/runner.js", () => ({
   runPhase: h.runPhase,
+  abortPhase: (taskId: string) => {
+    h.state.abortCalls.push(taskId);
+    return false;
+  },
   claudeStatus: async () => ({ ok: true }),
 }));
 vi.mock("../server/services/gates.js", () => ({
@@ -131,6 +136,7 @@ beforeEach(() => {
   h.state.gateRuns = 0;
   h.state.publishCalls.length = 0;
   h.state.stopPreviewCalls.length = 0;
+  h.state.abortCalls.length = 0;
   h.state.gatesOk = true;
   h.state.planFails = false;
   h.state.espacoFails = false;
@@ -270,6 +276,42 @@ describe("machine: verificações e retry", () => {
     expect(depois.status).toBe("aguardando");
   });
 
+  it("retry após esgotar as rodadas zera gateFixRounds e tenta a auto-correção de novo", async () => {
+    const t = await criaTaskEmAprovacao();
+    h.state.gatesOk = false; // erro determinístico: gates falham sempre
+    await applyAction(t.id, { action: "approve_plan" });
+    await vi.waitFor(() => {
+      expect(store.getTask(t.id)?.status).toBe("falhou");
+    }, { timeout: 3000 });
+
+    const execsAntes = h.state.calls.filter((c) => c.permissionMode === "acceptEdits").length;
+    await applyAction(t.id, { action: "retry" });
+    await vi.waitFor(() => {
+      expect(store.getTask(t.id)?.status).toBe("falhou");
+    }, { timeout: 3000 });
+
+    // Sem o reset, falharia na hora com zero tentativas de correção.
+    const execsDepois = h.state.calls.filter((c) => c.permissionMode === "acceptEdits").length;
+    expect(execsDepois - execsAntes).toBe(MAX_GATE_FIX_ROUNDS);
+  });
+
+  it("request_changes com a tarefa falhada nas verificações volta para a execução", async () => {
+    const t = await criaTaskEmAprovacao();
+    h.state.gatesOk = false;
+    await applyAction(t.id, { action: "approve_plan" });
+    await vi.waitFor(() => {
+      expect(store.getTask(t.id)?.status).toBe("falhou");
+    }, { timeout: 3000 });
+
+    h.state.gatesOk = true;
+    const antes = h.state.calls.length;
+    await applyAction(t.id, { action: "request_changes", message: "tente outra abordagem" });
+    const depois = await esperaStep(t.id, "teste");
+    expect(depois.status).toBe("aguardando");
+    const execs = h.state.calls.slice(antes).filter((c) => c.permissionMode === "acceptEdits");
+    expect(execs[0]?.prompt).toContain("tente outra abordagem");
+  });
+
   it("plano que falha marca a tarefa como 'falhou'; retry refaz só o plano", async () => {
     h.state.planFails = true;
     const criada = await startTask("p1", "Plano ruim", "desc");
@@ -327,11 +369,13 @@ describe("machine: teste, publicação e cancelamento", () => {
     expect(done.status).toBe("concluida");
   });
 
-  it("cancel para o preview, mantém o espaço e não pode ser repetido", async () => {
+  it("cancel para o preview, aborta a sessão do claude, mantém o espaço e não pode ser repetido", async () => {
     const t = await criaTaskEmAprovacao();
     const done = await applyAction(t.id, { action: "cancel" });
     expect(done.status).toBe("cancelada");
     expect(h.state.stopPreviewCalls).toContain(t.id);
+    // A sessão do Claude em andamento é abortada (não vira zumbi de 20 min).
+    expect(h.state.abortCalls).toContain(t.id);
     await expect(applyAction(t.id, { action: "cancel" })).rejects.toThrow(/finalizada/);
   });
 });

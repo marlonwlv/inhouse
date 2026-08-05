@@ -185,10 +185,18 @@ function handleEvent(ev) {
       state.loaded = true;
       render();
       break;
-    case "task_updated":
+    case "task_updated": {
       upsert(state.tasks, ev.task);
+      // Fase que terminou sem mensagem final (timeout/abort/erro no meio do
+      // streaming): zera o parcial para não sobrar balão "digitando" fantasma
+      // nem contaminar o streaming da próxima fase.
+      if (ev.task.status !== "rodando") {
+        const c = state.transcripts[ev.task.id];
+        if (c) c.stream = "";
+      }
       render();
       break;
+    }
     case "project_updated":
       upsert(state.projects, ev.project);
       clearProgressFor(ev.project);
@@ -631,10 +639,15 @@ function renderEditor(id) {
   $("#ed-title", root).textContent = `${p ? p.name : "?"} · ${t.title}`;
   $("#ed-espaco", root).textContent = `espaço ${t.espaco}`;
   $("#ed-status", root).innerHTML = editorStatusHtml(t);
-  $("#ed-topactions", root).innerHTML =
+  const ativa = t.status !== "concluida" && t.status !== "cancelada";
+  $("#ed-topactions", root).innerHTML = [
     t.step === "publicar" && t.status === "aguardando"
       ? `<button class="btn sm primary" data-act="publish" data-task="${esc(t.id)}" ${state.busy[`publish:${t.id}`] ? "disabled" : ""}>Publicar</button>`
-      : "";
+      : "",
+    ativa
+      ? `<button class="btn sm ghost" data-act="cancel" data-task="${esc(t.id)}">Cancelar tarefa</button>`
+      : "",
+  ].join("");
   $("#ed-flowstrip", root).innerHTML =
     `<span>Onde essa tarefa está:</span>${flowHtml(t)}${nextGateChip(t)}`;
   renderChat(id);
@@ -793,7 +806,10 @@ function failCardHtml(t) {
     <div class="head"><span class="pulse"></span> Este passo falhou</div>
     <p>${esc(t.error || "Algo deu errado. Tentar de novo costuma resolver.")}</p>
     ${hasBadGate ? `<div class="gates-row">${gateChips(t)}</div>` : ""}
-    <div class="acts"><button class="btn sm primary" data-act="retry" data-task="${esc(t.id)}">Tentar de novo</button></div>
+    <div class="acts">
+      <button class="btn sm primary" data-act="retry" data-task="${esc(t.id)}">Tentar de novo</button>
+      <button class="btn sm ghost" data-act="cancel" data-task="${esc(t.id)}">Cancelar tarefa</button>
+    </div>
   </div>`;
 }
 
@@ -849,9 +865,14 @@ function updateComposer(root, t) {
   } else if (t.status === "aguardando" && t.step === "teste") {
     enabled = true;
     ph = "Escreva o que ajustar — enviar devolve a tarefa pro Claude";
-  } else if (t.status === "rodando" || (t.status === "aguardando" && (t.step === "execucao" || t.step === "verificacoes"))) {
+  } else if (t.step === "execucao" && (t.status === "rodando" || t.status === "aguardando")) {
+    // Só na execução o servidor enfileira mensagens de steering.
     enabled = true;
     ph = permPend ? "Responda o pedido de permissão acima — ou mande uma orientação" : "Responda ou ajuste a direção…";
+  } else if (t.status === "rodando") {
+    ph = t.step === "espec" || t.step === "plano"
+      ? "Aguarde o plano ficar pronto — aí você pode pedir mudanças."
+      : "Aguarde as verificações terminarem.";
   } else if (t.status === "concluida") ph = "Tarefa concluída — nada mais a fazer aqui.";
   else if (t.status === "falhou") ph = "O passo falhou — use “Tentar de novo” acima.";
   else if (t.step === "publicar") ph = "Tudo pronto — é só clicar em Publicar.";
@@ -891,6 +912,11 @@ const actions = {
   "approve-plan": (btn) => taskAction(btn.dataset.task, { action: "approve_plan" }),
   "approve-test": (btn) => taskAction(btn.dataset.task, { action: "approve_test" }),
   "retry": (btn) => taskAction(btn.dataset.task, { action: "retry" }),
+  "cancel": (btn) => {
+    if (window.confirm("Cancelar esta tarefa? O Claude para de trabalhar nela; o que já foi feito fica guardado.")) {
+      taskAction(btn.dataset.task, { action: "cancel" });
+    }
+  },
   "request-changes": (btn) => {
     const msg = window.prompt("O que você quer mudar?");
     if (msg && msg.trim()) {
@@ -986,6 +1012,11 @@ document.addEventListener("submit", async (e) => {
       const el = $("#clone-url");
       if (el) el.value = "";
       toast(`Projeto “${p.name}” pronto para usar.`);
+    } else {
+      // Clone falhou: remove as barras de progresso órfãs (ainda sem projectId).
+      for (const k of Object.keys(state.progress)) {
+        if (!state.progress[k].projectId) delete state.progress[k];
+      }
     }
     render();
   } else if (kind === "create-app") {

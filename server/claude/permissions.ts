@@ -7,15 +7,18 @@ import type { CanUseTool, PermissionResult } from "@anthropic-ai/claude-agent-sd
 import type { PermissionRequest } from "../../shared/types.js";
 import { PERMISSION_TIMEOUT_MS } from "../config.js";
 import { broadcast } from "../events.js";
-import { addPermission, newId, removePermission, transcriptAppend } from "../store.js";
+import { addPermission, newId, removePermission } from "../store.js";
 
 interface Decision {
   allow: boolean;
+  /** "Sempre permitir ações como esta nesta tarefa" (checkbox da UI). */
+  remember?: boolean;
   /** Mensagem enviada ao Claude quando negado (explica o porquê). */
   denyMessage?: string;
 }
 
 interface Pending {
+  taskId: string;
   resolve: (d: Decision) => void;
   timer: NodeJS.Timeout;
 }
@@ -51,15 +54,25 @@ function friendlyFor(toolName: string, input: Record<string, unknown>): string {
  * Conclui um pedido pendente (decisão humana, timeout ou aborto da fase).
  * Retorna false se o id não está (mais) pendente.
  */
-function finish(requestId: string, allow: boolean, denyMessage?: string): boolean {
+function finish(requestId: string, allow: boolean, denyMessage?: string, remember?: boolean): boolean {
   const p = pending.get(requestId);
   if (!p) return false;
   pending.delete(requestId);
   clearTimeout(p.timer);
   removePermission(requestId);
   broadcast({ type: "permission_resolved", requestId, allowed: allow });
-  p.resolve({ allow, denyMessage });
+  p.resolve({ allow, remember, denyMessage });
   return true;
+}
+
+/**
+ * Resolve (negando) todos os pedidos pendentes de uma tarefa.
+ * Usado pelo cancel da esteira para não deixar cards órfãos na UI.
+ */
+export function finishAllForTask(taskId: string, denyMessage = "A tarefa foi cancelada."): void {
+  for (const [id, p] of [...pending]) {
+    if (p.taskId === taskId) finish(id, false, denyMessage);
+  }
 }
 
 /**
@@ -78,20 +91,16 @@ export function createPermissionGate(taskId: string): CanUseTool {
       createdAt: new Date().toISOString(),
     };
     addPermission(request);
+    // O card de permission_request na UI já mostra a ação — o transcript não
+    // repete o item (o runner já registrou o tool_use correspondente).
     broadcast({ type: "permission_request", request });
-    transcriptAppend(taskId, {
-      kind: "tool",
-      op: "?",
-      label: request.friendly,
-      at: request.createdAt,
-    });
 
     const decision = await new Promise<Decision>((resolve) => {
       const timer = setTimeout(() => {
         finish(id, false, "Sem resposta — negado por segurança");
       }, PERMISSION_TIMEOUT_MS);
       timer.unref();
-      pending.set(id, { resolve, timer });
+      pending.set(id, { taskId, resolve, timer });
       // Fase abortada (timeout global / cancelamento): não deixar o pedido órfão.
       options.signal.addEventListener(
         "abort",
@@ -101,7 +110,18 @@ export function createPermissionGate(taskId: string): CanUseTool {
     });
 
     if (decision.allow) {
-      return { behavior: "allow", updatedInput: input, toolUseID: options.toolUseID };
+      // "Sempre permitir": devolve as suggestions do SDK como updatedPermissions
+      // (escopo "session" = só esta tarefa) para não perguntar de novo.
+      const updatedPermissions =
+        decision.remember && options.suggestions && options.suggestions.length > 0
+          ? options.suggestions.map((s) => ({ ...s, destination: "session" as const }))
+          : undefined;
+      return {
+        behavior: "allow",
+        updatedInput: input,
+        toolUseID: options.toolUseID,
+        ...(updatedPermissions ? { updatedPermissions } : {}),
+      };
     }
     return {
       behavior: "deny",
@@ -113,12 +133,14 @@ export function createPermissionGate(taskId: string): CanUseTool {
 
 /**
  * Aplica a decisão vinda da UI (POST /api/permissions/:id/decision).
+ * `remember` = "sempre permitir ações como esta nesta tarefa".
  * Retorna false se o pedido não existe ou já foi resolvido.
  */
-export function resolvePermission(requestId: string, allow: boolean): boolean {
+export function resolvePermission(requestId: string, allow: boolean, remember = false): boolean {
   return finish(
     requestId,
     allow,
     allow ? undefined : "O usuário negou esta ação. Siga sem ela ou proponha uma alternativa.",
+    allow && remember,
   );
 }

@@ -20,6 +20,20 @@ import { transcriptAppend } from "../store.js";
 /** Timeout de segurança global de uma fase. */
 const PHASE_TIMEOUT_MS = 20 * 60 * 1000;
 
+/** AbortControllers das fases em andamento, por tarefa (o cancel aborta por aqui). */
+const phaseAborts = new Map<string, AbortController>();
+
+/**
+ * Aborta a fase em andamento de uma tarefa (usado pelo cancel da esteira).
+ * Retorna false se não havia fase rodando.
+ */
+export function abortPhase(taskId: string): boolean {
+  const ac = phaseAborts.get(taskId);
+  if (!ac) return false;
+  ac.abort();
+  return true;
+}
+
 export interface PhaseResult {
   sessionId?: string;
   finalText: string;
@@ -117,11 +131,35 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   }
 
   const abortController = new AbortController();
+  phaseAborts.set(opts.taskId, abortController);
   let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    abortController.abort();
-  }, PHASE_TIMEOUT_MS);
+  let phaseDone = false;
+  let timer: NodeJS.Timeout | undefined;
+  const armTimer = (): void => {
+    if (phaseDone || abortController.signal.aborted) return;
+    timer = setTimeout(() => {
+      timedOut = true;
+      abortController.abort();
+    }, PHASE_TIMEOUT_MS);
+  };
+  armTimer();
+
+  // O relógio de segurança da fase não corre enquanto uma permissão espera a
+  // decisão humana — quem manda nessa espera é o PERMISSION_TIMEOUT_MS (30min).
+  let permissoesPendentes = 0;
+  const baseCanUseTool = opts.canUseTool;
+  const canUseTool: CanUseTool | undefined = baseCanUseTool
+    ? async (toolName, input, options) => {
+        permissoesPendentes++;
+        if (permissoesPendentes === 1) clearTimeout(timer);
+        try {
+          return await baseCanUseTool(toolName, input, options);
+        } finally {
+          permissoesPendentes--;
+          if (permissoesPendentes === 0) armTimer();
+        }
+      }
+    : undefined;
 
   // Últimos bytes do stderr do CLI — só para diagnóstico no console do server.
   let stderrTail = "";
@@ -139,7 +177,7 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
     maxTurns: opts.maxTurns,
     allowedTools: opts.allowedTools,
     disallowedTools: opts.disallowedTools,
-    canUseTool: opts.canUseTool,
+    canUseTool,
     stderr: (data) => {
       stderrTail = (stderrTail + data).slice(-2000);
     },
@@ -237,7 +275,9 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
       errorMessage = friendlyError(apiError, detail);
     }
   } finally {
+    phaseDone = true;
     clearTimeout(timer);
+    phaseAborts.delete(opts.taskId);
   }
 
   return { sessionId, finalText, planText, success, errorMessage };

@@ -36,7 +36,12 @@ vi.mock("../server/store.js", () => ({
 }));
 vi.mock("../server/events.js", () => ({ broadcast: mocks.broadcast, addClient: () => {} }));
 
-import { createPermissionGate, resolvePermission } from "../server/claude/permissions.js";
+import type { PermissionUpdate } from "@anthropic-ai/claude-agent-sdk";
+import {
+  createPermissionGate,
+  finishAllForTask,
+  resolvePermission,
+} from "../server/claude/permissions.js";
 import { PERMISSION_TIMEOUT_MS } from "../server/config.js";
 
 /** Options mínimas exigidas pelo CanUseTool do SDK. */
@@ -82,6 +87,64 @@ describe("createPermissionGate", () => {
     expect(mocks.removed).toContain(pedido.id);
     // Decidir de novo o mesmo pedido não faz nada.
     expect(resolvePermission(pedido.id, true)).toBe(false);
+  });
+
+  it("permitir com remember devolve as suggestions do SDK como updatedPermissions de sessão", async () => {
+    const gate = createPermissionGate("task-1");
+    const suggestions: PermissionUpdate[] = [
+      {
+        type: "addRules",
+        rules: [{ toolName: "Bash", ruleContent: "npm install:*" }],
+        behavior: "allow",
+        destination: "localSettings", // o gate deve reescopar para "session"
+      },
+    ];
+    const promessa = gate("Bash", { command: "npm install" }, { ...opcoes(), suggestions });
+
+    const pedido = mocks.added[0]!;
+    expect(resolvePermission(pedido.id, true, true)).toBe(true);
+    await expect(promessa).resolves.toEqual({
+      behavior: "allow",
+      updatedInput: { command: "npm install" },
+      toolUseID: "tu-1",
+      updatedPermissions: [
+        {
+          type: "addRules",
+          rules: [{ toolName: "Bash", ruleContent: "npm install:*" }],
+          behavior: "allow",
+          destination: "session",
+        },
+      ],
+    });
+  });
+
+  it("remember sem suggestions do SDK não devolve updatedPermissions", async () => {
+    const gate = createPermissionGate("task-1");
+    const promessa = gate("Bash", { command: "npm install" }, opcoes());
+    const pedido = mocks.added[0]!;
+    expect(resolvePermission(pedido.id, true, true)).toBe(true);
+    await expect(promessa).resolves.toEqual({
+      behavior: "allow",
+      updatedInput: { command: "npm install" },
+      toolUseID: "tu-1",
+    });
+  });
+
+  it("finishAllForTask nega só os pedidos pendentes da tarefa (cancel)", async () => {
+    const gate1 = createPermissionGate("task-1");
+    const gate2 = createPermissionGate("task-2");
+    const p1 = gate1("Bash", { command: "ls" }, opcoes());
+    const p2 = gate2("Bash", { command: "ls" }, opcoes());
+
+    finishAllForTask("task-1");
+    const r1 = await p1;
+    expect(r1).toMatchObject({ behavior: "deny" });
+    if (r1?.behavior === "deny") expect(r1.message).toContain("cancelada");
+
+    // A outra tarefa continua pendente e decidível normalmente.
+    const pedido2 = mocks.added[1]!;
+    expect(resolvePermission(pedido2.id, true)).toBe(true);
+    await expect(p2).resolves.toMatchObject({ behavior: "allow" });
   });
 
   it("negar: resolve deny com mensagem explicando ao Claude", async () => {
