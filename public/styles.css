@@ -62,6 +62,11 @@ body {
 }
 
 /* ---------- banner de servidor fora do ar ---------- */
+/* O atributo `hidden` perde para qualquer regra de `display` do autor —
+   sem esta linha o banner fica visível PARA SEMPRE, em todo browser. */
+#offline-banner[hidden] {
+  display: none;
+}
 #offline-banner {
   flex: none;
   display: flex;
