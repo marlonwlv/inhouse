@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.1.3";
+const UI_VERSION = "0.1.4";
 console.log(`Inhouse Builder UI v${UI_VERSION}`);
 
 const state = {
@@ -169,23 +169,31 @@ async function fetchState() {
 // em 8s, o canal está inutilizável NESTE ambiente e caímos para polling,
 // tentando voltar ao SSE de tempos em tempos.
 let es;
-let sseGotMessage = false;
+let lastSseMessageAt = 0;
 let sseFallbackTimer;
 let pollTimer;
 let sseRetryTimer;
+
+// Relógio da pane: dispara o polling se nenhuma mensagem SSE chegar em 8s.
+// NÃO pode ser resetado por tentativas de reconexão — o SSE falhando rápido
+// reconecta a cada ~3s, e zerar o timer a cada tentativa fazia o fallback
+// nunca disparar (bug real visto em campo). Só mensagem recebida desarma.
+function armSseFallback() {
+  if (pollTimer || sseFallbackTimer) return;
+  sseFallbackTimer = setTimeout(() => {
+    sseFallbackTimer = undefined;
+    if (Date.now() - lastSseMessageAt >= 7500) startPolling();
+  }, 8000);
+}
 
 function connectSSE() {
   // Nunca deixar duas conexões vivas: um handler antigo disparando "offline"
   // depois da nova conexão abrir prendia o banner para sempre (e duplicava eventos).
   if (es) es.close();
-  clearTimeout(sseFallbackTimer);
-  sseGotMessage = false;
-  const mine = (es = new EventSource("/api/events"));
-  sseFallbackTimer = setTimeout(() => {
-    if (es !== mine || sseGotMessage) return;
-    mine.close();
-    startPolling();
-  }, 8000);
+  // "/api/stream": o caminho antigo "/api/events" casa com padrões de adblock
+  // (EasyPrivacy) e era bloqueado no browser de alguns usuários.
+  const mine = (es = new EventSource("/api/stream"));
+  armSseFallback();
   mine.onopen = () => {
     if (es !== mine) return;
     setOnline(true);
@@ -194,7 +202,9 @@ function connectSSE() {
     if (es !== mine) return;
     let ev;
     try { ev = JSON.parse(e.data); } catch { return; }
-    sseGotMessage = true;
+    lastSseMessageAt = Date.now();
+    clearTimeout(sseFallbackTimer);
+    sseFallbackTimer = undefined;
     stopPolling();
     // Evento recebido = servidor vivo, independente de qualquer falha anterior.
     setOnline(true);
@@ -204,6 +214,7 @@ function connectSSE() {
     if (es !== mine) return;
     // Com o polling ativo e funcionando, o SSE falhar não significa offline.
     if (!pollTimer) setOnline(false);
+    armSseFallback();
     // EventSource reconecta sozinho; se fechou de vez, recriamos.
     if (mine.readyState === EventSource.CLOSED) setTimeout(connectSSE, 3000);
   };
@@ -211,6 +222,8 @@ function connectSSE() {
 
 function startPolling() {
   if (pollTimer) return;
+  clearTimeout(sseFallbackTimer);
+  sseFallbackTimer = undefined;
   console.log(
     "Inhouse Builder: canal de eventos bloqueado neste browser — usando atualização periódica.",
   );

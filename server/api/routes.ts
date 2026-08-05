@@ -83,7 +83,9 @@ export function buildRouter(): Router {
     }),
   );
 
-  router.get("/api/events", (_req, res) => {
+  // "/api/stream" é o caminho principal; "/api/events" fica como alias — listas
+  // de adblock (EasyPrivacy etc.) casam padrões tipo "/events" e matavam o SSE.
+  const sse = (_req: Request, res: Response): void => {
     addClient(res);
     // Foto inicial do estado para o cliente recém-conectado.
     const ev: ServerEvent = {
@@ -93,7 +95,9 @@ export function buildRouter(): Router {
       permissions: store.listPermissions(),
     };
     res.write(`data: ${JSON.stringify(ev)}\n\n`);
-  });
+  };
+  router.get("/api/stream", sse);
+  router.get("/api/events", sse);
 
   // ---------- Projetos ----------
 
