@@ -2,6 +2,7 @@
  * Entrada do servidor do Inhouse Builder.
  * Escuta APENAS em 127.0.0.1 (decisão de segurança — ver ARCHITECTURE.md).
  */
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -29,8 +30,17 @@ app.use((req, res) => {
 });
 
 const server = app.listen(PORT, HOST, () => {
-  console.log(`Inhouse Builder rodando em http://${HOST}:${PORT}`);
+  console.log(`Inhouse Builder rodando em http://localhost:${PORT}`);
 });
+
+// "localhost" resolve para ::1 (IPv6) em alguns browsers do macOS — sem escutar
+// nos dois loopbacks, a página abre num e a API falha no outro. Ambos são
+// estritamente locais (nada exposto à rede).
+const server6 = createServer(app);
+server6.on("error", () => {
+  // Máquina sem IPv6 habilitado: seguimos só com IPv4.
+});
+server6.listen(PORT, "::1");
 
 let encerrando = false;
 function shutdown(sinal: string): void {
@@ -39,6 +49,7 @@ function shutdown(sinal: string): void {
   console.log(`\nEncerrando o Inhouse Builder (${sinal})…`);
   stopAllPreviews();
   server.close();
+  server6.close();
   process.exit(0);
 }
 process.on("SIGINT", () => shutdown("SIGINT"));
