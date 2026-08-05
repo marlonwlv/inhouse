@@ -13,17 +13,32 @@ import { abortPhase, runPhase } from "../claude/runner.js";
 import { MAX_GATE_FIX_ROUNDS } from "../config.js";
 import { broadcast } from "../events.js";
 import { runGates } from "../services/gates.js";
-import { stopPreview } from "../services/preview.js";
+import { startPreview, stopPreview } from "../services/preview.js";
 import { publishTask } from "../services/publish.js";
 import { createEspaco, slugify } from "../services/worktrees.js";
 import * as store from "../store.js";
+import { loadConfig, temUi } from "./config.js";
 import {
   changesPrompt,
+  consolidarPlanoPrompt,
   especPrompt,
   execucaoPrompt,
   fixGatesPrompt,
+  parseVeredito,
   planoPrompt,
+  skillGatePrompt,
+  skillPlanoPrompt,
 } from "./phases.js";
+
+/**
+ * Opções do runner para fases que rodam SKILLS do usuário (ex.: gstack):
+ * settings de usuário entram (é onde as skills moram) e o marcador de sessão
+ * spawned faz as skills auto-decidirem pela recomendação em vez de perguntar.
+ */
+const SKILL_PHASE_OPTS = {
+  settingSources: ["user", "project"] as ("user" | "project")[],
+  extraEnv: { OPENCLAW_SESSION: "inhouse" },
+};
 
 /** Mensagens de steering enfileiradas por tarefa (entram no próximo resume da execução). */
 const steerQueue = new Map<string, string[]>();
@@ -171,12 +186,51 @@ async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
   patch(taskId, { step: "plano", status: "rodando", error: undefined });
   sistema(taskId, feedback ? "Refazendo o plano com o seu feedback…" : "Montando o plano de implementação…");
 
+  // Cadeia de skills de planejamento configurada no projeto (inhouse.config.json)?
+  // Re-planejamento por feedback humano NÃO re-roda a cadeia inteira: o feedback
+  // vai direto pra sessão, que já tem todo o contexto das skills.
+  const skillsPlano = feedback ? undefined : loadConfig(task.worktreePath)?.skills?.plano;
+  if (skillsPlano) {
+    const ui = temUi(task.worktreePath);
+    for (const step of skillsPlano) {
+      if (step.quando === "ui" && !ui) {
+        sistema(taskId, `Pulando /${step.skill} (este projeto não tem interface).`);
+        continue;
+      }
+      const atual = store.getTask(taskId);
+      if (!atual || cancelada(taskId)) return false;
+      sistema(taskId, `Rodando /${step.skill}…`);
+      const rs = await runPhase({
+        taskId,
+        cwd: atual.worktreePath,
+        prompt: skillPlanoPrompt(step, atual),
+        permissionMode: "plan",
+        resume: atual.claudeSessionId,
+        ...SKILL_PHASE_OPTS,
+      });
+      if (cancelada(taskId)) return false;
+      if (rs.sessionId) store.updateTask(taskId, { claudeSessionId: rs.sessionId });
+      if (!rs.success) {
+        fail(taskId, `A skill /${step.skill} falhou: ${rs.errorMessage ?? "erro desconhecido"}`);
+        return false;
+      }
+    }
+    sistema(taskId, "Consolidando o plano final com o resultado dos reviews…");
+  }
+
+  const atualPosSkills = store.getTask(taskId);
+  if (!atualPosSkills) return false;
   const r = await runPhase({
     taskId,
-    cwd: task.worktreePath,
-    prompt: feedback ? changesPrompt(feedback) : planoPrompt(task),
+    cwd: atualPosSkills.worktreePath,
+    prompt: feedback
+      ? changesPrompt(feedback)
+      : skillsPlano
+        ? consolidarPlanoPrompt()
+        : planoPrompt(atualPosSkills),
     permissionMode: "plan",
-    resume: task.claudeSessionId,
+    resume: atualPosSkills.claudeSessionId,
+    ...(skillsPlano ? SKILL_PHASE_OPTS : {}),
   });
 
   if (cancelada(taskId)) return false;
@@ -244,7 +298,71 @@ async function runVerificacoes(taskId: string): Promise<boolean> {
   if (cancelada(taskId)) return false;
   patch(taskId, { gates: results });
 
-  const falhas = results.filter((g) => !g.ok);
+  // Gates de skill (ex.: /review, /qa via gstack) só rodam se os do projeto passaram —
+  // não faz sentido pagar um review de código que nem compila.
+  if (results.every((g) => g.ok)) {
+    const skillGates = loadConfig(task.worktreePath)?.skills?.verificacoes ?? [];
+    const ui = temUi(task.worktreePath);
+    for (const step of skillGates) {
+      if (step.quando === "ui" && !ui) continue;
+      const atual = store.getTask(taskId);
+      if (!atual || cancelada(taskId)) return false;
+      const gateName = step.gate ?? step.skill;
+      sistema(taskId, `Rodando a verificação "${gateName}" (/${step.skill})…`);
+
+      // {previewUrl} nos args → precisa do app rodando no espaço.
+      let previewUrl = atual.previewUrl ?? "";
+      if ((step.args ?? "").includes("{previewUrl}") && !previewUrl) {
+        const project = store.getProject(atual.projectId);
+        if (project) {
+          try {
+            previewUrl = await startPreview(atual, project);
+          } catch (err) {
+            sistema(
+              taskId,
+              `Não deu para subir o preview para a verificação "${gateName}" — pulando: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+            continue;
+          }
+        }
+      }
+
+      const inicio = Date.now();
+      const rg = await runPhase({
+        taskId,
+        cwd: atual.worktreePath,
+        prompt: skillGatePrompt(step, atual, previewUrl),
+        permissionMode: "acceptEdits",
+        resume: atual.claudeSessionId,
+        canUseTool: gateComStatus(taskId),
+        ...SKILL_PHASE_OPTS,
+      });
+      if (cancelada(taskId)) return false;
+      if (rg.sessionId) store.updateTask(taskId, { claudeSessionId: rg.sessionId });
+
+      const veredito = rg.success ? parseVeredito(rg.finalText) : { ok: false, motivo: rg.errorMessage };
+      const gate = {
+        name: gateName,
+        command: `/${step.skill}`,
+        ok: veredito.ok,
+        output: veredito.ok ? undefined : (veredito.motivo ?? rg.finalText.slice(-1500)),
+        durationMs: Date.now() - inicio,
+      };
+      const comGate = store.getTask(taskId);
+      if (!comGate) return false;
+      patch(taskId, { gates: [...comGate.gates, gate] });
+      broadcast({ type: "gate_result", taskId, gate });
+      sistema(
+        taskId,
+        `Verificação "${gateName}": ${veredito.ok ? "passou" : `reprovou${veredito.motivo ? ` — ${veredito.motivo}` : ""}`}`,
+      );
+    }
+  }
+
+  const todos = store.getTask(taskId)?.gates ?? results;
+  const falhas = todos.filter((g) => !g.ok);
   if (falhas.length === 0) {
     patch(taskId, { step: "teste", status: "aguardando" });
     sistema(taskId, "Tudo verificado — pronto pro seu teste.");

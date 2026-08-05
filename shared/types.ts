@@ -137,6 +137,30 @@ export type TaskAction =
   | { action: "retry" } // re-roda o passo que falhou
   | { action: "cancel" };
 
+// ---------- Config por projeto (inhouse.config.json na raiz) ----------
+// Mapeia etapas da esteira para skills do Claude Code da máquina (ex.: gstack).
+// Sem o arquivo, a esteira roda com os prompts genéricos embutidos.
+
+export interface SkillStepConfig {
+  /** Nome da skill/comando (sem a barra). Ex.: "office-hours", "review", "qa". */
+  skill: string;
+  /** Argumentos; placeholders: {descricao} {spec} {plano} {previewUrl}. */
+  args?: string;
+  /** "ui": só roda se o projeto tiver dependências de frontend. */
+  quando?: "ui";
+  /** Nome do gate exibido (etapa verificacoes). Default: nome da skill. */
+  gate?: string;
+}
+
+export interface InhouseConfig {
+  skills?: {
+    /** Cadeia rodada na fase de plano, em sequência, na mesma sessão. */
+    plano?: SkillStepConfig[];
+    /** Gates extras após as verificações do projeto (veredito APROVADO/REPROVADO). */
+    verificacoes?: SkillStepConfig[];
+  };
+}
+
 // ---------- Utilidades ----------
 
 export const STEP_LABELS: Record<Step, string> = {

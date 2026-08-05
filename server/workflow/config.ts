@@ -1,0 +1,60 @@
+/**
+ * Config por projeto (inhouse.config.json): mapeia etapas da esteira para
+ * skills do Claude Code instaladas na máquina (ex.: suite gstack).
+ * Tolerante a erro: arquivo ausente/ inválido = sem skills (esteira genérica).
+ */
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { InhouseConfig, SkillStepConfig } from "../../shared/types.js";
+
+const CONFIG_FILE = "inhouse.config.json";
+
+function sanitizeSteps(raw: unknown): SkillStepConfig[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const steps: SkillStepConfig[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) continue;
+    const o = item as Record<string, unknown>;
+    // Nome de skill restrito: vira comando /<skill> dentro da sessão.
+    if (typeof o.skill !== "string" || !/^[a-z0-9][a-z0-9:_-]{0,63}$/i.test(o.skill)) continue;
+    steps.push({
+      skill: o.skill,
+      args: typeof o.args === "string" ? o.args : undefined,
+      quando: o.quando === "ui" ? "ui" : undefined,
+      gate: typeof o.gate === "string" && o.gate.trim() ? o.gate.trim().slice(0, 40) : undefined,
+    });
+  }
+  return steps.length > 0 ? steps : undefined;
+}
+
+export function loadConfig(worktreePath: string): InhouseConfig | null {
+  const file = join(worktreePath, CONFIG_FILE);
+  if (!existsSync(file)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    const skills = (raw.skills ?? {}) as Record<string, unknown>;
+    const plano = sanitizeSteps(skills.plano);
+    const verificacoes = sanitizeSteps(skills.verificacoes);
+    if (!plano && !verificacoes) return null;
+    return { skills: { plano, verificacoes } };
+  } catch (err) {
+    console.warn(`[config] ${file} inválido — ignorando:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/** O projeto tem UI? (heurística por dependências de frontend no package.json) */
+export function temUi(worktreePath: string): boolean {
+  try {
+    const pkg = JSON.parse(readFileSync(join(worktreePath, "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+    return Object.keys(deps).some((d) =>
+      /^(react|react-dom|vue|svelte|next|nuxt|vite|@angular\/core|solid-js|preact)$/.test(d),
+    );
+  } catch {
+    return false;
+  }
+}

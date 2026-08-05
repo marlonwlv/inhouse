@@ -2,12 +2,68 @@
  * Prompts (em português) de cada fase da esteira.
  * A máquina de estados (machine.ts) escolhe qual usar e com quais opções do runner.
  */
-import type { GateResult, Task } from "../../shared/types.js";
+import type { GateResult, SkillStepConfig, Task } from "../../shared/types.js";
+
+// ---------- Skills configuradas (inhouse.config.json) ----------
+
+/** Substitui os placeholders suportados nos args de uma skill. */
+function fillVars(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{(descricao|spec|plano|previewUrl)\}/g, (_, k: string) => vars[k] ?? "");
+}
+
+/** Prompt que invoca uma skill (`/skill args`) numa fase de PLANEJAMENTO. */
+export function skillPlanoPrompt(step: SkillStepConfig, task: Task): string {
+  const vars = {
+    descricao: task.description,
+    spec: task.spec ?? task.description,
+    plano: task.plan ?? "",
+    previewUrl: "",
+  };
+  const args = step.args ? ` ${fillVars(step.args, vars)}` : "";
+  return `/${step.skill}${args}`;
+}
+
+/** Após a cadeia de skills de plano: consolidar tudo num plano final aprovável. */
+export function consolidarPlanoPrompt(): string {
+  return [
+    "Com base em tudo que foi levantado e revisado acima nesta sessão, escreva o PLANO",
+    "FINAL de implementação: passos numerados, arquivos afetados em cada passo, e uma",
+    "seção curta 'O que os reviews mudaram no plano'. Não implemente nada ainda.",
+    "Escreva para uma pessoa não-técnica aprovar: português simples, sem jargão.",
+  ].join("\n");
+}
+
+const VEREDITO_INSTRUCAO = [
+  "",
+  "IMPORTANTE: ao terminar, a sua ÚLTIMA linha deve ser exatamente:",
+  "VEREDITO: APROVADO",
+  "ou",
+  "VEREDITO: REPROVADO — <motivo curto>",
+].join("\n");
+
+/** Prompt que invoca uma skill como GATE de verificação (com veredito parseável). */
+export function skillGatePrompt(step: SkillStepConfig, task: Task, previewUrl: string): string {
+  const vars = {
+    descricao: task.description,
+    spec: task.spec ?? task.description,
+    plano: task.plan ?? "",
+    previewUrl,
+  };
+  const args = step.args ? ` ${fillVars(step.args, vars)}` : "";
+  return `/${step.skill}${args}${VEREDITO_INSTRUCAO}`;
+}
+
+/** Interpreta o veredito no texto final da skill-gate. Sem veredito = aprova com nota. */
+export function parseVeredito(finalText: string): { ok: boolean; motivo?: string } {
+  const m = /VEREDITO:\s*(APROVADO|REPROVADO)\s*(?:—|-)?\s*(.*)/i.exec(finalText);
+  if (!m) return { ok: true, motivo: "sem veredito explícito" };
+  return { ok: m[1]!.toUpperCase() === "APROVADO", motivo: m[2]?.trim() || undefined };
+}
 
 /** Fase espec: estruturar o pedido em spec curta, sem tocar em nada. */
 export function especPrompt(task: Task): string {
   return [
-    "Você é o assistente de desenvolvimento do Inhouse Builder, trabalhando em um app da Inhouse.",
+    "Você é o assistente de desenvolvimento do Inhouse, trabalhando em um app desta organização.",
     "Sua única tarefa agora é estruturar o pedido do usuário em uma especificação curta.",
     "NÃO edite arquivos e NÃO rode comandos — no máximo, leia o código para entender o contexto.",
     "",

@@ -55,6 +55,13 @@ export interface RunPhaseOpts {
   allowedTools?: string[];
   disallowedTools?: string[];
   canUseTool?: CanUseTool;
+  /**
+   * Fontes de settings da sessão. Default: só "project" (isolamento).
+   * Fases que rodam skills do usuário (ex.: gstack) incluem "user".
+   */
+  settingSources?: Options["settingSources"];
+  /** Variáveis extras de ambiente (ex.: marcador de sessão spawned p/ gstack). */
+  extraEnv?: Record<string, string>;
 }
 
 function truncate(s: string, max = 80): string {
@@ -170,8 +177,8 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
     permissionMode: opts.permissionMode,
     resume: opts.resume,
     pathToClaudeCodeExecutable: exe,
-    env: claudeEnv(),
-    settingSources: ["project"],
+    env: { ...claudeEnv(), ...opts.extraEnv },
+    settingSources: opts.settingSources ?? ["project"],
     includePartialMessages: true,
     model: opts.model,
     maxTurns: opts.maxTurns,
