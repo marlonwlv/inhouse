@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.2.0";
+const UI_VERSION = "0.2.1";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -522,6 +522,7 @@ function statusChip(t) {
   if (t.status === "aguardando") {
     return `<span class="chip wait">${t.step === "teste" ? "Pronto pro seu teste" : "Aguardando você"}</span>`;
   }
+  if (t.status === "falhou" && t.pausadaPorTempo) return `<span class="chip wait">Passo longo</span>`;
   if (t.status === "falhou") return `<span class="chip bad">Falhou</span>`;
   if (t.status === "concluida") return `<span class="chip ok">Concluída ✓</span>`;
   return `<span class="chip">Cancelada</span>`;
@@ -687,7 +688,12 @@ function taskFootHtml(t, perm) {
       <span class="gap"></span>
       <button class="btn sm primary" data-act="go-task" data-task="${id}">Responder</button></div>`);
   }
-  if (t.status === "falhou") {
+  if (t.status === "falhou" && t.pausadaPorTempo) {
+    rows.push(`<div class="task-foot"><span class="wait-msg">⏱ Este passo está trabalhando há mais de 1 hora — nada quebrou.</span>
+      <span class="gap"></span>
+      <button class="btn sm" data-act="go-task" data-task="${id}">Ver o que ele está fazendo</button>
+      <button class="btn sm primary" data-act="retry" data-task="${id}">Continuar assim mesmo</button></div>`);
+  } else if (t.status === "falhou") {
     rows.push(`<div class="task-foot"><span class="fail-msg">${esc(t.error || "Algo deu errado neste passo.")}</span>
       <span class="gap"></span>
       <button class="btn sm" data-act="go-task" data-task="${id}">Ver detalhes</button>
@@ -908,6 +914,17 @@ function publishCardHtml(t) {
 }
 
 function failCardHtml(t) {
+  if (t.pausadaPorTempo) {
+    return `<div class="approval">
+      <div class="head"><span class="pulse"></span> ⏱ Passo longo</div>
+      <p>Este passo está trabalhando há mais de 1 hora — nada quebrou. Ele foi pausado por segurança
+      e pode continuar exatamente de onde parou. Se preferir mudar a direção, escreva na caixa abaixo.</p>
+      <div class="acts">
+        <button class="btn sm primary" data-act="retry" data-task="${esc(t.id)}">Continuar assim mesmo</button>
+        <button class="btn sm ghost" data-act="cancel" data-task="${esc(t.id)}">Cancelar tarefa</button>
+      </div>
+    </div>`;
+  }
   const hasBadGate = (t.gates ?? []).some((g) => !g.ok);
   return `<div class="approval fail">
     <div class="head"><span class="pulse"></span> Este passo falhou</div>

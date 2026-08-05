@@ -76,6 +76,23 @@ function fail(taskId: string, msg: string): void {
 }
 
 /**
+ * Falha de fase OU pausa amigável pelo teto de 1h: timeout não é erro — a UI
+ * mostra "passo longo" com o botão "Continuar assim mesmo" (action retry).
+ */
+function failOuPausa(taskId: string, r: { timedOut?: boolean; errorMessage?: string }, fallback: string): void {
+  if (r.timedOut) {
+    patch(taskId, {
+      status: "falhou",
+      pausadaPorTempo: true,
+      error: "Este passo está trabalhando há mais de 1 hora. Você pode deixar continuar ou pedir mudanças.",
+    });
+    sistema(taskId, "O passo passou de 1 hora e foi pausado por segurança — clique em \"Continuar assim mesmo\" para seguir de onde parou.");
+  } else {
+    fail(taskId, r.errorMessage ?? fallback);
+  }
+}
+
+/**
  * Dispara um trecho do pipeline sem bloquear o request HTTP.
  * Qualquer exceção não tratada vira status "falhou" (nunca derruba o server).
  */
@@ -214,7 +231,7 @@ async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
       if (cancelada(taskId)) return false;
       if (rs.sessionId) store.updateTask(taskId, { claudeSessionId: rs.sessionId });
       if (!rs.success) {
-        fail(taskId, `A skill /${step.skill} falhou: ${rs.errorMessage ?? "erro desconhecido"}`);
+        failOuPausa(taskId, rs, `A skill /${step.skill} falhou: ${rs.errorMessage ?? "erro desconhecido"}`);
         return false;
       }
     }
@@ -239,7 +256,7 @@ async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
   if (cancelada(taskId)) return false;
   if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
   if (!r.success) {
-    fail(taskId, r.errorMessage ?? "Não foi possível montar o plano. Tente de novo.");
+    failOuPausa(taskId, r, "Não foi possível montar o plano. Tente de novo.");
     return false;
   }
   const plan = (r.planText ?? r.finalText).trim();
@@ -279,7 +296,7 @@ async function runExecucao(taskId: string, prompt: string): Promise<boolean> {
   if (cancelada(taskId)) return false;
   if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
   if (!r.success) {
-    fail(taskId, r.errorMessage ?? "A execução falhou. Tente de novo.");
+    failOuPausa(taskId, r, "A execução falhou. Tente de novo.");
     return false;
   }
 
@@ -347,6 +364,10 @@ async function runVerificacoes(taskId: string): Promise<boolean> {
       if (cancelada(taskId)) return false;
       if (rg.sessionId) store.updateTask(taskId, { claudeSessionId: rg.sessionId });
 
+      if (!rg.success && rg.timedOut) {
+        failOuPausa(taskId, rg, "");
+        return false;
+      }
       const veredito = rg.success ? parseVeredito(rg.finalText) : { ok: false, motivo: rg.errorMessage };
       const gate = {
         name: gateName,
@@ -525,20 +546,20 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       if (isHumanStep(task.step)) {
         // Falha num passo humano (ex.: publish falhou ou o server reiniciou):
         // volta a aguardar a ação da pessoa.
-        patch(taskId, { status: "aguardando", error: undefined });
+        patch(taskId, { status: "aguardando", error: undefined, pausadaPorTempo: undefined });
         sistema(taskId, "Pronto — a tarefa voltou a aguardar a sua ação.");
       } else if (task.step === "espec" || task.step === "plano") {
-        patch(taskId, { status: "rodando", error: undefined });
+        patch(taskId, { status: "rodando", error: undefined, pausadaPorTempo: undefined });
         fireAndForget(taskId, () =>
           task.step === "espec" ? pipelineFromEspec(taskId) : runPlano(taskId),
         );
       } else if (task.step === "execucao") {
         // Zera as rodadas de correção: sem isso, um gate com erro determinístico
         // falharia de novo na hora, sem nenhuma tentativa de auto-correção.
-        patch(taskId, { status: "rodando", gateFixRounds: 0, error: undefined });
+        patch(taskId, { status: "rodando", gateFixRounds: 0, error: undefined, pausadaPorTempo: undefined });
         fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(task)));
       } else if (task.step === "verificacoes") {
-        patch(taskId, { status: "rodando", gateFixRounds: 0, error: undefined });
+        patch(taskId, { status: "rodando", gateFixRounds: 0, error: undefined, pausadaPorTempo: undefined });
         fireAndForget(taskId, () => runVerificacoes(taskId));
       } else {
         throw new Error("Este passo não pode ser re-executado.");

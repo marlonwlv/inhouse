@@ -18,7 +18,7 @@ import { broadcast } from "../events.js";
 import { transcriptAppend } from "../store.js";
 
 /** Timeout de segurança global de uma fase. */
-const PHASE_TIMEOUT_MS = 20 * 60 * 1000;
+const PHASE_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** AbortControllers das fases em andamento, por tarefa (o cancel aborta por aqui). */
 const phaseAborts = new Map<string, AbortController>();
@@ -40,6 +40,8 @@ export interface PhaseResult {
   planText?: string;
   success: boolean;
   errorMessage?: string;
+  /** A fase foi interrompida pelo teto de tempo (não é erro — oferecer "Continuar assim mesmo"). */
+  timedOut?: boolean;
 }
 
 export interface RunPhaseOpts {
@@ -273,7 +275,7 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
     success = false;
     finalText = lastAssistantText;
     if (timedOut) {
-      errorMessage = "Este passo passou de 20 minutos e foi interrompido por segurança. Tente de novo.";
+      errorMessage = "Este passo está trabalhando há mais de 1 hora.";
     } else if (err instanceof AbortError) {
       errorMessage = "O passo foi interrompido.";
     } else {
@@ -287,7 +289,7 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
     phaseAborts.delete(opts.taskId);
   }
 
-  return { sessionId, finalText, planText, success, errorMessage };
+  return { sessionId, finalText, planText, success, errorMessage, timedOut };
 }
 
 /** Traduz erros do SDK/CLI em mensagem amigável para leigos. */

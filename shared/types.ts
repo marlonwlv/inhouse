@@ -77,6 +77,8 @@ export interface Task {
   prUrl?: string;
   /** Mensagem de erro amigável quando status=falhou. */
   error?: string;
+  /** O passo foi pausado pelo teto de 1h (não é erro): UI oferece "Continuar assim mesmo". */
+  pausadaPorTempo?: boolean;
   createdAt: string;
   updatedAt: string;
 }

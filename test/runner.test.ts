@@ -134,7 +134,7 @@ describe("runPhase", () => {
     expect(r.finalText).toBe("feito");
   });
 
-  it("sem permissão pendente, a fase estoura o timeout de 20 minutos", async () => {
+  it("sem permissão pendente, a fase estoura o teto de 1 hora", async () => {
     vi.useFakeTimers();
     setQuery(async function* (props) {
       yield initMsg;
@@ -147,10 +147,11 @@ describe("runPhase", () => {
       prompt: "faça algo",
       permissionMode: "acceptEdits",
     });
-    await vi.advanceTimersByTimeAsync(20 * 60 * 1000);
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
 
     const r = await promessa;
     expect(r.success).toBe(false);
-    expect(r.errorMessage).toContain("20 minutos");
+    expect(r.errorMessage).toContain("1 hora");
+    expect(r.timedOut).toBe(true);
   });
 });
