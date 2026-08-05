@@ -6,8 +6,8 @@
  * (Agente B). Toda transição atualiza o store e faz broadcast de task_updated.
  */
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
-import type { Task, TaskAction, TranscriptItem } from "../../shared/types.js";
-import { isHumanStep } from "../../shared/types.js";
+import type { Step, Task, TaskAction, TranscriptItem } from "../../shared/types.js";
+import { STEP_LABELS, isHumanStep } from "../../shared/types.js";
 import { createPermissionGate, finishAllForTask } from "../claude/permissions.js";
 import { abortPhase, runPhase } from "../claude/runner.js";
 import { MAX_GATE_FIX_ROUNDS } from "../config.js";
@@ -17,13 +17,14 @@ import { startPreview, stopPreview } from "../services/preview.js";
 import { publishTask } from "../services/publish.js";
 import { createEspaco, slugify } from "../services/worktrees.js";
 import * as store from "../store.js";
-import { loadConfigCascata, temUi } from "./config.js";
+import { loadConfigCascata, skillsPlanoPara, temUi } from "./config.js";
 import {
   changesPrompt,
   consolidarPlanoPrompt,
   especPrompt,
   execucaoPrompt,
   fixGatesPrompt,
+  parsePorte,
   parseVeredito,
   planoPrompt,
   skillGatePrompt,
@@ -45,9 +46,33 @@ const steerQueue = new Map<string, string[]>();
 
 // ---------- Helpers ----------
 
+function formatDur(ms: number): string {
+  const min = Math.round(ms / 60_000);
+  return min >= 1 ? `${min} min` : `${Math.max(1, Math.round(ms / 1000))} s`;
+}
+
 function patch(taskId: string, p: Partial<Task>): Task {
+  // Mudança de passo fecha a entrada aberta do histórico e abre a nova —
+  // é daqui que a UI tira "quanto tempo cada etapa levou".
+  let notaDuracao: string | undefined;
+  const antes = store.getTask(taskId);
+  if (p.step && antes && p.step !== antes.step) {
+    const agora = new Date().toISOString();
+    const hist = [...(antes.historico ?? [])];
+    const aberto = hist[hist.length - 1];
+    if (aberto && !aberto.fim) {
+      aberto.fim = agora;
+      const ms = Date.parse(agora) - Date.parse(aberto.inicio);
+      if (ms >= 60_000) {
+        notaDuracao = `⏱ Etapa "${STEP_LABELS[aberto.step]}" levou ${formatDur(ms)}.`;
+      }
+    }
+    hist.push({ step: p.step, inicio: agora });
+    p = { ...p, historico: hist };
+  }
   const task = store.updateTask(taskId, p);
   broadcast({ type: "task_updated", task });
+  if (notaDuracao) sistema(taskId, notaDuracao);
   return task;
 }
 
@@ -183,7 +208,14 @@ async function runEspec(taskId: string): Promise<boolean> {
     });
     if (r.success && r.finalText.trim().length > 0) {
       spec = r.finalText.trim();
-      if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
+      const porte = parsePorte(spec);
+      store.updateTask(taskId, { porte, ...(r.sessionId ? { claudeSessionId: r.sessionId } : {}) });
+      sistema(
+        taskId,
+        porte === "simples"
+          ? "Porte da tarefa: simples — planejamento direto, sem reviews pesados."
+          : `Porte da tarefa: ${porte}.`,
+      );
     } else {
       sistema(taskId, "Não deu para estruturar a especificação — seguindo com o pedido original.");
     }
@@ -207,9 +239,13 @@ async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
   // Re-planejamento por feedback humano NÃO re-roda a cadeia inteira: o feedback
   // vai direto pra sessão, que já tem todo o contexto das skills.
   const projPlano = store.getProject(task.projectId);
-  const skillsPlano = feedback
-    ? undefined
-    : loadConfigCascata(task.worktreePath, projPlano?.path)?.skills?.plano;
+  const cadeia = feedback
+    ? []
+    : skillsPlanoPara(
+        loadConfigCascata(task.worktreePath, projPlano?.path),
+        task.porte ?? "media",
+      );
+  const skillsPlano = cadeia.length > 0 ? cadeia : undefined;
   if (skillsPlano) {
     const ui = temUi(task.worktreePath);
     for (const step of skillsPlano) {
@@ -447,6 +483,7 @@ export async function startTask(
     worktreePath: "",
     gates: [],
     gateFixRounds: 0,
+    historico: [{ step: "espec" as Step, inicio: now }],
     createdAt: now,
     updatedAt: now,
   };

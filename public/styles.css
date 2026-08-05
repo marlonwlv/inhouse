@@ -702,3 +702,6 @@ input::placeholder { color: var(--faint); }
 }
 
 .wait-msg { color: var(--amber); font-size: 13px; }
+
+.step .step-dur { font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.step.now .step-dur { color: var(--muted); }

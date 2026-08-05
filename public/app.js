@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.2.1";
+const UI_VERSION = "0.2.2";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -39,6 +39,10 @@ window.inhouseDiag = () => ({
   ultimaMsgSseHaMs: lastSseMessageAt ? Date.now() - lastSseMessageAt : null,
   log: diag.log,
 });
+
+setInterval(() => {
+  if (state.tasks.some((t) => t.status === "rodando" || t.status === "aguardando")) render();
+}, 30_000);
 
 const state = {
   projects: [],
@@ -497,6 +501,27 @@ function renderClaudeChip() {
   }
 }
 
+
+/* Duração por etapa a partir do histórico (soma repetições, ex.: execução↔verificações). */
+function stepDurMs(t, step) {
+  let ms = 0;
+  for (const h of t.historico ?? []) {
+    if (h.step !== step) continue;
+    ms += (h.fim ? Date.parse(h.fim) : Date.now()) - Date.parse(h.inicio);
+  }
+  return ms;
+}
+function fmtDur(ms) {
+  if (ms < 1000) return "";
+  const min = Math.round(ms / 60000);
+  return min >= 1 ? `${min} min` : `${Math.round(ms / 1000)} s`;
+}
+/* Início do passo atual (última entrada aberta do histórico). */
+function stepAtualDesde(t) {
+  const h = (t.historico ?? [])[ (t.historico ?? []).length - 1 ];
+  return h && !h.fim ? h.inicio : null;
+}
+
 // ---------- Peças compartilhadas ----------
 function flowHtml(t) {
   const idx = STEPS.indexOf(t.step);
@@ -512,7 +537,9 @@ function flowHtml(t) {
       now ? "now" : "",
       now && t.status === "falhou" ? "fail" : "",
     ].filter(Boolean).join(" ");
-    parts.push(`<div class="${cls}"><i class="pin"></i><span>${esc(STEP_LABELS[s])}</span></div>`);
+    const dur = fmtDur(stepDurMs(t, s));
+    const durHtml = dur ? `<span class="step-dur">${now ? "⏱ " : ""}${dur}</span>` : "";
+    parts.push(`<div class="${cls}"><i class="pin"></i><span>${esc(STEP_LABELS[s])}</span>${durHtml}</div>`);
   });
   return `<div class="flow-wrap"><div class="flow">${parts.join("")}</div></div>`;
 }
@@ -699,7 +726,7 @@ function taskFootHtml(t, perm) {
       <button class="btn sm" data-act="go-task" data-task="${id}">Ver detalhes</button>
       <button class="btn sm primary" data-act="retry" data-task="${id}">Tentar de novo</button></div>`);
   } else if (t.status === "rodando") {
-    rows.push(`<div class="task-foot"><span><span class="spinner"></span> Claude trabalhando no passo “${esc(STEP_LABELS[t.step] ?? t.step)}”…</span>
+    rows.push(`<div class="task-foot"><span><span class="spinner"></span> Claude trabalhando no passo “${esc(STEP_LABELS[t.step] ?? t.step)}”${stepAtualDesde(t) ? ` · ${timeAgo(stepAtualDesde(t))}` : ""}…</span>
       <span class="gap"></span>
       <a class="link" href="#/tarefa/${id}">Acompanhar no editor →</a></div>`);
   } else if (t.step === "aprovacao" && t.status === "aguardando") {

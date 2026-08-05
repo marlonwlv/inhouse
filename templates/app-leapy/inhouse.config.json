@@ -1,10 +1,14 @@
 {
   "skills": {
-    "plano": [
-      { "skill": "office-hours", "args": "{spec}" },
-      { "skill": "plan-eng-review" },
-      { "skill": "plan-design-review", "quando": "ui" }
-    ],
+    "plano": {
+      "simples": [],
+      "media": [{ "skill": "plan-eng-review" }],
+      "grande": [
+        { "skill": "office-hours", "args": "{spec}" },
+        { "skill": "plan-eng-review" },
+        { "skill": "plan-design-review", "quando": "ui" }
+      ]
+    },
     "verificacoes": [
       { "skill": "review", "gate": "Review" },
       { "skill": "qa", "gate": "QA", "args": "{previewUrl}", "quando": "ui" }

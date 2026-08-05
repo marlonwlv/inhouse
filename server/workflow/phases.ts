@@ -2,7 +2,7 @@
  * Prompts (em português) de cada fase da esteira.
  * A máquina de estados (machine.ts) escolhe qual usar e com quais opções do runner.
  */
-import type { GateResult, SkillStepConfig, Task } from "../../shared/types.js";
+import type { GateResult, Porte, SkillStepConfig, Task } from "../../shared/types.js";
 
 // ---------- Skills configuradas (inhouse.config.json) ----------
 
@@ -77,6 +77,13 @@ export function especPrompt(task: Task): string {
     "## Critérios de aceite",
     "",
     "Seja curto e direto: quem vai ler é uma pessoa não-técnica.",
+    "",
+    "Depois da especificação, classifique o PORTE da tarefa e termine com UMA linha exata:",
+    "PORTE: simples | media | grande",
+    "Rubrica: simples = mudança pequena e óbvia (1–3 arquivos, sem decisão de produto,",
+    "arquitetura ou dados novos — ex.: criar uma página em branco, trocar um texto).",
+    "grande = feature nova com decisões de produto/UX/dados ou que atravessa módulos.",
+    "media = todo o resto. Na dúvida entre dois, escolha o menor.",
   ].join("\n");
 }
 
@@ -128,4 +135,12 @@ export function changesPrompt(msg: string): string {
     "Faça os ajustes de acordo com o pedido, sem desfazer o restante do trabalho.",
     "Ao final, explique em português simples o que mudou.",
   ].join("\n");
+}
+
+/** Lê a linha "PORTE: …" da espec. Sem linha válida → "media" (meio-termo seguro). */
+export function parsePorte(text: string): Porte {
+  const m = /PORTE:\s*(simples|media|média|grande)/i.exec(text);
+  if (!m) return "media";
+  const v = m[1]!.toLowerCase();
+  return v === "média" ? "media" : (v as Porte);
 }

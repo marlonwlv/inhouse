@@ -5,7 +5,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { InhouseConfig, SkillStepConfig } from "../../shared/types.js";
+import type { InhouseConfig, Porte, SkillStepConfig } from "../../shared/types.js";
 import { DATA_DIR } from "../config.js";
 
 const CONFIG_FILE = "inhouse.config.json";
@@ -28,6 +28,39 @@ function sanitizeSteps(raw: unknown): SkillStepConfig[] | undefined {
     });
   }
   return steps.length > 0 ? steps : undefined;
+}
+
+/** Lista OU objeto por porte → sanitizado na mesma forma de entrada. */
+function sanitizePlano(
+  raw: unknown,
+): SkillStepConfig[] | Partial<Record<Porte, SkillStepConfig[]>> | undefined {
+  if (Array.isArray(raw)) return sanitizeSteps(raw);
+  if (typeof raw === "object" && raw !== null) {
+    const o = raw as Record<string, unknown>;
+    const out: Partial<Record<Porte, SkillStepConfig[]>> = {};
+    for (const porte of ["simples", "media", "grande"] as const) {
+      const steps = sanitizeSteps(o[porte]);
+      if (steps) out[porte] = steps;
+      else if (Array.isArray(o[porte])) out[porte] = []; // lista vazia explícita = pular skills
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Resolve a cadeia de plano para um porte.
+ * Forma lista (legado): vale para media/grande; "simples" pula as skills —
+ * é o julgamento padrão que evita office-hours para "criar uma página em branco".
+ */
+export function skillsPlanoPara(
+  cfg: InhouseConfig | null,
+  porte: Porte,
+): SkillStepConfig[] {
+  const plano = cfg?.skills?.plano;
+  if (!plano) return [];
+  if (Array.isArray(plano)) return porte === "simples" ? [] : plano;
+  return plano[porte] ?? [];
 }
 
 /**
@@ -56,7 +89,7 @@ export function loadConfigFile(file: string): InhouseConfig | null {
   try {
     const raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
     const skills = (raw.skills ?? {}) as Record<string, unknown>;
-    const plano = sanitizeSteps(skills.plano);
+    const plano = sanitizePlano(skills.plano);
     const verificacoes = sanitizeSteps(skills.verificacoes);
     if (!plano && !verificacoes) return null;
     return { skills: { plano, verificacoes } };

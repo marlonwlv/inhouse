@@ -2,8 +2,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseVeredito } from "../server/workflow/phases.js";
-import { loadConfig, loadConfigCascata, temUi } from "../server/workflow/config.js";
+import { especPrompt, parsePorte, parseVeredito } from "../server/workflow/phases.js";
+import { loadConfig, loadConfigCascata, skillsPlanoPara, temUi } from "../server/workflow/config.js";
 
 function dir(): string {
   return mkdtempSync(join(tmpdir(), "inhouse-config-"));
@@ -37,18 +37,23 @@ describe("loadConfig (inhouse.config.json)", () => {
       }),
     );
     const cfg = loadConfig(d);
-    expect(cfg?.skills?.plano?.map((s) => s.skill)).toEqual(["office-hours", "plan-design-review"]);
-    expect(cfg?.skills?.plano?.[1]?.quando).toBe("ui");
+    const grande = skillsPlanoPara(cfg, "grande");
+    expect(grande.map((s) => s.skill)).toEqual(["office-hours", "plan-design-review"]);
+    expect(grande[1]?.quando).toBe("ui");
+    // forma lista: "simples" pula as skills por padrão
+    expect(skillsPlanoPara(cfg, "simples")).toEqual([]);
     expect(cfg?.skills?.verificacoes?.[0]).toMatchObject({ skill: "qa", gate: "QA" });
   });
 
   it("o template app-starter embarca uma config válida com o mapeamento gstack", () => {
     const cfg = loadConfig(join(import.meta.dirname, "..", "templates", "app-starter"));
-    expect(cfg?.skills?.plano?.map((s) => s.skill)).toEqual([
+    expect(skillsPlanoPara(cfg, "grande").map((s) => s.skill)).toEqual([
       "office-hours",
       "plan-eng-review",
       "plan-design-review",
     ]);
+    expect(skillsPlanoPara(cfg, "simples")).toEqual([]);
+    expect(skillsPlanoPara(cfg, "media").map((s) => s.skill)).toEqual(["plan-eng-review"]);
     expect(cfg?.skills?.verificacoes?.map((s) => s.skill)).toEqual(["review", "qa"]);
   });
 });
@@ -62,7 +67,7 @@ describe("loadConfigCascata", () => {
       JSON.stringify({ skills: { plano: [{ skill: "office-hours" }] } }),
     );
     const cfg = loadConfigCascata(worktree, projeto);
-    expect(cfg?.skills?.plano?.[0]?.skill).toBe("office-hours");
+    expect(skillsPlanoPara(cfg, "media")[0]?.skill).toBe("office-hours");
   });
 
   it("o espaço tem precedência sobre a pasta do projeto", () => {
@@ -76,7 +81,32 @@ describe("loadConfigCascata", () => {
       join(projeto, "inhouse.config.json"),
       JSON.stringify({ skills: { plano: [{ skill: "do-projeto" }] } }),
     );
-    expect(loadConfigCascata(worktree, projeto)?.skills?.plano?.[0]?.skill).toBe("do-espaco");
+    expect(skillsPlanoPara(loadConfigCascata(worktree, projeto), "media")[0]?.skill).toBe("do-espaco");
+  });
+});
+
+describe("skillsPlanoPara (objeto por porte)", () => {
+  it("resolve cadeias distintas por porte, com lista vazia explícita", () => {
+    const d = dir();
+    writeFileSync(
+      join(d, "inhouse.config.json"),
+      JSON.stringify({
+        skills: {
+          plano: {
+            simples: [],
+            media: [{ skill: "plan-eng-review" }],
+            grande: [{ skill: "office-hours" }, { skill: "plan-eng-review" }],
+          },
+        },
+      }),
+    );
+    const cfg = loadConfig(d);
+    expect(skillsPlanoPara(cfg, "simples")).toEqual([]);
+    expect(skillsPlanoPara(cfg, "media").map((s) => s.skill)).toEqual(["plan-eng-review"]);
+    expect(skillsPlanoPara(cfg, "grande").map((s) => s.skill)).toEqual([
+      "office-hours",
+      "plan-eng-review",
+    ]);
   });
 });
 
@@ -107,5 +137,20 @@ describe("parseVeredito", () => {
   });
   it("sem veredito → aprova com nota (não trava a esteira)", () => {
     expect(parseVeredito("terminei tudo")).toMatchObject({ ok: true, motivo: "sem veredito explícito" });
+  });
+});
+
+describe("parsePorte (triagem na espec)", () => {
+  it("lê o porte da última linha", () => {
+    expect(parsePorte("## Objetivo\n…\nPORTE: simples")).toBe("simples");
+    expect(parsePorte("…\nPORTE: grande")).toBe("grande");
+    expect(parsePorte("…\nPORTE: média")).toBe("media");
+  });
+  it("sem linha válida → media (meio-termo seguro)", () => {
+    expect(parsePorte("especificação sem porte")).toBe("media");
+  });
+  it("o prompt da espec pede a classificação", () => {
+    const prompt = especPrompt({ title: "x", description: "y" } as never);
+    expect(prompt).toContain("PORTE: simples | media | grande");
   });
 });

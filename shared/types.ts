@@ -52,6 +52,9 @@ export interface GateResult {
   durationMs: number;
 }
 
+/** Porte da tarefa, julgado na espec (triagem): decide quais skills de plano rodam. */
+export type Porte = "simples" | "media" | "grande";
+
 export interface Task {
   id: string;
   projectId: string;
@@ -79,6 +82,10 @@ export interface Task {
   error?: string;
   /** O passo foi pausado pelo teto de 1h (não é erro): UI oferece "Continuar assim mesmo". */
   pausadaPorTempo?: boolean;
+  /** Porte julgado na espec — controla a cadeia de skills do plano. */
+  porte?: Porte;
+  /** Histórico de passos com início/fim — mostra quanto tempo cada etapa levou. */
+  historico?: { step: Step; inicio: string; fim?: string }[];
   createdAt: string;
   updatedAt: string;
 }
@@ -156,8 +163,12 @@ export interface SkillStepConfig {
 
 export interface InhouseConfig {
   skills?: {
-    /** Cadeia rodada na fase de plano, em sequência, na mesma sessão. */
-    plano?: SkillStepConfig[];
+    /**
+     * Cadeia da fase de plano. Duas formas:
+     * - lista: vale para portes "media" e "grande" ("simples" pula skills);
+     * - objeto por porte: { simples: [...], media: [...], grande: [...] }.
+     */
+    plano?: SkillStepConfig[] | Partial<Record<Porte, SkillStepConfig[]>>;
     /** Gates extras após as verificações do projeto (veredito APROVADO/REPROVADO). */
     verificacoes?: SkillStepConfig[];
   };
