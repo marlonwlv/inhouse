@@ -1,0 +1,98 @@
+/* Design system Inhouse — mantenha estas variáveis como fonte das cores/espaçamentos. */
+:root {
+  --verde: #0b8a57;
+  --verde-escuro: #086b44;
+  --verde-suave: #e6f4ee;
+  --ambar: #f2b705;
+  --fundo: #f6faf8;
+  --texto: #1c2b25;
+  --texto-suave: #5b6b64;
+  --branco: #ffffff;
+  --borda: #dce8e2;
+
+  --espaco-1: 8px;
+  --espaco-2: 16px;
+  --espaco-3: 24px;
+  --espaco-4: 40px;
+
+  --raio: 16px;
+  --sombra: 0 10px 30px rgba(11, 138, 87, 0.12);
+
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--fundo);
+  color: var(--texto);
+  line-height: 1.5;
+}
+
+.pagina {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--espaco-3);
+  background:
+    radial-gradient(ellipse 60% 40% at 70% 0%, var(--verde-suave), transparent),
+    var(--fundo);
+}
+
+.cartao {
+  background: var(--branco);
+  border: 1px solid var(--borda);
+  border-radius: var(--raio);
+  box-shadow: var(--sombra);
+  padding: var(--espaco-4);
+  max-width: 460px;
+  width: 100%;
+  text-align: center;
+}
+
+.logo {
+  margin-bottom: var(--espaco-2);
+}
+
+h1 {
+  font-size: 1.6rem;
+  margin: 0 0 var(--espaco-1);
+  color: var(--verde-escuro);
+}
+
+.destaque {
+  margin: 0 0 var(--espaco-3);
+  color: var(--texto-suave);
+}
+
+.dicas {
+  list-style: none;
+  margin: 0 0 var(--espaco-3);
+  padding: 0;
+  text-align: left;
+}
+
+.dicas li {
+  padding: var(--espaco-1) var(--espaco-2);
+  margin-bottom: var(--espaco-1);
+  background: var(--verde-suave);
+  border-radius: calc(var(--raio) / 2);
+  font-size: 0.95rem;
+}
+
+.dicas li::before {
+  content: "✓ ";
+  color: var(--verde);
+  font-weight: 700;
+}
+
+.rodape {
+  font-size: 0.8rem;
+  color: var(--texto-suave);
+  border-top: 1px solid var(--borda);
+  padding-top: var(--espaco-2);
+}

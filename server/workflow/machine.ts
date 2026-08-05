@@ -1,0 +1,448 @@
+/**
+ * Máquina de estados da esteira (ver ARCHITECTURE.md):
+ * espec → plano → aprovacao(H) → execucao → verificacoes → teste(H) → publicar(H) → concluida
+ *
+ * Orquestra o runner do Claude (Agente A) e os serviços de git/gates/preview/publish
+ * (Agente B). Toda transição atualiza o store e faz broadcast de task_updated.
+ */
+import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
+import type { Task, TaskAction, TranscriptItem } from "../../shared/types.js";
+import { isHumanStep } from "../../shared/types.js";
+import { createPermissionGate } from "../claude/permissions.js";
+import { runPhase } from "../claude/runner.js";
+import { MAX_GATE_FIX_ROUNDS } from "../config.js";
+import { broadcast } from "../events.js";
+import { runGates } from "../services/gates.js";
+import { stopPreview } from "../services/preview.js";
+import { publishTask } from "../services/publish.js";
+import { createEspaco, slugify } from "../services/worktrees.js";
+import * as store from "../store.js";
+import {
+  changesPrompt,
+  especPrompt,
+  execucaoPrompt,
+  fixGatesPrompt,
+  planoPrompt,
+} from "./phases.js";
+
+/** Mensagens de steering enfileiradas por tarefa (entram no próximo resume da execução). */
+const steerQueue = new Map<string, string[]>();
+
+// ---------- Helpers ----------
+
+function patch(taskId: string, p: Partial<Task>): Task {
+  const task = store.updateTask(taskId, p);
+  broadcast({ type: "task_updated", task });
+  return task;
+}
+
+function transcript(taskId: string, item: TranscriptItem): void {
+  store.transcriptAppend(taskId, item);
+  broadcast({ type: "transcript", taskId, item });
+}
+
+function sistema(taskId: string, text: string): void {
+  transcript(taskId, { kind: "system", text, at: new Date().toISOString() });
+}
+
+function usuario(taskId: string, text: string): void {
+  transcript(taskId, { kind: "user", text, at: new Date().toISOString() });
+}
+
+function cancelada(taskId: string): boolean {
+  const t = store.getTask(taskId);
+  return !t || t.status === "cancelada";
+}
+
+/** Marca a tarefa como falhou com mensagem amigável (e registra no transcript). */
+function fail(taskId: string, msg: string): void {
+  patch(taskId, { status: "falhou", error: msg });
+  sistema(taskId, msg);
+}
+
+/**
+ * Dispara um trecho do pipeline sem bloquear o request HTTP.
+ * Qualquer exceção não tratada vira status "falhou" (nunca derruba o server).
+ */
+function fireAndForget(taskId: string, fn: () => Promise<unknown>): void {
+  void fn().catch((err) => {
+    console.error(`[machine] erro no pipeline da tarefa ${taskId}:`, err);
+    if (cancelada(taskId)) return;
+    const msg =
+      err instanceof Error ? err.message : "Algo deu errado neste passo. Tente de novo.";
+    try {
+      fail(taskId, msg);
+    } catch {
+      // tarefa sumiu do store — nada a fazer
+    }
+  });
+}
+
+/** Consome as mensagens de steering pendentes da tarefa. */
+function drainSteer(taskId: string): string[] {
+  const q = steerQueue.get(taskId) ?? [];
+  steerQueue.delete(taskId);
+  return q;
+}
+
+/**
+ * Envolve o gate de permissões do Agente A para refletir o estado na esteira:
+ * enquanto o Claude espera uma decisão humana, a tarefa fica "aguardando".
+ */
+function gateComStatus(taskId: string): CanUseTool {
+  const gate = createPermissionGate(taskId);
+  return async (toolName, input, options) => {
+    if (store.getTask(taskId)?.status === "rodando") {
+      patch(taskId, { status: "aguardando" });
+    }
+    try {
+      return await gate(toolName, input, options);
+    } finally {
+      // Só volta a "rodando" se ninguém mudou o estado nesse meio tempo (ex.: cancel).
+      if (store.getTask(taskId)?.status === "aguardando") {
+        patch(taskId, { status: "rodando" });
+      }
+    }
+  };
+}
+
+// ---------- Fases ----------
+
+/** Garante que o espaço (worktree) existe — usado no início e no retry pós-falha. */
+async function ensureEspaco(taskId: string): Promise<boolean> {
+  const task = store.getTask(taskId);
+  if (!task) return false;
+  if (task.worktreePath) return true;
+  const project = store.getProject(task.projectId);
+  if (!project) {
+    fail(taskId, "O projeto desta tarefa não foi encontrado.");
+    return false;
+  }
+  try {
+    const { branch, worktreePath } = await createEspaco(project, task.espaco, slugify(task.title));
+    patch(taskId, { branch, worktreePath });
+    return true;
+  } catch (err) {
+    fail(
+      taskId,
+      err instanceof Error ? err.message : "Não foi possível criar o espaço da tarefa.",
+    );
+    return false;
+  }
+}
+
+/** Espec é best-effort: se falhar, seguimos com a description crua como spec. */
+async function runEspec(taskId: string): Promise<boolean> {
+  const task = store.getTask(taskId);
+  if (!task) return false;
+  patch(taskId, { step: "espec", status: "rodando", error: undefined });
+  sistema(taskId, "Organizando o pedido em uma especificação…");
+
+  let spec = task.description;
+  try {
+    const r = await runPhase({
+      taskId,
+      cwd: task.worktreePath,
+      prompt: especPrompt(task),
+      permissionMode: "default",
+      maxTurns: 8,
+      // Só leitura: nada de editar, rodar comandos ou sair para a internet.
+      disallowedTools: ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "Task", "WebFetch", "WebSearch"],
+    });
+    if (r.success && r.finalText.trim().length > 0) {
+      spec = r.finalText.trim();
+      if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
+    } else {
+      sistema(taskId, "Não deu para estruturar a especificação — seguindo com o pedido original.");
+    }
+  } catch {
+    sistema(taskId, "Não deu para estruturar a especificação — seguindo com o pedido original.");
+  }
+
+  if (cancelada(taskId)) return false;
+  patch(taskId, { spec });
+  return true;
+}
+
+/** Fase plano (permissionMode "plan"). Com feedback = re-planejamento pós request_changes. */
+async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
+  const task = store.getTask(taskId);
+  if (!task) return false;
+  patch(taskId, { step: "plano", status: "rodando", error: undefined });
+  sistema(taskId, feedback ? "Refazendo o plano com o seu feedback…" : "Montando o plano de implementação…");
+
+  const r = await runPhase({
+    taskId,
+    cwd: task.worktreePath,
+    prompt: feedback ? changesPrompt(feedback) : planoPrompt(task),
+    permissionMode: "plan",
+    resume: task.claudeSessionId,
+  });
+
+  if (cancelada(taskId)) return false;
+  if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
+  if (!r.success) {
+    fail(taskId, r.errorMessage ?? "Não foi possível montar o plano. Tente de novo.");
+    return false;
+  }
+  const plan = (r.planText ?? r.finalText).trim();
+  if (plan.length === 0) {
+    fail(taskId, "O plano veio vazio. Tente de novo.");
+    return false;
+  }
+  patch(taskId, { plan, step: "aprovacao", status: "aguardando" });
+  sistema(taskId, "Plano pronto — revise e aprove para começar a execução.");
+  return true;
+}
+
+/** Fase execução ("acceptEdits" + gate de permissões). Ao terminar, roda as verificações. */
+async function runExecucao(taskId: string, prompt: string): Promise<boolean> {
+  const task = store.getTask(taskId);
+  if (!task) return false;
+  patch(taskId, { step: "execucao", status: "rodando", error: undefined });
+
+  // Mensagens que o usuário mandou durante a execução entram neste resume.
+  const extras = drainSteer(taskId);
+  const promptFinal =
+    extras.length > 0
+      ? `${prompt}\n\nMensagens que o usuário enviou durante a execução (leve em conta):\n${extras
+          .map((t) => `- ${t}`)
+          .join("\n")}`
+      : prompt;
+
+  const r = await runPhase({
+    taskId,
+    cwd: task.worktreePath,
+    prompt: promptFinal,
+    permissionMode: "acceptEdits",
+    resume: store.getTask(taskId)?.claudeSessionId,
+    canUseTool: gateComStatus(taskId),
+  });
+
+  if (cancelada(taskId)) return false;
+  if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
+  if (!r.success) {
+    fail(taskId, r.errorMessage ?? "A execução falhou. Tente de novo.");
+    return false;
+  }
+
+  // Chegaram mensagens novas enquanto o Claude trabalhava? Mais uma rodada antes de verificar.
+  if ((steerQueue.get(taskId)?.length ?? 0) > 0) {
+    return runExecucao(taskId, "Continue a tarefa levando em conta as mensagens do usuário abaixo.");
+  }
+  return runVerificacoes(taskId);
+}
+
+/** Fase verificações: gates do projeto + até MAX_GATE_FIX_ROUNDS rodadas de auto-correção. */
+async function runVerificacoes(taskId: string): Promise<boolean> {
+  const task = store.getTask(taskId);
+  if (!task) return false;
+  patch(taskId, { step: "verificacoes", status: "rodando", error: undefined });
+  sistema(taskId, "Rodando as verificações automáticas…");
+
+  const results = await runGates(taskId, task.worktreePath);
+  if (cancelada(taskId)) return false;
+  patch(taskId, { gates: results });
+
+  const falhas = results.filter((g) => !g.ok);
+  if (falhas.length === 0) {
+    patch(taskId, { step: "teste", status: "aguardando" });
+    sistema(taskId, "Tudo verificado — pronto pro seu teste.");
+    return true;
+  }
+
+  const atual = store.getTask(taskId);
+  if (!atual) return false;
+  if (atual.gateFixRounds < MAX_GATE_FIX_ROUNDS) {
+    patch(taskId, { gateFixRounds: atual.gateFixRounds + 1 });
+    sistema(
+      taskId,
+      `Algumas verificações falharam — tentando corrigir automaticamente (tentativa ${
+        atual.gateFixRounds + 1
+      } de ${MAX_GATE_FIX_ROUNDS}).`,
+    );
+    return runExecucao(taskId, fixGatesPrompt(atual, falhas));
+  }
+
+  fail(
+    taskId,
+    "As verificações continuaram falhando mesmo depois das correções automáticas. Você pode tentar de novo ou pedir mudanças.",
+  );
+  return false;
+}
+
+/** Pipeline automático inicial: espec → plano → para em aprovação. */
+async function pipelineFromEspec(taskId: string): Promise<void> {
+  if (!(await ensureEspaco(taskId))) return;
+  if (!(await runEspec(taskId))) return;
+  await runPlano(taskId);
+}
+
+// ---------- API pública da máquina ----------
+
+/** Cria a tarefa, prepara o espaço e dispara o pipeline automático (espec → plano). */
+export async function startTask(
+  projectId: string,
+  title: string,
+  description: string,
+): Promise<Task> {
+  const project = store.getProject(projectId);
+  if (!project) throw new Error("Projeto não encontrado.");
+
+  const now = new Date().toISOString();
+  const task: Task = {
+    id: store.newId(),
+    projectId,
+    title,
+    description,
+    step: "espec",
+    status: "rodando",
+    espaco: store.nextEspaco(projectId),
+    // Preenchidos logo abaixo por ensureEspaco (se falhar, a tarefa fica "falhou" e dá retry).
+    branch: "",
+    worktreePath: "",
+    gates: [],
+    gateFixRounds: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+  store.addTask(task);
+  broadcast({ type: "task_updated", task });
+  usuario(task.id, description);
+
+  const ok = await ensureEspaco(task.id);
+  if (ok) {
+    fireAndForget(task.id, () => pipelineFromEspec(task.id));
+  }
+  const atual = store.getTask(task.id);
+  if (!atual) throw new Error("Tarefa não encontrada.");
+  return atual;
+}
+
+/** Aplica uma ação humana, validando a transição pelo passo/status atual. */
+export async function applyAction(taskId: string, action: TaskAction): Promise<Task> {
+  const task = store.getTask(taskId);
+  if (!task) throw new Error("Tarefa não encontrada.");
+
+  switch (action.action) {
+    case "approve_plan": {
+      if (!(task.step === "aprovacao" && task.status === "aguardando")) {
+        throw new Error("Esta tarefa não está aguardando a aprovação do plano.");
+      }
+      patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
+      sistema(taskId, "Plano aprovado — começando a execução.");
+      fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(task)));
+      break;
+    }
+
+    case "request_changes": {
+      const msg = action.message?.trim();
+      if (!msg) throw new Error("Escreva o que você quer mudar.");
+      if (task.step === "aprovacao" && task.status === "aguardando") {
+        usuario(taskId, msg);
+        patch(taskId, { step: "plano", status: "rodando", error: undefined });
+        fireAndForget(taskId, () => runPlano(taskId, msg));
+      } else if (task.step === "teste" && task.status === "aguardando") {
+        usuario(taskId, msg);
+        patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
+        fireAndForget(taskId, () => runExecucao(taskId, changesPrompt(msg)));
+      } else {
+        throw new Error("Esta tarefa não está num ponto em que dá para pedir mudanças.");
+      }
+      break;
+    }
+
+    case "approve_test": {
+      if (!(task.step === "teste" && task.status === "aguardando")) {
+        throw new Error("Esta tarefa não está aguardando o seu teste.");
+      }
+      patch(taskId, { step: "publicar", status: "aguardando" });
+      sistema(taskId, "Teste aprovado — clique em Publicar para levar as mudanças ao projeto.");
+      break;
+    }
+
+    case "publish": {
+      if (!(task.step === "publicar" && task.status === "aguardando")) {
+        throw new Error("Esta tarefa ainda não está pronta para publicar.");
+      }
+      const project = store.getProject(task.projectId);
+      if (!project) throw new Error("O projeto desta tarefa não foi encontrado.");
+      patch(taskId, { status: "rodando", error: undefined });
+      try {
+        const { prUrl } = await publishTask(task, project, action.createPr ?? false);
+        patch(taskId, {
+          step: "concluida",
+          status: "concluida",
+          previewUrl: undefined,
+          ...(prUrl ? { prUrl } : {}),
+        });
+        sistema(
+          taskId,
+          prUrl ? `Publicado no projeto! Pull request: ${prUrl}` : "Publicado no projeto com sucesso.",
+        );
+      } catch (err) {
+        fail(taskId, err instanceof Error ? err.message : "Não foi possível publicar. Tente de novo.");
+      }
+      break;
+    }
+
+    case "retry": {
+      if (task.status !== "falhou") {
+        throw new Error("Só dá para tentar de novo quando a tarefa falhou.");
+      }
+      if (isHumanStep(task.step)) {
+        // Falha num passo humano (ex.: publish falhou ou o server reiniciou):
+        // volta a aguardar a ação da pessoa.
+        patch(taskId, { status: "aguardando", error: undefined });
+        sistema(taskId, "Pronto — a tarefa voltou a aguardar a sua ação.");
+      } else if (task.step === "espec" || task.step === "plano") {
+        patch(taskId, { status: "rodando", error: undefined });
+        fireAndForget(taskId, () =>
+          task.step === "espec" ? pipelineFromEspec(taskId) : runPlano(taskId),
+        );
+      } else if (task.step === "execucao") {
+        patch(taskId, { status: "rodando", error: undefined });
+        fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(task)));
+      } else if (task.step === "verificacoes") {
+        patch(taskId, { status: "rodando", error: undefined });
+        fireAndForget(taskId, () => runVerificacoes(taskId));
+      } else {
+        throw new Error("Este passo não pode ser re-executado.");
+      }
+      break;
+    }
+
+    case "cancel": {
+      if (task.status === "concluida" || task.status === "cancelada") {
+        throw new Error("Esta tarefa já foi finalizada.");
+      }
+      steerQueue.delete(taskId);
+      await stopPreview(taskId);
+      // O espaço fica no disco para inspeção (decisão da arquitetura).
+      patch(taskId, { status: "cancelada" });
+      sistema(taskId, "Tarefa cancelada. O que já foi feito fica guardado no espaço da tarefa.");
+      break;
+    }
+  }
+
+  const atual = store.getTask(taskId);
+  if (!atual) throw new Error("Tarefa não encontrada.");
+  return atual;
+}
+
+/**
+ * Steering: mensagem do usuário durante a execução. Sempre vai para o transcript;
+ * se a execução está em andamento, entra na fila e é enviada no próximo resume.
+ */
+export async function steer(taskId: string, text: string): Promise<void> {
+  const task = store.getTask(taskId);
+  if (!task) throw new Error("Tarefa não encontrada.");
+  const msg = text.trim();
+  if (!msg) throw new Error("Escreva uma mensagem.");
+  usuario(taskId, msg);
+  if (task.step === "execucao" && (task.status === "rodando" || task.status === "aguardando")) {
+    const q = steerQueue.get(taskId) ?? [];
+    q.push(msg);
+    steerQueue.set(taskId, q);
+  }
+}
