@@ -162,17 +162,27 @@ async function fetchState() {
 // ---------- SSE ----------
 let es;
 function connectSSE() {
-  es = new EventSource("/api/events");
-  es.onopen = () => setOnline(true);
-  es.onmessage = (e) => {
+  // Nunca deixar duas conexões vivas: um handler antigo disparando "offline"
+  // depois da nova conexão abrir prendia o banner para sempre (e duplicava eventos).
+  if (es) es.close();
+  const mine = (es = new EventSource("/api/events"));
+  mine.onopen = () => {
+    if (es !== mine) return;
+    setOnline(true);
+  };
+  mine.onmessage = (e) => {
+    if (es !== mine) return;
     let ev;
     try { ev = JSON.parse(e.data); } catch { return; }
+    // Evento recebido = servidor vivo, independente de qualquer falha anterior.
+    setOnline(true);
     handleEvent(ev);
   };
-  es.onerror = () => {
+  mine.onerror = () => {
+    if (es !== mine) return;
     setOnline(false);
     // EventSource reconecta sozinho; se fechou de vez, recriamos.
-    if (es.readyState === EventSource.CLOSED) setTimeout(connectSSE, 3000);
+    if (mine.readyState === EventSource.CLOSED) setTimeout(connectSSE, 3000);
   };
 }
 
