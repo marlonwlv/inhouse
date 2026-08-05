@@ -28,7 +28,7 @@ export function load(): void {
       for (const t of state.tasks) {
         if (t.status === "rodando" || (t.status === "aguardando" && !isHumanStep(t.step))) {
           t.status = "falhou";
-          t.error = "O Inhouse Builder foi reiniciado no meio deste passo. Clique em Tentar de novo.";
+          t.error = "O Inhouse foi reiniciado no meio deste passo. Clique em Tentar de novo.";
         }
       }
     } catch {

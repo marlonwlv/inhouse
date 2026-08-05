@@ -22,7 +22,7 @@ export default function App() {
           <li>Você aprova o plano antes de qualquer mudança.</li>
           <li>Teste tudo aqui no preview antes de publicar.</li>
         </ul>
-        <footer className="rodape">Feito com o Inhouse Builder</footer>
+        <footer className="rodape">Feito com o Inhouse</footer>
       </section>
     </main>
   );

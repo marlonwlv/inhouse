@@ -1,5 +1,5 @@
 /**
- * Contratos compartilhados do Inhouse Builder.
+ * Contratos compartilhados do Inhouse.
  * Este arquivo é a fonte de verdade entre server, workflow, e frontend.
  * O frontend (public/app.js) consome as mesmas formas via JSON.
  */

@@ -1,4 +1,4 @@
-/* Inhouse Builder — UI (vanilla ES module, sem build, sem dependências).
+/* Inhouse — UI (vanilla ES module, sem build, sem dependências).
    Estado global alimentado por GET /api/state e mantido vivo por SSE em /api/events.
    Rotas por hash: #/ (Início) · #/tarefas (quadro) · #/tarefa/<id> (editor). */
 
@@ -19,8 +19,8 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.1.5";
-console.log(`Inhouse Builder UI v${UI_VERSION}`);
+const UI_VERSION = "0.2.0";
+console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
 // e window.inhouseDiag() para suporte — imprime um resumo colável.
@@ -247,7 +247,7 @@ function startPolling() {
   clearTimeout(sseFallbackTimer);
   sseFallbackTimer = undefined;
   console.log(
-    "Inhouse Builder: canal de eventos bloqueado neste browser — usando atualização periódica.",
+    "Inhouse: canal de eventos bloqueado neste browser — usando atualização periódica.",
   );
   dlog("fallback: polling ativado");
   pollTimer = setInterval(poll, 2500);

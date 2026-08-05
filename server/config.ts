@@ -1,18 +1,33 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 /** Porta da UI. Escuta APENAS em 127.0.0.1 (decisão de segurança — ver ARCHITECTURE.md). */
-export const PORT = Number(process.env.INHOUSE_PORT ?? 4400);
+export const PORT = Number(process.env.INHOUSE_PORT ?? process.env.INHOUSE_PORT ?? 4400);
 export const HOST = "127.0.0.1";
 
+/**
+ * Compat de rebrand (Inhouse Builder → Inhouse): instalações antigas têm dados
+ * nos caminhos legados; usa-os quando existem e o novo ainda não existe —
+ * mover diretórios quebraria os links absolutos dos git worktrees.
+ */
+function dirComCompat(novo: string, legado: string): string {
+  return !existsSync(novo) && existsSync(legado) ? legado : novo;
+}
+
 /** Onde ficam os projetos abertos/criados pelo builder (visível ao usuário). */
-export const PROJECTS_DIR = process.env.INHOUSE_PROJECTS_DIR ?? join(homedir(), "Inhouse");
+export const PROJECTS_DIR =
+  process.env.INHOUSE_PROJECTS_DIR ??
+  process.env.INHOUSE_PROJECTS_DIR ??
+  dirComCompat(join(homedir(), "Inhouse"), join(homedir(), "Inhouse"));
 /** Worktrees ("espaços") ficam fora do checkout principal. */
 export const ESPACOS_DIR = join(PROJECTS_DIR, ".espacos");
 /** Estado e transcripts. */
-export const DATA_DIR = process.env.INHOUSE_DATA_DIR ?? join(homedir(), ".inhouse");
+export const DATA_DIR =
+  process.env.INHOUSE_DATA_DIR ??
+  process.env.INHOUSE_DATA_DIR ??
+  dirComCompat(join(homedir(), ".inhouse"), join(homedir(), ".inhouse"));
 export const TRANSCRIPTS_DIR = join(DATA_DIR, "transcripts");
 
 /** Faixa de portas para previews (dev servers dos espaços). */
@@ -33,11 +48,12 @@ export function ensureDirs(): void {
 let cachedClaudePath: string | null | undefined;
 /**
  * Caminho do Claude Code genuíno da máquina (login do usuário).
- * Override: INHOUSE_CLAUDE_PATH. Se não achar, retorna null (UI mostra aviso).
+ * Override: INHOUSE_CLAUDE_PATH (legado: INHOUSE_CLAUDE_PATH). Se não achar, retorna null (UI mostra aviso).
  */
 export function claudePath(): string | null {
   if (cachedClaudePath !== undefined) return cachedClaudePath;
-  if (process.env.INHOUSE_CLAUDE_PATH) return (cachedClaudePath = process.env.INHOUSE_CLAUDE_PATH);
+  const override = process.env.INHOUSE_CLAUDE_PATH ?? process.env.INHOUSE_CLAUDE_PATH;
+  if (override) return (cachedClaudePath = override);
   try {
     const p = execFileSync("which", ["claude"], { encoding: "utf8" }).trim();
     cachedClaudePath = p.length > 0 ? p : null;

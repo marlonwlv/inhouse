@@ -87,7 +87,7 @@ export async function gitCommit(cwd: string, message: string, extraArgs: string[
       await git(
         cwd,
         "-c",
-        "user.name=Inhouse Builder",
+        "user.name=Inhouse",
         "-c",
         "user.email=builder@inhouse.com.br",
         "commit",

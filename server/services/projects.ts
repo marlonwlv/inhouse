@@ -52,7 +52,7 @@ export async function cloneProject(url: string): Promise<Project> {
   }
   const target = join(PROJECTS_DIR, name);
   if (existsSync(target)) {
-    throw new Error(`Já existe um projeto chamado "${name}" na pasta Inhouse. Remova-o antes de baixar de novo.`);
+    throw new Error(`Já existe um projeto chamado "${name}" na pasta de projetos do Inhouse. Remova-o antes de baixar de novo.`);
   }
 
   try {
@@ -165,7 +165,7 @@ export async function createFromTemplate(name: string, template: string): Promis
   try {
     await git(dest, "init");
     await git(dest, "add", "-A");
-    await gitCommit(dest, "Projeto criado pelo Inhouse Builder");
+    await gitCommit(dest, "Projeto criado pelo Inhouse");
     await git(dest, "branch", "-m", "main");
   } catch (err) {
     throw new Error("Não foi possível preparar o controle de versões do projeto. Fale com o time técnico.", {
@@ -240,7 +240,7 @@ export async function openProject(path: string): Promise<Project> {
   // abri-las quebraria o ciclo de vida das tarefas.
   if (alvo === PROJECTS_DIR || dentroDe(alvo, ESPACOS_DIR) || dentroDe(alvo, DATA_DIR)) {
     throw new Error(
-      "Essa pasta é usada internamente pelo Inhouse Builder. Escolha a pasta de um projeto específico.",
+      "Essa pasta é usada internamente pelo Inhouse. Escolha a pasta de um projeto específico.",
     );
   }
 
@@ -261,7 +261,7 @@ export async function openProject(path: string): Promise<Project> {
       await git(alvo, "init");
       await git(alvo, "add", "-A");
       // --allow-empty: a pasta pode estar vazia ou só com arquivos ignorados.
-      await gitCommit(alvo, "Projeto aberto no Inhouse Builder", ["--allow-empty"]);
+      await gitCommit(alvo, "Projeto aberto no Inhouse", ["--allow-empty"]);
       await git(alvo, "branch", "-m", "main");
     } catch (err) {
       throw new Error("Não foi possível preparar o controle de versões desta pasta. Fale com o time técnico.", {

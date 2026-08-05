@@ -1,4 +1,4 @@
-# Inhouse Builder — Arquitetura
+# Inhouse — Arquitetura
 
 **O que é**: app builder local da Inhouse (conductor + lovable). Servidor Node/TS local + UI web
 (vanilla JS, sem build step). Fala com o Claude através do **Claude Code genuíno da máquina**

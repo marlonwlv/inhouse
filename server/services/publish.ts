@@ -56,7 +56,7 @@ async function doPublish(
   const sujoMain = await git(project.path, "status", "--porcelain");
   if (sujoMain.length > 0) {
     await git(project.path, "add", "-A");
-    await gitCommit(project.path, "Arquivos gerados automaticamente (Inhouse Builder)");
+    await gitCommit(project.path, "Arquivos gerados automaticamente (Inhouse)");
   }
   try {
     await git(
@@ -100,7 +100,7 @@ async function doPublish(
           "--title",
           `Tarefa: ${task.title}`,
           "--body",
-          `Criado pelo Inhouse Builder\n\n${task.description}`,
+          `Criado pelo Inhouse\n\n${task.description}`,
           "--head",
           task.branch,
           "--base",

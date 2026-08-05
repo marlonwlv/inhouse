@@ -1,4 +1,4 @@
-# Inhouse Builder
+# Inhouse
 
 App builder local da Inhouse — **conductor + lovable** numa ferramenta só, para pessoas
 não-técnicas criarem e alterarem apps com segurança, usando o **Claude Code da própria
@@ -14,7 +14,7 @@ Pré-requisitos (uma vez só):
 3. `git` (e `gh` logado, se quiser criar PRs)
 
 ```bash
-cd ~/code/inhouse-builder
+cd ~/code/inhouse
 mise exec node@24 -- npm install   # primeira vez
 mise exec node@24 -- npm start
 # → abra http://127.0.0.1:4400
@@ -44,8 +44,8 @@ build. O Claude entra via `@anthropic-ai/claude-agent-sdk` apontando para o bin�
 `claude` da máquina (`pathToClaudeCodeExecutable`), com `ANTHROPIC_API_KEY` removida
 do ambiente e `settingSources: ["project"]`. Detalhes e decisões: `ARCHITECTURE.md`.
 
-- Estado: `~/.inhouse/state.json` · transcripts em `~/.inhouse/transcripts/`
-- Projetos: `~/Inhouse/` · espaços (worktrees): `~/Inhouse/.espacos/`
+- Estado: `~/.inhouse/state.json` · transcripts em `~/.inhouse/transcripts/` (instalações antigas: `~/.inhouse`)
+- Projetos: `~/Inhouse/` · espaços (worktrees): `~/Inhouse/.espacos/` (instalações antigas: `~/Inhouse`)
 
 ## Desenvolvimento
 

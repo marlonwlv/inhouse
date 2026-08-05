@@ -38,7 +38,7 @@ app.use((req, res) => {
 });
 
 const server = app.listen(PORT, HOST, () => {
-  console.log(`Inhouse Builder rodando em http://localhost:${PORT}`);
+  console.log(`Inhouse rodando em http://localhost:${PORT}`);
 });
 
 // "localhost" resolve para ::1 (IPv6) em alguns browsers do macOS — sem escutar
@@ -54,7 +54,7 @@ let encerrando = false;
 function shutdown(sinal: string): void {
   if (encerrando) return;
   encerrando = true;
-  console.log(`\nEncerrando o Inhouse Builder (${sinal})…`);
+  console.log(`\nEncerrando o Inhouse (${sinal})…`);
   stopAllPreviews();
   server.close();
   server6.close();

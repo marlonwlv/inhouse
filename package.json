@@ -1,9 +1,9 @@
 {
-  "name": "inhouse-builder",
+  "name": "inhouse",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "AI app builder da Inhouse — conductor + lovable local, usando o Claude Code da máquina",
+  "description": "Inhouse — AI app builder local (conductor + lovable) que usa o Claude Code da própria máquina",
   "scripts": {
     "dev": "tsx watch server/index.ts",
     "start": "tsx server/index.ts",

@@ -1,6 +1,6 @@
 # Regras Inhouse para este app
 
-Este app foi criado pelo Inhouse Builder e é mantido por pessoas não-técnicas.
+Este app foi criado pelo Inhouse e é mantido por pessoas não-técnicas.
 Siga estas regras em todas as tarefas:
 
 1. **Responda sempre em português** (Brasil), de forma simples e sem jargão técnico.
@@ -16,5 +16,5 @@ Siga estas regras em todas as tarefas:
 6. **Todo texto visível na interface deve estar em pt-BR** — botões, títulos,
    mensagens de erro, placeholders, tudo.
 7. **Não rode verificações você mesmo** (`npm run typecheck`, lint, build, testes):
-   o Inhouse Builder roda tudo automaticamente ao final da tarefa e te devolve os erros
+   o Inhouse roda tudo automaticamente ao final da tarefa e te devolve os erros
    se houver. Rodar por conta própria só gasta tempo e pede permissão à toa.

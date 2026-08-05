@@ -52,7 +52,7 @@ async function doCreateEspaco(
     if (pendente !== null && pendente.length > 0) {
       await tryGit(worktreePath, "add", "-A");
       try {
-        await gitCommit(worktreePath, "Trabalho preservado automaticamente pelo Inhouse Builder");
+        await gitCommit(worktreePath, "Trabalho preservado automaticamente pelo Inhouse");
       } catch {
         // Melhor esforço: um commit impossível não pode impedir a criação do espaço.
       }
