@@ -81,7 +81,19 @@ async function doCreateEspaco(
     });
   }
 
-  await ensureDeps(worktreePath, project.name);
+  // Falha ao instalar dependências NÃO derruba a tarefa: plano e execução
+  // funcionam sem node_modules — só gates/preview ficarão limitados (e avisamos).
+  try {
+    await ensureDeps(worktreePath, project.name);
+  } catch (err) {
+    broadcast({
+      type: "project_progress",
+      name: project.name,
+      message: `Não deu para instalar as dependências do espaço — a tarefa segue, mas verificações e preview podem falhar. Detalhe: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    });
+  }
   return { branch, worktreePath };
 }
 
@@ -119,10 +131,19 @@ export async function ensureDeps(worktreePath: string, projectName: string): Pro
     message: "Preparando o espaço da tarefa… instalando dependências (pode levar alguns minutos).",
   });
 
+  // Monorepos pnpm (workspace:) quebram com npm install — detecta o gerenciador
+  // pelo lockfile. pnpm chega via corepack (embutido no Node), sem instalar nada.
+  const usaPnpm =
+    existsSync(join(worktreePath, "pnpm-lock.yaml")) ||
+    existsSync(join(worktreePath, "pnpm-workspace.yaml"));
+  const [cmd, args] = usaPnpm
+    ? ["corepack", ["pnpm", "install"]]
+    : ["npm", ["install"]];
+
   await new Promise<void>((resolve, reject) => {
     // claudeEnv(): scripts postinstall de dependências rodam código arbitrário
     // do projeto — não podem ver ANTHROPIC_API_KEY/AUTH_TOKEN.
-    const child = spawn("npm", ["install"], {
+    const child = spawn(cmd, args, {
       cwd: worktreePath,
       env: claudeEnv(),
       stdio: ["ignore", "ignore", "pipe"],
