@@ -89,19 +89,42 @@ function sanitizePlano(
   return undefined;
 }
 
-/**
- * Resolve a cadeia de plano para um porte.
- * Forma lista (legado): vale para media/grande; "simples" pula as skills —
- * é o julgamento padrão que evita office-hours para "criar uma página em branco".
- */
-export function skillsPlanoPara(
-  cfg: InhouseConfig | null,
+/** Resolve uma cadeia (lista OU objeto por porte) para um porte. Lista pula "simples". */
+function resolvePorte(
+  chain: SkillStepConfig[] | Partial<Record<Porte, SkillStepConfig[]>> | undefined,
   porte: Porte,
 ): SkillStepConfig[] {
-  const plano = cfg?.skills?.plano;
-  if (!plano) return [];
-  if (Array.isArray(plano)) return porte === "simples" ? [] : plano;
-  return plano[porte] ?? [];
+  if (!chain) return [];
+  if (Array.isArray(chain)) return porte === "simples" ? [] : chain;
+  return chain[porte] ?? [];
+}
+
+/** É a skill de produto (office-hours)? — separa o "QUÊ" do "COMO" no compat do legado. */
+function ehOfficeHours(s: SkillStepConfig): boolean {
+  return /office-?hours/i.test(s.skill);
+}
+
+/**
+ * Fase "Plano" (produto): office-hours. Do bloco plano_produto, ou — compat — só
+ * o office-hours do bloco legado `plano`.
+ */
+export function skillsProduto(cfg: InhouseConfig | null, porte: Porte): SkillStepConfig[] {
+  if (cfg?.skills?.plano_produto) return resolvePorte(cfg.skills.plano_produto, porte);
+  return resolvePorte(cfg?.skills?.plano, porte).filter(ehOfficeHours);
+}
+
+/**
+ * Fase "Detalhamento": plan-eng-review (+ plan-design-review quando design). Do
+ * bloco detalhamento, ou — compat — tudo do `plano` legado exceto office-hours.
+ */
+export function skillsDetalhamento(cfg: InhouseConfig | null, porte: Porte): SkillStepConfig[] {
+  if (cfg?.skills?.detalhamento) return resolvePorte(cfg.skills.detalhamento, porte);
+  return resolvePorte(cfg?.skills?.plano, porte).filter((s) => !ehOfficeHours(s));
+}
+
+/** Legado: cadeia de plano única (mantido para os testes/compat existentes). */
+export function skillsPlanoPara(cfg: InhouseConfig | null, porte: Porte): SkillStepConfig[] {
+  return resolvePorte(cfg?.skills?.plano, porte);
 }
 
 /**
@@ -131,10 +154,12 @@ export function loadConfigFile(file: string): InhouseConfig | null {
     const raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
     const skills = (raw.skills ?? {}) as Record<string, unknown>;
     const plano = sanitizePlano(skills.plano);
+    const plano_produto = sanitizePlano(skills.plano_produto);
+    const detalhamento = sanitizePlano(skills.detalhamento);
     const verificacoes = sanitizeSteps(skills.verificacoes);
     const preview = sanitizePreview(raw.preview);
-    if (!plano && !verificacoes && !preview) return null;
-    return { skills: { plano, verificacoes }, ...(preview ? { preview } : {}) };
+    if (!plano && !plano_produto && !detalhamento && !verificacoes && !preview) return null;
+    return { skills: { plano, plano_produto, detalhamento, verificacoes }, ...(preview ? { preview } : {}) };
   } catch (err) {
     console.warn(`[config] ${file} inválido — ignorando:`, err instanceof Error ? err.message : err);
     return null;

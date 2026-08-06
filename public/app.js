@@ -3,23 +3,39 @@
    Rotas por hash: #/ (Início) · #/tarefas (quadro) · #/tarefa/<id> (editor). */
 
 // ---------- Constantes copiadas de shared/types.ts (manter em sincronia) ----------
-const STEPS = ["espec", "plano", "aprovacao", "execucao", "verificacoes", "teste", "publicar", "concluida"];
+const STEPS = ["espec", "plano", "aprovacao", "detalhamento", "prototipo", "aprovacao_prototipo", "execucao", "verificacoes", "teste", "publicar", "concluida"];
 const STEP_LABELS = {
   espec: "Espec",
   plano: "Plano",
   aprovacao: "Sua aprovação",
+  detalhamento: "Detalhamento",
+  prototipo: "Protótipo",
+  aprovacao_prototipo: "Aprovação do protótipo",
   execucao: "Execução",
   verificacoes: "Verificações",
   teste: "Seu teste",
   publicar: "Publicar",
   concluida: "Concluída",
 };
-const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
+const HUMAN_STEPS = ["aprovacao", "aprovacao_prototipo", "teste", "publicar"];
+
+// Espelha shared/types.ts: steps que ESTA task percorre (fluxo adaptativo).
+function rodaDesign(t) {
+  return t.design === "sim" || (t.design !== "nao" && Boolean(t.precisaDesign));
+}
+function stepsAtivos(t) {
+  const simples = (t.porte || "media") === "simples";
+  const out = ["espec", "plano", "aprovacao"];
+  if (!simples) out.push("detalhamento");
+  if (!simples && rodaDesign(t)) out.push("prototipo", "aprovacao_prototipo");
+  out.push("execucao", "verificacoes", "teste", "publicar", "concluida");
+  return out;
+}
 
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.11.0";
+const UI_VERSION = "0.12.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -719,9 +735,10 @@ function abrirDialogoCancelar(taskId) {
 
 // ---------- Peças compartilhadas ----------
 function flowHtml(t) {
-  const idx = STEPS.indexOf(t.step);
+  const ativos = stepsAtivos(t);
+  const idx = ativos.indexOf(t.step);
   const parts = [];
-  STEPS.forEach((s, i) => {
+  ativos.forEach((s, i) => {
     if (i > 0) parts.push(`<div class="bar ${i <= idx ? "done" : ""}"></div>`);
     const done = i < idx || (i === idx && t.step === "concluida");
     const now = i === idx && t.step !== "concluida";
@@ -1001,6 +1018,12 @@ function taskFootHtml(t, perm) {
       <a class="link" href="#/tarefa/${id}">Ver detalhes</a>
       <button class="btn sm ghost" data-act="request-changes" data-task="${id}">Pedir mudanças</button>
       <button class="btn sm primary" data-act="approve-plan" data-task="${id}">Aprovar plano</button></div>`);
+  } else if (t.step === "aprovacao_prototipo" && t.status === "aguardando") {
+    rows.push(`<div class="task-foot"><span class="plan-sum">Protótipo pronto — aprove o visual</span>
+      <span class="gap"></span>
+      <a class="btn sm" href="/api/tasks/${id}/mockup" target="_blank" rel="noreferrer">Ver protótipo</a>
+      <button class="btn sm ghost" data-act="request-changes" data-task="${id}">Pedir mudanças</button>
+      <button class="btn sm primary" data-act="approve-prototype" data-task="${id}">Aprovar</button></div>`);
   } else if (t.step === "teste" && t.status === "aguardando") {
     rows.push(`<div class="task-foot"><span class="minigates">${gateChips(t)}</span>
       <span class="gap"></span>
@@ -1152,6 +1175,7 @@ function chatCardsHtml(t) {
   if (t.status === "falhou") parts.push(failCardHtml(t));
   if (t.status === "aguardando") {
     if (t.step === "aprovacao") parts.push(planCardHtml(t));
+    if (t.step === "aprovacao_prototipo") parts.push(prototipoCardHtml(t));
     if (t.step === "teste") parts.push(testCardHtml(t));
     if (t.step === "publicar") parts.push(publishCardHtml(t));
   }
@@ -1195,12 +1219,39 @@ function permCardHtml(p) {
   </div>`;
 }
 
+function designControlHtml(t) {
+  const d = t.design || "auto";
+  const btn = (v, label) => `<button class="btn xs ${d === v ? "primary" : "ghost"}" data-act="set-design" data-task="${esc(t.id)}" data-valor="${v}">${label}</button>`;
+  const hint = rodaDesign(t)
+    ? "vai gerar um protótipo (mockup) pra você aprovar o visual"
+    : "sem protótipo — o plano segue direto para o código";
+  return `<div class="design-ctl">
+    <span class="design-lbl">Design + protótipo:</span> ${btn("auto", "Automático")} ${btn("sim", "Sim")} ${btn("nao", "Não")}
+    <span class="design-hint">${hint}</span>
+  </div>`;
+}
+
 function planCardHtml(t) {
+  const simples = (t.porte || "media") === "simples";
   return `<div class="approval">
-    <div class="head"><span class="pulse"></span> Plano pronto — sua aprovação</div>
+    <div class="head"><span class="pulse"></span> Plano de produto — sua aprovação</div>
     <div class="plan-body">${mdBlock(t.plan || "O Claude não escreveu um plano detalhado desta vez. Você pode aprovar para seguir, ou pedir mudanças explicando o que espera.")}</div>
+    ${simples ? "" : designControlHtml(t)}
     <div class="acts">
       <button class="btn sm primary" data-act="approve-plan" data-task="${esc(t.id)}">Aprovar plano</button>
+      ${simples ? "" : `<button class="btn sm" data-act="approve-plan-direto" data-task="${esc(t.id)}" title="Pular detalhamento e protótipo, ir direto pra execução">Aprovar e ir direto</button>`}
+      <button class="btn sm ghost" data-act="request-changes" data-task="${esc(t.id)}">Pedir mudanças</button>
+    </div>
+  </div>`;
+}
+
+function prototipoCardHtml(t) {
+  return `<div class="approval">
+    <div class="head"><span class="pulse"></span> Protótipo pronto — sua aprovação</div>
+    <p>Veja o mockup e aprove o visual — ou peça mudanças. Ao aprovar, o Claude implementa de verdade.</p>
+    <div class="acts">
+      <a class="btn sm" href="/api/tasks/${esc(t.id)}/mockup" target="_blank" rel="noreferrer">Ver protótipo</a>
+      <button class="btn sm primary" data-act="approve-prototype" data-task="${esc(t.id)}">Aprovar protótipo</button>
       <button class="btn sm ghost" data-act="request-changes" data-task="${esc(t.id)}">Pedir mudanças</button>
     </div>
   </div>`;
@@ -1376,6 +1427,9 @@ const actions = {
     if (i) { i.focus(); i.scrollIntoView({ block: "nearest" }); }
   },
   "approve-plan": (btn) => taskAction(btn.dataset.task, { action: "approve_plan" }),
+  "approve-plan-direto": (btn) => taskAction(btn.dataset.task, { action: "approve_plan", direto: true }),
+  "approve-prototype": (btn) => taskAction(btn.dataset.task, { action: "approve_prototype" }),
+  "set-design": (btn) => taskAction(btn.dataset.task, { action: "set_design", valor: btn.dataset.valor }),
   "approve-test": (btn) => taskAction(btn.dataset.task, { action: "approve_test" }),
   "retry": (btn) => taskAction(btn.dataset.task, { action: "retry" }),
   "auto-toggle": async (btn) => {

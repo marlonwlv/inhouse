@@ -25,8 +25,11 @@ export interface Project {
 /** Passos da esteira, na ordem. "concluida" é terminal. */
 export const STEPS = [
   "espec",
-  "plano",
-  "aprovacao",
+  "plano", // plano de produto (office-hours): o QUÊ
+  "aprovacao", // porteira: aprova o produto
+  "detalhamento", // plano técnico (+ design quando faz sentido): o COMO
+  "prototipo", // opcional (só com design): mockups HTML/CSS
+  "aprovacao_prototipo", // porteira: aprova o visual
   "execucao",
   "verificacoes",
   "teste",
@@ -36,7 +39,7 @@ export const STEPS = [
 export type Step = (typeof STEPS)[number];
 
 /** Passos que são porteira humana (losango no mockup). */
-export const HUMAN_STEPS: readonly Step[] = ["aprovacao", "teste", "publicar"];
+export const HUMAN_STEPS: readonly Step[] = ["aprovacao", "aprovacao_prototipo", "teste", "publicar"];
 
 export type TaskStatus =
   | "rodando" // um passo automático está em execução
@@ -109,6 +112,10 @@ export interface Task {
   porte?: Porte;
   /** A TAREFA mexe em interface/jornada de usuário? (julgado na espec e re-julgado pós-plano) */
   temUi?: boolean;
+  /** Julgado na espec: é feature de UI com JORNADA NOVA que pede protótipo/design? */
+  precisaDesign?: boolean;
+  /** Override do usuário para design+protótipo. "auto" = segue precisaDesign. */
+  design?: "auto" | "sim" | "nao";
   /** Skills de plano já rodadas nesta tarefa (evita repetir no re-julgamento/feedback). */
   skillsRodadas?: string[];
   /** Modo auto: permissões desta tarefa são concedidas sem perguntar (com registro no chat). */
@@ -196,6 +203,8 @@ export type ServerEvent =
  *  quebra a compilação se este array e o union TaskAction saírem de sincronia. */
 export const TASK_ACTIONS = [
   "approve_plan",
+  "approve_prototype",
+  "set_design",
   "request_changes",
   "approve_test",
   "publish",
@@ -208,8 +217,10 @@ export const TASK_ACTIONS = [
 ] as const;
 
 export type TaskAction =
-  | { action: "approve_plan" }
-  | { action: "request_changes"; message: string } // volta pra execucao (ou plano se veio da aprovacao)
+  | { action: "approve_plan"; direto?: boolean } // direto=true pula detalhamento/protótipo, vai pra execução
+  | { action: "approve_prototype" } // aprova o protótipo -> execução
+  | { action: "set_design"; valor: "auto" | "sim" | "nao" } // liga/desliga design+protótipo desta task
+  | { action: "request_changes"; message: string } // volta pra fase de plano/detalhe/protótipo conforme a porteira
   | { action: "approve_test" } // teste -> publicar (fica aguardando o clique de publicar)
   | { action: "publish"; createPr?: boolean } // merge no main (+ PR opcional)
   | { action: "retry" } // re-roda o passo que falhou
@@ -289,11 +300,14 @@ export interface PreviewConfig {
 export interface InhouseConfig {
   skills?: {
     /**
-     * Cadeia da fase de plano. Duas formas:
-     * - lista: vale para portes "media" e "grande" ("simples" pula skills);
-     * - objeto por porte: { simples: [...], media: [...], grande: [...] }.
+     * LEGADO (compat): cadeia única do plano. Prefira plano_produto + detalhamento.
+     * Se só isto existir, office-hours vira o plano de produto e o resto o detalhamento.
      */
     plano?: SkillStepConfig[] | Partial<Record<Porte, SkillStepConfig[]>>;
+    /** Fase "Plano" (produto, o QUÊ): tipicamente office-hours. Vazio em "simples". */
+    plano_produto?: SkillStepConfig[] | Partial<Record<Porte, SkillStepConfig[]>>;
+    /** Fase "Detalhamento" (o COMO): plan-eng-review (+ plan-design-review quando design). */
+    detalhamento?: SkillStepConfig[] | Partial<Record<Porte, SkillStepConfig[]>>;
     /** Gates extras após as verificações do projeto (veredito APROVADO/REPROVADO). */
     verificacoes?: SkillStepConfig[];
   };
@@ -307,6 +321,9 @@ export const STEP_LABELS: Record<Step, string> = {
   espec: "Espec",
   plano: "Plano",
   aprovacao: "Sua aprovação",
+  detalhamento: "Detalhamento",
+  prototipo: "Protótipo",
+  aprovacao_prototipo: "Aprovação do protótipo",
   execucao: "Execução",
   verificacoes: "Verificações",
   teste: "Seu teste",
@@ -316,4 +333,30 @@ export const STEP_LABELS: Record<Step, string> = {
 
 export function isHumanStep(s: Step): boolean {
   return (HUMAN_STEPS as readonly string[]).includes(s);
+}
+
+/** Esta task roda a fase de design + protótipo? (override do usuário vence a heurística) */
+export function rodaDesign(t: Pick<Task, "design" | "precisaDesign">): boolean {
+  return t.design === "sim" || (t.design !== "nao" && Boolean(t.precisaDesign));
+}
+
+/**
+ * Steps que ESTA task percorre, pela natureza dela (porte + design). O fluxo é
+ * adaptativo: simples pula detalhamento/protótipo; sem design, pula protótipo.
+ * A UI e a máquina usam isto em vez do STEPS global.
+ */
+export function stepsAtivos(t: Pick<Task, "porte" | "design" | "precisaDesign">): Step[] {
+  const simples = (t.porte ?? "media") === "simples";
+  const out: Step[] = ["espec", "plano", "aprovacao"];
+  if (!simples) out.push("detalhamento");
+  if (!simples && rodaDesign(t)) out.push("prototipo", "aprovacao_prototipo");
+  out.push("execucao", "verificacoes", "teste", "publicar", "concluida");
+  return out;
+}
+
+/** Próximo step ativo depois de `atual` (para as transições da máquina). */
+export function proximoStep(t: Pick<Task, "porte" | "design" | "precisaDesign">, atual: Step): Step {
+  const ativos = stepsAtivos(t);
+  const i = ativos.indexOf(atual);
+  return i >= 0 && i < ativos.length - 1 ? ativos[i + 1]! : "concluida";
 }

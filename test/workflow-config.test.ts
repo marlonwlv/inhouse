@@ -3,7 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { especPrompt, parsePorte, parseVeredito } from "../server/workflow/phases.js";
-import { loadConfig, loadConfigCascata, skillsPlanoPara, temUi } from "../server/workflow/config.js";
+import {
+  loadConfig,
+  loadConfigCascata,
+  skillsDetalhamento,
+  skillsPlanoPara,
+  skillsProduto,
+  temUi,
+} from "../server/workflow/config.js";
 
 function dir(): string {
   return mkdtempSync(join(tmpdir(), "inhouse-config-"));
@@ -45,16 +52,35 @@ describe("loadConfig (inhouse.config.json)", () => {
     expect(cfg?.skills?.verificacoes?.[0]).toMatchObject({ skill: "qa", gate: "QA" });
   });
 
-  it("o template app-starter embarca uma config válida com o mapeamento gstack", () => {
+  it("o template app-starter mapeia plano de produto + detalhamento", () => {
     const cfg = loadConfig(join(import.meta.dirname, "..", "templates", "app-starter"));
-    expect(skillsPlanoPara(cfg, "grande").map((s) => s.skill)).toEqual([
-      "office-hours",
+    // Produto (office-hours) só em grande; detalhamento com eng + design(ui).
+    expect(skillsProduto(cfg, "grande").map((s) => s.skill)).toEqual(["office-hours"]);
+    expect(skillsProduto(cfg, "media")).toEqual([]);
+    expect(skillsProduto(cfg, "simples")).toEqual([]);
+    expect(skillsDetalhamento(cfg, "grande").map((s) => s.skill)).toEqual([
       "plan-eng-review",
       "plan-design-review",
     ]);
-    expect(skillsPlanoPara(cfg, "simples")).toEqual([]);
-    expect(skillsPlanoPara(cfg, "media").map((s) => s.skill)).toEqual(["plan-eng-review"]);
+    expect(skillsDetalhamento(cfg, "media").map((s) => s.skill)).toEqual(["plan-eng-review"]);
     expect(cfg?.skills?.verificacoes?.map((s) => s.skill)).toEqual(["review", "qa"]);
+  });
+
+  it("compat: bloco legado 'plano' vira produto (office-hours) + detalhamento (resto)", () => {
+    const d = dir();
+    writeFileSync(
+      join(d, "inhouse.config.json"),
+      JSON.stringify({
+        skills: {
+          plano: { grande: [{ skill: "office-hours" }, { skill: "plan-eng-review" }] },
+        },
+      }),
+    );
+    const cfg = loadConfig(d);
+    expect(skillsProduto(cfg, "grande").map((s) => s.skill)).toEqual(["office-hours"]);
+    expect(skillsDetalhamento(cfg, "grande").map((s) => s.skill)).toEqual(["plan-eng-review"]);
+    // O helper legado continua devolvendo a cadeia inteira.
+    expect(skillsPlanoPara(cfg, "grande").map((s) => s.skill)).toEqual(["office-hours", "plan-eng-review"]);
   });
 });
 

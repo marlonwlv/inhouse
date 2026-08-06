@@ -1,10 +1,14 @@
 {
   "skills": {
-    "plano": {
+    "plano_produto": {
+      "simples": [],
+      "media": [],
+      "grande": [{ "skill": "office-hours", "args": "{spec}" }]
+    },
+    "detalhamento": {
       "simples": [],
       "media": [{ "skill": "plan-eng-review" }],
       "grande": [
-        { "skill": "office-hours", "args": "{spec}" },
         { "skill": "plan-eng-review" },
         { "skill": "plan-design-review", "quando": "ui" }
       ]

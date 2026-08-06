@@ -26,6 +26,7 @@ import {
   temPreviewConfigCommitada,
 } from "../services/preview.js";
 import { aplicarUpdate, ultimoUpdate } from "../services/update.js";
+import { slugify } from "../services/worktrees.js";
 import { cloneProject, createFromTemplate, openProject } from "../services/projects.js";
 import * as store from "../store.js";
 import { applyAction, startPreparacao, startTask, steer } from "../workflow/machine.js";
@@ -389,6 +390,19 @@ export function buildRouter(): Router {
       }
     }),
   );
+
+  // Serve os mockups do protótipo (docs/plans/mockups/<slug>/) do espaço da tarefa.
+  const serveMockup = (req: Request, res: Response, sub: string): void => {
+    const task = store.getTask(req.params.id ?? "");
+    if (!task) throw new HttpError(404, "Tarefa não encontrada.");
+    const base = resolve(task.worktreePath, "docs", "plans", "mockups", slugify(task.title));
+    const alvo = resolve(base, sub || "index.html");
+    if (alvo !== base && !alvo.startsWith(base + sep)) throw new HttpError(400, "Caminho inválido.");
+    if (!existsSync(alvo)) throw new HttpError(404, "Protótipo não encontrado.");
+    res.sendFile(alvo);
+  };
+  router.get("/api/tasks/:id/mockup", h(async (req, res) => serveMockup(req, res, "")));
+  router.get("/api/tasks/:id/mockup/*", h(async (req, res) => serveMockup(req, res, (req.params as Record<string, string>)[0] ?? "")));
 
   router.post(
     "/api/tasks/:id/preview/stop",

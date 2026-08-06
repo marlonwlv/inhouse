@@ -1,13 +1,15 @@
 /**
- * Máquina de estados da esteira (ver ARCHITECTURE.md):
- * espec → plano → aprovacao(H) → execucao → verificacoes → teste(H) → publicar(H) → concluida
+ * Máquina de estados da esteira (ver ARCHITECTURE.md). Fluxo adaptativo pela
+ * natureza da task (porte + design) — ver stepsAtivos em shared/types.ts:
+ * espec → plano(produto) → aprovacao(H) → [detalhamento → [prototipo → aprovacao_prototipo(H)]]
+ *       → execucao → verificacoes → teste(H) → publicar(H) → concluida
  *
  * Orquestra o runner do Claude (Agente A) e os serviços de git/gates/preview/publish
  * (Agente B). Toda transição atualiza o store e faz broadcast de task_updated.
  */
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import type { Step, Task, TaskAction, TranscriptItem } from "../../shared/types.js";
-import { STEP_LABELS, isHumanStep } from "../../shared/types.js";
+import { STEP_LABELS, isHumanStep, proximoStep, rodaDesign } from "../../shared/types.js";
 import { createPermissionGate, finishAllForTask, resolvePermission } from "../claude/permissions.js";
 import { abortPhase, runPhase } from "../claude/runner.js";
 import { MAX_GATE_FIX_ROUNDS } from "../config.js";
@@ -17,23 +19,26 @@ import { startPreview, stopPreview } from "../services/preview.js";
 import { publishTask } from "../services/publish.js";
 import { createEspaco, removeEspaco, slugify } from "../services/worktrees.js";
 import * as store from "../store.js";
-import { marcarTriagemCurta, registrarFalha, registrarTarefaFinalizada } from "../eval/coleta.js";
+import { registrarFalha, registrarTarefaFinalizada } from "../eval/coleta.js";
 import { verificarGatilhoAuto } from "../eval/juiz.js";
-import { loadConfigCascata, skillsPlanoPara, temUi } from "./config.js";
+import { loadConfigCascata, skillsDetalhamento, skillsProduto, temUi } from "./config.js";
 import {
   changesPrompt,
   consolidarPlanoPrompt,
+  consolidarProdutoPrompt,
   especPrompt,
   execucaoPrompt,
   fixGatesPrompt,
   limparJulgamento,
   parsePorte,
   parsePreparado,
+  parsePrecisaDesign,
   parseUi,
   parseVeredito,
   planoFeedbackPrompt,
   planoPrompt,
   preparacaoPrompt,
+  prototipoPrompt,
   skillGatePrompt,
   skillPlanoPrompt,
 } from "./phases.js";
@@ -272,9 +277,12 @@ async function runEspec(taskId: string): Promise<boolean> {
       spec = r.finalText.trim();
       const porte = parsePorte(spec);
       const temUiTarefa = parseUi(spec);
+      const precisaDesign = parsePrecisaDesign(spec);
       store.updateTask(taskId, {
         porte,
         ...(temUiTarefa !== undefined ? { temUi: temUiTarefa } : {}),
+        ...(precisaDesign !== undefined ? { precisaDesign } : {}),
+        design: task.design ?? "auto", // preserva override manual anterior (retry)
         ...(r.sessionId ? { claudeSessionId: r.sessionId } : {}),
       });
       const uiTxt = temUiTarefa === undefined ? "" : ` · mexe em interface: ${temUiTarefa ? "sim" : "não"}`;
@@ -296,114 +304,167 @@ async function runEspec(taskId: string): Promise<boolean> {
   return true;
 }
 
-/** Fase plano (permissionMode "plan"). Com feedback = re-planejamento pós request_changes. */
+/** Roda uma fase de plano (permissionMode "plan") e devolve {plano, julgamento}. */
+async function gerarPlano(
+  taskId: string,
+  prompt: string,
+  comSkillOpts: boolean,
+): Promise<{ plano: string; julgamento: string } | null> {
+  const atual = store.getTask(taskId);
+  if (!atual) return null;
+  const r = await runPhase({
+    taskId,
+    cwd: atual.worktreePath,
+    prompt,
+    permissionMode: "plan",
+    resume: atual.claudeSessionId,
+    ...(comSkillOpts ? SKILL_PHASE_OPTS : {}),
+  });
+  if (cancelada(taskId)) return null;
+  if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
+  if (!r.success) {
+    failOuPausa(taskId, r, "Não foi possível montar o plano. Tente de novo.");
+    return null;
+  }
+  // plano = bloco aprovável (ExitPlanMode); julgamento = plano + texto final (as
+  // linhas PORTE:/UI:/DESIGN: costumam vir fora do bloco do ExitPlanMode).
+  const plano = (r.planText ?? r.finalText).trim();
+  return { plano, julgamento: `${plano}\n${r.finalText}` };
+}
+
+/** Re-avalia porte/UI/design pelo texto do plano (a triagem inicial pode ter errado). */
+function reavaliarJulgamentos(taskId: string, julgamento: string): void {
+  const t = store.getTask(taskId);
+  if (!t) return;
+  const ui = parseUi(julgamento);
+  const design = parsePrecisaDesign(julgamento);
+  const p: Partial<Task> = {};
+  // Só re-julga o porte quando há uma linha PORTE: explícita — senão o default
+  // "media" do parser sobrescreveria a triagem da espec (ex.: "grande").
+  if (/(?:^|\n)\s*PORTE:/i.test(julgamento)) {
+    const porte = parsePorte(julgamento);
+    if (porte !== (t.porte ?? "media")) p.porte = porte;
+  }
+  if (ui !== undefined && ui !== t.temUi) p.temUi = ui;
+  if (design !== undefined && design !== t.precisaDesign) p.precisaDesign = design;
+  if (Object.keys(p).length > 0) patch(taskId, p);
+}
+
+/**
+ * Fase "Plano" (produto, o QUÊ). Roda office-hours (media/grande) e consolida um
+ * plano de PRODUTO para a pessoa aprovar — antes de investir no técnico/design.
+ * Com feedback = re-planejamento após "pedir mudanças" na aprovação.
+ */
 async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
   const task = store.getTask(taskId);
   if (!task) return false;
-  patch(taskId, { step: "plano", status: "rodando", error: undefined });
-  sistema(taskId, feedback ? "Refazendo o plano com o seu feedback…" : "Montando o plano de implementação…");
+  try {
+    patch(taskId, { step: "plano", status: "rodando", error: undefined });
+    sistema(taskId, feedback ? "Refazendo o plano de produto com o seu feedback…" : "Montando o plano de produto…");
+
+    const projeto = store.getProject(task.projectId);
+    const cfg = loadConfigCascata(task.worktreePath, projeto?.path);
+
+    // office-hours é o insumo de produto; feedback humano não re-roda a cadeia.
+    const cadeia = feedback ? [] : skillsProduto(cfg, task.porte ?? "media");
+    const rodouSkills = cadeia.length > 0;
+    if (rodouSkills) {
+      const chainOk = await rodarSkillsPlano(taskId, cadeia);
+      if (!chainOk && !planoDireto.has(taskId)) return false;
+      if (!planoDireto.has(taskId)) sistema(taskId, "Consolidando o plano de produto…");
+    }
+    const rapido = planoDireto.delete(taskId);
+    if (rapido) sistema(taskId, "Ok — indo direto ao plano, sem os reviews pesados.");
+
+    const resultado = await gerarPlano(
+      taskId,
+      feedback
+        ? planoFeedbackPrompt(feedback)
+        : rodouSkills && !rapido
+          ? consolidarProdutoPrompt()
+          : planoPrompt(task),
+      rodouSkills && !rapido,
+    );
+    if (resultado === null) return false;
+    reavaliarJulgamentos(taskId, resultado.julgamento);
+
+    const plan = limparJulgamento(resultado.plano);
+    if (plan.length === 0) {
+      fail(taskId, "O plano veio vazio. Tente de novo.");
+      return false;
+    }
+    patch(taskId, { plan, step: "aprovacao", status: "aguardando" });
+    sistema(taskId, "Plano de produto pronto — revise e aprove.");
+    return true;
+  } finally {
+    planoDireto.delete(taskId);
+  }
+}
+
+/**
+ * Fase "Detalhamento" (o COMO). Roda plan-eng-review (+ plan-design-review quando há
+ * design) e consolida o plano técnico. Depois: Protótipo (se design) ou Execução.
+ * Automática — o produto já foi aprovado.
+ */
+async function runDetalhamento(taskId: string): Promise<boolean> {
+  const task = store.getTask(taskId);
+  if (!task) return false;
+  patch(taskId, { step: "detalhamento", status: "rodando", error: undefined });
+  sistema(taskId, `Detalhando o COMO (plano técnico${rodaDesign(task) ? " + design" : ""})…`);
 
   const projeto = store.getProject(task.projectId);
   const cfg = loadConfigCascata(task.worktreePath, projeto?.path);
+  // O design-review (quando: "ui") só roda se ESTA task realmente faz design.
+  const cadeia = skillsDetalhamento(cfg, task.porte ?? "media").filter(
+    (st) => st.quando !== "ui" || rodaDesign(task),
+  );
+  if (cadeia.length > 0 && !(await rodarSkillsPlano(taskId, cadeia))) return false;
 
-  // Cadeia inicial pela triagem da espec. Feedback humano NÃO re-roda a cadeia:
-  // o ajuste vai direto pra sessão (que já tem o contexto) — mas o re-julgamento
-  // pós-plano abaixo pode puxar skills que ficaram faltando (ex.: virou UI).
-  const cadeia = feedback ? [] : skillsPlanoPara(cfg, task.porte ?? "media");
-  const rodouSkills = cadeia.length > 0;
-  if (rodouSkills) {
-    const chainOk = await rodarSkillsPlano(taskId, cadeia);
-    // Falha real da skill derruba; abort pelo "ir direto ao plano" segue para o plano direto.
-    if (!chainOk && !planoDireto.has(taskId)) return false;
-    if (!planoDireto.has(taskId)) sistema(taskId, "Consolidando o plano final com o resultado dos reviews…");
-  }
-  // O usuário pediu "ir direto ao plano"? Consome o pedido e gera um plano enxuto.
-  const rapido = planoDireto.delete(taskId);
-  if (rapido) sistema(taskId, "Ok — indo direto ao plano, sem os reviews pesados.");
-
-  // plano = o que o usuário aprova; julgamento = plano + texto final (as linhas
-  // PORTE:/UI: do re-julgamento costumam vir fora do bloco do ExitPlanMode).
-  const gerarPlano = async (
-    prompt: string,
-    comSkillOpts: boolean,
-  ): Promise<{ plano: string; julgamento: string } | null> => {
-    const atual = store.getTask(taskId);
-    if (!atual) return null;
-    const r = await runPhase({
-      taskId,
-      cwd: atual.worktreePath,
-      prompt,
-      permissionMode: "plan",
-      resume: atual.claudeSessionId,
-      ...(comSkillOpts ? SKILL_PHASE_OPTS : {}),
-    });
-    if (cancelada(taskId)) return null;
-    if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
-    if (!r.success) {
-      failOuPausa(taskId, r, "Não foi possível montar o plano. Tente de novo.");
-      return null;
-    }
-    const plano = (r.planText ?? r.finalText).trim();
-    return { plano, julgamento: `${plano}\n${r.finalText}` };
-  };
-
-  let resultado = await gerarPlano(
-    feedback
-      ? planoFeedbackPrompt(feedback)
-      : rodouSkills && !rapido
-        ? consolidarPlanoPrompt()
-        : planoPrompt(task),
-    rodouSkills && !rapido,
+  const resultado = await gerarPlano(
+    taskId,
+    cadeia.length > 0 ? consolidarPlanoPrompt() : planoPrompt(task),
+    cadeia.length > 0,
   );
   if (resultado === null) return false;
-
-  // ---- Re-julgamento pós-plano (uma rodada): o plano completo (ou o feedback
-  // do usuário) pode revelar que a triagem inicial errou — ex.: "achei que não
-  // tinha UI, mas tem" → roda as skills que ficaram faltando e re-consolida.
-  const antes = store.getTask(taskId);
-  if (antes) {
-    const novoPorte = parsePorte(resultado.julgamento);
-    const novoUi = parseUi(resultado.julgamento);
-    const mudou =
-      novoPorte !== (antes.porte ?? "media") ||
-      (novoUi !== undefined && novoUi !== antes.temUi);
-    if (mudou) {
-      store.updateTask(taskId, {
-        porte: novoPorte,
-        ...(novoUi !== undefined ? { temUi: novoUi } : {}),
-      });
-    }
-    const alvo = store.getTask(taskId);
-    if (alvo) {
-      const desejada = skillsPlanoPara(cfg, alvo.porte ?? "media");
-      const faltando = rapido
-        ? [] // usuário pediu plano direto — não puxa reviews adicionais
-        : desejada.filter(
-            (st) => skillSeAplica(st, alvo) && !(alvo.skillsRodadas ?? []).includes(st.skill),
-          );
-      if (faltando.length > 0) {
-        marcarTriagemCurta(taskId);
-        sistema(
-          taskId,
-          `O plano revelou que a triagem inicial ficou curta (porte: ${alvo.porte}${
-            alvo.temUi !== undefined ? ` · interface: ${alvo.temUi ? "sim" : "não"}` : ""
-          }) — rodando ${faltando.map((f) => `/${f.skill}`).join(", ")} antes da sua aprovação.`,
-        );
-        if (!(await rodarSkillsPlano(taskId, faltando))) return false;
-        sistema(taskId, "Re-consolidando o plano com os reviews adicionais…");
-        resultado = await gerarPlano(consolidarPlanoPrompt(), true);
-        if (resultado === null) return false;
-      }
-    }
-  }
-
+  reavaliarJulgamentos(taskId, resultado.julgamento);
   const plan = limparJulgamento(resultado.plano);
-  if (plan.length === 0) {
-    fail(taskId, "O plano veio vazio. Tente de novo.");
+  if (plan.length > 0) patch(taskId, { plan });
+
+  const atual = store.getTask(taskId);
+  if (!atual || cancelada(taskId)) return false;
+  if (rodaDesign(atual)) return runPrototipo(taskId);
+
+  patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
+  return runExecucao(taskId, execucaoPrompt(atual));
+}
+
+/** Fase "Protótipo": gera mockups HTML/CSS em docs/plans/mockups/<slug>/ e para no gate. */
+async function runPrototipo(taskId: string, feedback?: string): Promise<boolean> {
+  const task = store.getTask(taskId);
+  if (!task) return false;
+  patch(taskId, { step: "prototipo", status: "rodando", error: undefined });
+  sistema(taskId, feedback ? "Ajustando o protótipo…" : "Montando um protótipo visual (mockups) para você aprovar…");
+
+  const slug = slugify(task.title);
+  const prompt = feedback
+    ? `O usuário pediu mudanças no protótipo:\n${feedback}\n\nAjuste os mockups (mesmos arquivos) de acordo.`
+    : prototipoPrompt(slug);
+  const r = await runPhase({
+    taskId,
+    cwd: task.worktreePath,
+    prompt,
+    permissionMode: "acceptEdits",
+    resume: store.getTask(taskId)?.claudeSessionId,
+    canUseTool: gateComStatus(taskId),
+  });
+  if (cancelada(taskId)) return false;
+  if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
+  if (!r.success) {
+    failOuPausa(taskId, r, "O protótipo falhou. Tente de novo.");
     return false;
   }
-  patch(taskId, { plan, step: "aprovacao", status: "aguardando" });
-  sistema(taskId, "Plano pronto — revise e aprove para começar a execução.");
+  patch(taskId, { step: "aprovacao_prototipo", status: "aguardando" });
+  sistema(taskId, "Protótipo pronto — veja o mockup e aprove (ou peça mudanças).");
   return true;
 }
 
@@ -694,9 +755,42 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       if (!(task.step === "aprovacao" && task.status === "aguardando")) {
         throw new Error("Esta tarefa não está aguardando a aprovação do plano.");
       }
+      // direto = pular detalhamento/protótipo. Senão, vai pro próximo step ativo.
+      const proximo = action.direto ? "execucao" : proximoStep(task, "aprovacao");
+      if (proximo === "detalhamento") {
+        patch(taskId, { step: "detalhamento", status: "rodando", error: undefined });
+        sistema(taskId, "Plano aprovado — detalhando o como.");
+        fireAndForget(taskId, () => runDetalhamento(taskId));
+      } else {
+        patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
+        sistema(taskId, action.direto ? "Plano aprovado — indo direto pra execução." : "Plano aprovado — começando a execução.");
+        fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(task)));
+      }
+      break;
+    }
+
+    case "approve_prototype": {
+      if (!(task.step === "aprovacao_prototipo" && task.status === "aguardando")) {
+        throw new Error("Esta tarefa não está aguardando a aprovação do protótipo.");
+      }
       patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
-      sistema(taskId, "Plano aprovado — começando a execução.");
-      fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(task)));
+      sistema(taskId, "Protótipo aprovado — implementando de verdade.");
+      fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(store.getTask(taskId) ?? task)));
+      break;
+    }
+
+    case "set_design": {
+      const travado = ["execucao", "verificacoes", "teste", "publicar", "concluida"].includes(task.step);
+      if (travado) throw new Error("O design/protótipo já foi decidido nesta etapa.");
+      patch(taskId, { design: action.valor });
+      sistema(
+        taskId,
+        action.valor === "nao"
+          ? "Design e protótipo DESLIGADOS nesta tarefa."
+          : action.valor === "sim"
+            ? "Design e protótipo LIGADOS nesta tarefa."
+            : "Design/protótipo no automático (decide pela natureza da tarefa).",
+      );
       break;
     }
 
@@ -707,6 +801,10 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
         usuario(taskId, msg);
         patch(taskId, { step: "plano", status: "rodando", error: undefined });
         fireAndForget(taskId, () => runPlano(taskId, msg));
+      } else if (task.step === "aprovacao_prototipo" && task.status === "aguardando") {
+        usuario(taskId, msg);
+        patch(taskId, { step: "prototipo", status: "rodando", error: undefined });
+        fireAndForget(taskId, () => runPrototipo(taskId, msg));
       } else if (task.step === "teste" && task.status === "aguardando") {
         usuario(taskId, msg);
         patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
@@ -773,11 +871,19 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
         // volta a aguardar a ação da pessoa.
         patch(taskId, { status: "aguardando", error: undefined, pausadaPorTempo: undefined });
         sistema(taskId, "Pronto — a tarefa voltou a aguardar a sua ação.");
-      } else if (task.step === "espec" || task.step === "plano") {
+      } else if (
+        task.step === "espec" ||
+        task.step === "plano" ||
+        task.step === "detalhamento" ||
+        task.step === "prototipo"
+      ) {
         patch(taskId, { status: "rodando", error: undefined, pausadaPorTempo: undefined });
-        fireAndForget(taskId, () =>
-          task.step === "espec" ? pipelineFromEspec(taskId) : runPlano(taskId),
-        );
+        fireAndForget(taskId, () => {
+          if (task.step === "espec") return pipelineFromEspec(taskId);
+          if (task.step === "plano") return runPlano(taskId);
+          if (task.step === "detalhamento") return runDetalhamento(taskId);
+          return runPrototipo(taskId);
+        });
       } else if (task.step === "execucao") {
         // Zera as rodadas de correção: sem isso, um gate com erro determinístico
         // falharia de novo na hora, sem nenhuma tentativa de auto-correção.

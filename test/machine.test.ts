@@ -26,6 +26,9 @@ const h = vi.hoisted(() => {
     abortCalls: [] as string[],
     execFilesTouched: true,
     prepPronto: true,
+    espPorte: "media" as "simples" | "media" | "grande",
+    espUi: false,
+    espDesign: false,
   };
   return {
     state,
@@ -55,8 +58,12 @@ const h = vi.hoisted(() => {
           filesTouched: state.execFilesTouched,
         };
       }
-      // Fase espec (permissionMode "default", read-only).
-      return { sessionId: "sess-espec", finalText: "## Objetivo\nEspec estruturada (mock)", success: true };
+      // Fase espec (permissionMode "default", read-only) — emite os julgamentos.
+      return {
+        sessionId: "sess-espec",
+        finalText: `## Objetivo\nEspec estruturada (mock)\nPORTE: ${state.espPorte}\nUI: ${state.espUi ? "sim" : "nao"}\nDESIGN: ${state.espDesign ? "sim" : "nao"}`,
+        success: true,
+      };
     },
     async runGates(): Promise<GateResult[]> {
       state.gateRuns++;
@@ -149,6 +156,9 @@ beforeEach(() => {
   h.state.gateRuns = 0;
   h.state.execFilesTouched = true;
   h.state.prepPronto = true;
+  h.state.espPorte = "media";
+  h.state.espUi = false;
+  h.state.espDesign = false;
   h.state.publishCalls.length = 0;
   h.state.stopPreviewCalls.length = 0;
   h.state.removeEspacoCalls.length = 0;
@@ -486,5 +496,47 @@ describe("machine: preparação do repositório", () => {
     const t = await startPreparacao("p1");
     await esperaStep(t.id, "concluida");
     expect(store.getProject("p1")?.preparado).toBeUndefined();
+  });
+});
+
+describe("machine: esteira de plano em fases", () => {
+  it("task com design percorre detalhamento → protótipo → aprovacao_prototipo → execução", async () => {
+    h.state.espPorte = "grande";
+    h.state.espDesign = true;
+    const t = await criaTaskEmAprovacao("Feature com jornada nova");
+    expect(t.porte).toBe("grande");
+    expect(t.precisaDesign).toBe(true);
+
+    await applyAction(t.id, { action: "approve_plan" });
+    const proto = await esperaStep(t.id, "aprovacao_prototipo");
+    expect(proto.status).toBe("aguardando");
+
+    await applyAction(t.id, { action: "approve_prototype" });
+    await esperaStep(t.id, "teste"); // execução → verificações → teste
+  });
+
+  it("approve_plan direto pula detalhamento/protótipo e vai pra execução", async () => {
+    h.state.espPorte = "grande";
+    h.state.espDesign = true;
+    const t = await criaTaskEmAprovacao("Direto pra execução");
+    await applyAction(t.id, { action: "approve_plan", direto: true });
+    await esperaStep(t.id, "teste"); // sem passar por protótipo
+  });
+
+  it("set_design=nao desliga o protótipo mesmo com precisaDesign", async () => {
+    h.state.espPorte = "grande";
+    h.state.espDesign = true;
+    const t = await criaTaskEmAprovacao("CRUD marcado como UI");
+    await applyAction(t.id, { action: "set_design", valor: "nao" });
+    await applyAction(t.id, { action: "approve_plan" });
+    // detalhamento (sem design) → execução → teste, sem porteira de protótipo
+    await esperaStep(t.id, "teste");
+  });
+
+  it("task simples aprovada vai direto pra execução (sem detalhamento)", async () => {
+    h.state.espPorte = "simples";
+    const t = await criaTaskEmAprovacao("Trocar um texto");
+    await applyAction(t.id, { action: "approve_plan" });
+    await esperaStep(t.id, "teste");
   });
 });

@@ -32,7 +32,7 @@ export function consolidarPlanoPrompt(): string {
     "Escreva para uma pessoa não-técnica aprovar: português simples, sem jargão.",
     "",
     "Depois do plano, REAVALIE os julgamentos com base em tudo que você aprendeu e",
-    "termine com duas linhas exatas: PORTE: simples|media|grande e UI: sim|nao.",
+    "termine com três linhas exatas: PORTE: simples|media|grande, UI: sim|nao e DESIGN: sim|nao.",
   ].join("\n");
 }
 
@@ -95,15 +95,19 @@ export function especPrompt(task: Task): string {
     "",
     "Seja curto e direto: quem vai ler é uma pessoa não-técnica.",
     "",
-    "Depois da especificação, faça DOIS julgamentos independentes e termine com DUAS linhas exatas:",
+    "Depois da especificação, faça TRÊS julgamentos independentes e termine com TRÊS linhas exatas:",
     "PORTE: simples | media | grande",
     "UI: sim | nao",
+    "DESIGN: sim | nao",
     "Rubrica do PORTE: simples = mudança pequena e óbvia (1–3 arquivos, sem decisão de produto,",
     "arquitetura ou dados novos — ex.: criar uma página em branco, trocar um texto).",
     "grande = feature nova com decisões de produto/UX/dados ou que atravessa módulos.",
     "media = todo o resto. Na dúvida entre dois, escolha o menor.",
     "Rubrica do UI: sim = ESTA tarefa cria/altera telas, componentes visuais ou jornada",
     "de usuário. nao = só backend/dados/config, mesmo que o projeto tenha frontend.",
+    "Rubrica do DESIGN: sim = cria uma JORNADA NOVA de usuário ou tela nova que pede um olhar",
+    "visual (protótipo) antes de implementar. nao = CRUD, ajuste, ou reuso de telas/componentes",
+    "que já existem — mesmo que mexa em UI. Só marque sim quando um protótipo agrega de verdade.",
   ].join("\n");
 }
 
@@ -205,9 +209,45 @@ export function parseUi(text: string): boolean | undefined {
   return /^s/i.test(m[1]!);
 }
 
+/** Lê a linha "DESIGN: sim|nao" (feature de jornada nova que pede protótipo). */
+export function parsePrecisaDesign(text: string): boolean | undefined {
+  const m = /(?:^|\n)\s*DESIGN:\s*(sim|s[ií]|nao|n[aã]o)\b/i.exec(text);
+  if (!m) return undefined;
+  return /^s/i.test(m[1]!);
+}
+
+/** Após a fase de produto (office-hours): consolida um PLANO DE PRODUTO aprovável. */
+export function consolidarProdutoPrompt(): string {
+  return [
+    "Com base no que foi levantado acima nesta sessão, escreva o PLANO DE PRODUTO: o que muda",
+    "para o usuário e por quê, em linguagem de produto e português simples, para uma pessoa",
+    "NÃO-técnica aprovar. Ainda NÃO entre nos detalhes técnicos (isso vem na próxima etapa).",
+    "Passos numerados curtos, focados no comportamento/resultado, não no código.",
+    "",
+    "Ao final, REAVALIE e termine com TRÊS linhas exatas:",
+    "PORTE: simples|media|grande",
+    "UI: sim|nao",
+    "DESIGN: sim|nao",
+  ].join("\n");
+}
+
+/** Fase protótipo: gera mockups HTML/CSS versionados em docs/plans/mockups/<slug>/. */
+export function prototipoPrompt(slug: string): string {
+  const dir = `docs/plans/mockups/${slug}`;
+  return [
+    "Agora faça um PROTÓTIPO VISUAL da(s) tela(s) desta tarefa, para a pessoa aprovar o visual",
+    "ANTES de implementar de verdade. Regra de ouro: rápido e descartável — NÃO é o código final.",
+    `Crie arquivos HTML+CSS estáticos em \`${dir}/\` (comece por \`${dir}/index.html\`).`,
+    "Use HTML/CSS puro (pode ser CSS inline), sem depender de build ou servidor — tem que abrir",
+    "direto no navegador. Represente o layout, os textos reais e o fluxo principal. Se houver mais",
+    "de uma tela, crie mais arquivos e ligue-os com links. NÃO altere o resto do projeto.",
+    "Ao final, explique em uma linha o que a pessoa vai ver e qual arquivo abrir primeiro.",
+  ].join("\n");
+}
+
 /** Remove as linhas de julgamento (PORTE:/UI:) do fim do plano exibido ao usuário. */
 export function limparJulgamento(plano: string): string {
-  return plano.replace(/\n\s*(PORTE|UI):[^\n]*$/gim, "").trim();
+  return plano.replace(/\n\s*(PORTE|UI|DESIGN):[^\n]*$/gim, "").trim();
 }
 
 /** Feedback humano na aprovação do plano: re-planejar E re-julgar. */
@@ -218,8 +258,9 @@ export function planoFeedbackPrompt(msg: string): string {
     msg,
     "",
     "Ajuste o plano de acordo (sem perder o que já estava bom) e reapresente-o completo.",
-    "Ao final, REAVALIE e termine com duas linhas exatas:",
+    "Ao final, REAVALIE e termine com três linhas exatas:",
     "PORTE: simples|media|grande",
     "UI: sim|nao",
+    "DESIGN: sim|nao",
   ].join("\n");
 }
