@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.5.0";
+const UI_VERSION = "0.6.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -364,11 +364,15 @@ function handleEvent(ev) {
       if (t) { t.previewUrl = ev.url; render(); }
       break;
     }
-    case "claude_status":
+    case "claude_status": {
+      const antes = state.claude.ok;
       state.claude = { ok: ev.ok, version: ev.version, detail: ev.detail };
       renderClaudeChip();
-      if (route().name === "home") render();
+      // Home e Quadro travam ações quando o Claude cai; ao mudar de estado,
+      // re-renderiza a tela atual para (des)habilitar os botões na hora.
+      if (antes !== ev.ok && (route().name === "home" || route().name === "board")) render();
       break;
+    }
   }
 }
 
@@ -721,6 +725,7 @@ function renderHome() {
   const projects = state.projects;
   const busyClone = !!state.busy.clone;
   const busyCreate = !!state.busy.create;
+  const claudeOff = state.loaded && !state.claude.ok;
 
   const projectsHtml = projects.length
     ? `<div class="repo-grid">${projects.map(projectCardHtml).join("")}</div>`
@@ -741,6 +746,8 @@ function renderHome() {
       <h2 class="hello">Bom te ver.</h2>
       <p class="hello-sub">Abra um projeto da Inhouse ou crie um app novo — tudo em português, sem terminal.</p>
 
+      ${claudeOff ? primeirosPassosHtml() : ""}
+
       <div class="sect"><h3>Meus projetos</h3><span>${projects.length ? "cada tarefa roda num espaço isolado, sem conflito" : ""}</span></div>
       ${projectsHtml}
 
@@ -750,8 +757,8 @@ function renderHome() {
           <div class="rh"><span class="gh-ico">gh</span><b>Abrir do GitHub</b></div>
           <p>Cole o endereço do repositório. O download acontece sozinho, com barra de progresso.</p>
           <div class="field-row">
-            <input id="clone-url" type="url" placeholder="https://github.com/inhouse/…" autocomplete="off" ${busyClone ? "disabled" : ""} required>
-            <button class="btn sm primary" type="submit" ${busyClone ? "disabled" : ""}>${busyClone ? `<span class="spinner"></span> Baixando…` : "Baixar e abrir"}</button>
+            <input id="clone-url" type="url" placeholder="https://github.com/inhouse/…" autocomplete="off" ${busyClone || claudeOff ? "disabled" : ""} required>
+            <button class="btn sm primary" type="submit" ${busyClone || claudeOff ? "disabled" : ""}>${busyClone ? `<span class="spinner"></span> Baixando…` : "Baixar e abrir"}</button>
           </div>
           ${progressHtml}
         </form>
@@ -760,8 +767,8 @@ function renderHome() {
           <div class="rh"><span class="app-ico" style="background:var(--brand)">+</span><b>Criar app novo</b></div>
           <p>Começa do template <b>App Inhouse</b>: design system, login e navegação já prontos.</p>
           <div class="field-row">
-            <input id="new-app-name" type="text" placeholder="Nome do app… ex.: Quiz de Onboarding" autocomplete="off" ${busyCreate ? "disabled" : ""} required>
-            <button class="btn sm primary" type="submit" ${busyCreate ? "disabled" : ""}>${busyCreate ? `<span class="spinner"></span> Criando…` : "Criar"}</button>
+            <input id="new-app-name" type="text" placeholder="Nome do app… ex.: Quiz de Onboarding" autocomplete="off" ${busyCreate || claudeOff ? "disabled" : ""} required>
+            <button class="btn sm primary" type="submit" ${busyCreate || claudeOff ? "disabled" : ""}>${busyCreate ? `<span class="spinner"></span> Criando…` : "Criar"}</button>
           </div>
         </form>
       </div>
@@ -784,6 +791,23 @@ function projectCardHtml(p) {
     </div>
     <p>${tarefas} · criado ${timeAgo(p.createdAt)}</p>
     <button class="btn sm primary" data-act="open-project" data-project="${esc(p.id)}">Abrir</button>
+  </div>`;
+}
+
+// Painel de primeiros passos quando o Claude não está conectado: sem ele,
+// nenhuma tarefa roda, então bloqueamos criar/clonar e explicamos o passo-a-passo.
+// O chip fica verde sozinho assim que o login terminar (evento SSE claude_status).
+function primeirosPassosHtml() {
+  const detalhe = state.claude.detail ? esc(state.claude.detail) : "";
+  return `<div class="onboarding" role="status" aria-live="polite">
+    <div class="ob-head"><span class="warn-dot"></span><b>Conecte o Claude para começar</b></div>
+    <p>O Inhouse trabalha com o Claude Code deste computador, usando a sua assinatura. Enquanto ele não estiver conectado, abrir projetos e criar apps fica desabilitado.${detalhe ? ` <span class="ob-detail">(${detalhe})</span>` : ""}</p>
+    <ol class="ob-steps">
+      <li>Abra o app <b>Terminal</b> (aperte <kbd>⌘</kbd>+<kbd>Espaço</kbd>, digite <b>Terminal</b> e Enter).</li>
+      <li>Digite <code>claude</code> e tecle Enter; se ele pedir, faça o login que abre no navegador.</li>
+      <li>Pronto — volte aqui. Assim que conectar, tudo se habilita sozinho, sem recarregar.</li>
+    </ol>
+    <div class="ob-foot"><a href="${DOCS_URL}" target="_blank" rel="noreferrer">Ainda não instalou o Claude? Veja como</a></div>
   </div>`;
 }
 
@@ -816,6 +840,7 @@ function renderBoard() {
     : ativas === 1
       ? "1 tarefa em andamento · num espaço isolado"
       : `${ativas} tarefas em paralelo · cada uma no seu espaço isolado`;
+  const claudeOff = state.loaded && !state.claude.ok;
 
   renderPage(`
   <div class="view view-board">
@@ -828,9 +853,10 @@ function renderBoard() {
     </div>
     <div class="board">
       <form class="new-task" data-form="new-task">
-        <input id="new-task-desc" placeholder="Descreva uma tarefa… ex.: “corrigir o filtro de turmas por data no backoffice”" autocomplete="off" aria-label="Descrição da nova tarefa">
-        <button class="btn sm primary" type="submit">Começar</button>
+        <input id="new-task-desc" placeholder="Descreva uma tarefa… ex.: “corrigir o filtro de turmas por data no backoffice”" autocomplete="off" aria-label="Descrição da nova tarefa" ${claudeOff ? "disabled" : ""}>
+        <button class="btn sm primary" type="submit" ${claudeOff ? "disabled" : ""}>Começar</button>
       </form>
+      ${claudeOff ? primeirosPassosHtml() : ""}
       ${tasks.length
         ? tasks.map(taskCardHtml).join("")
         : `<div class="empty-card">Nenhuma tarefa neste projeto ainda. Descreva a primeira ali em cima — o Claude cuida do resto.</div>`}

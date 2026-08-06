@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { buildRouter } from "./api/routes.js";
+import { claudeStatus } from "./claude/runner.js";
 import { HOST, PORT, ensureDirs } from "./config.js";
+import { broadcast } from "./events.js";
 import { stopAllPreviews } from "./services/preview.js";
 import { backfillSeVazio } from "./eval/coleta.js";
 import { load } from "./store.js";
@@ -52,6 +54,24 @@ server6.on("error", () => {
   // Máquina sem IPv6 habilitado: seguimos só com IPv4.
 });
 server6.listen(PORT, "::1");
+
+// Detecta login/logout do Claude sem o usuário precisar recarregar: verifica o
+// status periodicamente e avisa a UI por SSE quando muda (chip fica verde sozinho).
+let ultimoClaudeOk: boolean | undefined;
+async function verificarClaude(): Promise<void> {
+  try {
+    const s = await claudeStatus();
+    if (s.ok !== ultimoClaudeOk) {
+      ultimoClaudeOk = s.ok;
+      broadcast({ type: "claude_status", ok: s.ok, version: s.version, detail: s.detail });
+    }
+  } catch {
+    // ignora — a próxima verificação tenta de novo
+  }
+}
+const claudeTimer = setInterval(() => void verificarClaude(), 15_000);
+claudeTimer.unref();
+void verificarClaude();
 
 let encerrando = false;
 function shutdown(sinal: string): void {

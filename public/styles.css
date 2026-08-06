@@ -495,6 +495,41 @@ input::placeholder { color: var(--faint); }
 .home-foot a { color: var(--brand); font-weight: 550; }
 .warn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); display: inline-block; flex: none; }
 
+/* Painel de primeiros passos (Claude desconectado): mesma linguagem das
+   porteiras humanas (âmbar), porque é um estado de "faça isto para seguir". */
+.onboarding {
+  background: var(--amber-soft);
+  border: 1px solid var(--amber-line);
+  border-radius: var(--r-lg);
+  padding: 17px 20px;
+  margin: 6px 0 26px;
+  display: grid;
+  gap: 10px;
+}
+.onboarding .ob-head { display: flex; align-items: center; gap: 9px; font-size: 15px; }
+.onboarding .ob-head b { font-weight: 650; color: var(--ink); }
+.onboarding p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.onboarding .ob-detail { color: var(--amber); }
+.onboarding .ob-steps {
+  margin: 2px 0 0; padding-left: 20px;
+  display: grid; gap: 7px;
+  color: var(--ink); font-size: 13px; line-height: 1.5;
+}
+.onboarding .ob-steps li { padding-left: 3px; }
+.onboarding .ob-steps b { font-weight: 600; }
+.onboarding .ob-foot { font-size: 12px; }
+.onboarding .ob-foot a { color: var(--muted); font-weight: 550; text-decoration: underline; text-underline-offset: 2px; }
+.onboarding code {
+  font-family: var(--mono); font-size: 12px;
+  background: var(--surface); border: 1px solid var(--amber-line);
+  padding: 1px 6px; border-radius: 4px; color: var(--ink);
+}
+.onboarding kbd {
+  font-family: var(--mono); font-size: 11px;
+  background: var(--surface); border: 1px solid var(--line-2);
+  padding: 1px 5px; border-radius: 4px; color: var(--ink);
+}
+
 /* ---------- EDITOR ---------- */
 .topbar .app-name { display: flex; align-items: center; gap: 11px; font-weight: 600; font-size: 14px; min-width: 0; }
 .topbar .app-name #ed-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
