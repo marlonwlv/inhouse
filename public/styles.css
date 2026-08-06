@@ -31,9 +31,9 @@
   --line: #EAEAEC;        /* bordas */
   --line-2: #DCDCE0;      /* bordas mais fortes (hover/input) */
 
-  --brand: #0B8A57;       /* verde Inhouse — único accent */
-  --brand-hover: #0A784C;
-  --brand-soft: #E9F5EF;
+  --brand: #18181B;       /* accent monocromático (preto) */
+  --brand-hover: #2E2E33;
+  --brand-soft: #F1F1F2;
   --brand-ink: #FFFFFF;
 
   --amber: #B0680E;       /* porteiras humanas */
@@ -47,7 +47,7 @@
   /* Borda-primeiro: sombras quase invisíveis, mais fortes só em overlays. */
   --shadow-sm: 0 1px 2px rgba(24, 24, 27, .04), 0 1px 3px rgba(24, 24, 27, .05);
   --shadow: 0 4px 12px -4px rgba(24, 24, 27, .10), 0 16px 40px -12px rgba(24, 24, 27, .14);
-  --ring: 0 0 0 3px rgba(11, 138, 87, .18);
+  --ring: 0 0 0 3px rgba(24, 24, 27, .15);
 
   --r-sm: 6px;
   --r-md: 9px;
@@ -69,10 +69,10 @@
   --line: #27272A;
   --line-2: #3A3A40;
 
-  --brand: #34C88C;
-  --brand-hover: #43D599;
-  --brand-soft: #12281D;
-  --brand-ink: #05130C;
+  --brand: #F4F4F5;       /* accent monocromático (branco no escuro) */
+  --brand-hover: #E4E4E7;
+  --brand-soft: #26262A;
+  --brand-ink: #18181B;
 
   --amber: #E0A94A;
   --amber-soft: #2A2113;
@@ -84,7 +84,7 @@
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .5);
   --shadow: 0 4px 12px -4px rgba(0, 0, 0, .6), 0 16px 40px -12px rgba(0, 0, 0, .7);
-  --ring: 0 0 0 3px rgba(52, 200, 140, .25);
+  --ring: 0 0 0 3px rgba(244, 244, 245, .18);
 }
 
 * { box-sizing: border-box; }
