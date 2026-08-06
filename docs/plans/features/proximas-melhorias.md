@@ -1,7 +1,7 @@
 # Inhouse — Próximas melhorias (update, setup de repo, arquivar, esteira em fases)
 
-> **Categoria:** features · **Criado:** 2026-08-06 · **Status:** Proposto
-> Quatro melhorias pedidas pelo Marlon depois do open source. A #4 é o item pesado (reforma do state-machine da esteira). #1 e #3 são ganhos rápidos; #2 é um fluxo novo de onboarding de repositório.
+> **Categoria:** features · **Criado:** 2026-08-06 · **Status:** Concluído (2026-08-06)
+> As 4 frentes implementadas, revisadas (1 P0 destrutivo + P2s corrigidos) e testadas (150 testes + QA). A #4 (reforma do state-machine) foi o item pesado. Ordem de entrega: #3 → #1 → #2 → #4.
 
 ## Contexto
 
