@@ -17,6 +17,8 @@ import { startPreview, stopPreview } from "../services/preview.js";
 import { publishTask } from "../services/publish.js";
 import { createEspaco, slugify } from "../services/worktrees.js";
 import * as store from "../store.js";
+import { marcarTriagemCurta, registrarFalha, registrarTarefaFinalizada } from "../eval/coleta.js";
+import { verificarGatilhoAuto } from "../eval/juiz.js";
 import { loadConfigCascata, skillsPlanoPara, temUi } from "./config.js";
 import {
   changesPrompt,
@@ -99,6 +101,7 @@ function cancelada(taskId: string): boolean {
 
 /** Marca a tarefa como falhou com mensagem amigável (e registra no transcript). */
 function fail(taskId: string, msg: string): void {
+  registrarFalha(taskId, msg);
   patch(taskId, { status: "falhou", error: msg });
   sistema(taskId, msg);
 }
@@ -359,6 +362,7 @@ async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
         (st) => skillSeAplica(st, alvo) && !(alvo.skillsRodadas ?? []).includes(st.skill),
       );
       if (faltando.length > 0) {
+        marcarTriagemCurta(taskId);
         sistema(
           taskId,
           `O plano revelou que a triagem inicial ficou curta (porte: ${alvo.porte}${
@@ -648,6 +652,8 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
           taskId,
           prUrl ? `Publicado no projeto! Pull request: ${prUrl}` : "Publicado no projeto com sucesso.",
         );
+        registrarTarefaFinalizada(taskId, "concluida");
+        verificarGatilhoAuto();
       } catch (err) {
         fail(taskId, err instanceof Error ? err.message : "Não foi possível publicar. Tente de novo.");
       }
@@ -706,6 +712,8 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       if (task.status === "concluida" || task.status === "cancelada") {
         throw new Error("Esta tarefa já foi finalizada.");
       }
+      const motivo = action.motivo?.trim() || undefined;
+      if (motivo) usuario(taskId, `Motivo do cancelamento: ${motivo}`);
       steerQueue.delete(taskId);
       // Marca cancelada ANTES de abortar: quem estiver no meio de runPhase vê
       // o status novo e não sobrescreve com "falhou".
@@ -717,6 +725,8 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       await stopPreview(taskId);
       // O espaço fica no disco para inspeção (decisão da arquitetura).
       sistema(taskId, "Tarefa cancelada. O que já foi feito fica guardado no espaço da tarefa.");
+      registrarTarefaFinalizada(taskId, "cancelada", motivo);
+      verificarGatilhoAuto();
       break;
     }
   }

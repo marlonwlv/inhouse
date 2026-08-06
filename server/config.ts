@@ -29,6 +29,11 @@ export const DATA_DIR =
   process.env.INHOUSE_DATA_DIR ??
   dirComCompat(join(homedir(), ".inhouse"), join(homedir(), ".inhouse"));
 export const TRANSCRIPTS_DIR = join(DATA_DIR, "transcripts");
+/** Dados do eval de experiência (registros JSONL + relatórios do juiz). */
+export const EVAL_DIR = join(DATA_DIR, "eval");
+export const RELATORIOS_DIR = join(EVAL_DIR, "relatorios");
+/** Gatilho automático do relatório: a cada N tarefas finalizadas sem análise. */
+export const EVAL_AUTO_A_CADA = Number(process.env.INHOUSE_EVAL_A_CADA ?? 10);
 
 /** Faixa de portas para previews (dev servers dos espaços). */
 export const PREVIEW_PORT_BASE = 4500;
@@ -40,7 +45,7 @@ export const PERMISSION_TIMEOUT_MS = 30 * 60 * 1000;
 export const MAX_GATE_FIX_ROUNDS = 2;
 
 export function ensureDirs(): void {
-  for (const d of [PROJECTS_DIR, ESPACOS_DIR, DATA_DIR, TRANSCRIPTS_DIR]) {
+  for (const d of [PROJECTS_DIR, ESPACOS_DIR, DATA_DIR, TRANSCRIPTS_DIR, EVAL_DIR, RELATORIOS_DIR]) {
     mkdirSync(d, { recursive: true });
   }
 }

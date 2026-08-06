@@ -709,3 +709,41 @@ input::placeholder { color: var(--faint); }
 /* Card inteiro clicável (abre o editor) */
 .task[data-open-task] { cursor: pointer; transition: border-color .12s ease, box-shadow .12s ease; }
 .task[data-open-task]:hover { border-color: var(--brand); box-shadow: 0 2px 10px -4px rgba(18,38,28,.18); }
+
+/* ---------- Feedback de experiência ---------- */
+.feedback-widget { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.feedback-widget.done { color: var(--brand); font-size: 13px; border-top: none; }
+.fb-q { font-size: 13px; color: var(--muted); }
+.fb-emoji { font-size: 20px; line-height: 1; background: none; border: 1px solid transparent; border-radius: 8px; padding: 3px 6px; cursor: pointer; }
+.fb-emoji:hover { border-color: var(--line); background: var(--surface-2); transform: scale(1.1); }
+.fb-inline { display: inline-flex; gap: 2px; }
+.fb-inline .fb-emoji { font-size: 16px; padding: 2px 4px; }
+.fb-texto { flex: 1; min-width: 180px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 13px; }
+
+/* ---------- Diálogo de cancelamento ---------- */
+.cancel-dialog { border: 1px solid var(--line); border-radius: 14px; padding: 22px; max-width: 460px; background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+.cancel-dialog::backdrop { background: rgba(18,38,28,.35); }
+.cancel-dialog h3 { margin: 0 0 6px; font-size: 17px; }
+.cancel-dialog p { margin: 0 0 10px; font-size: 13.5px; color: var(--muted); }
+.cancel-dialog .dlg-label { color: var(--ink); font-weight: 600; margin-top: 12px; }
+.dlg-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.chip-btn { font: inherit; font-size: 12.5px; padding: 5px 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); cursor: pointer; }
+.chip-btn.sel { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+.dlg-input { width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; font: inherit; font-size: 13.5px; margin-bottom: 14px; }
+.dlg-acts { display: flex; justify-content: flex-end; gap: 8px; }
+.btn.danger { background: #C0392B; border-color: #C0392B; color: #fff; }
+
+/* ---------- Tela Experiência ---------- */
+.exp-wrap { padding: 28px 32px; max-width: 1000px; margin: 0 auto; }
+.exp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin: 18px 0 28px; }
+.exp-stat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 14px 16px; }
+.exp-stat.norte { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }
+.exp-stat .n { font-size: 24px; font-weight: 800; letter-spacing: -.02em; }
+.exp-stat .l { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.exp-aprendizados { display: grid; gap: 8px; margin: 12px 0 24px; }
+.exp-apr { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--amber); border-radius: var(--r-sm); padding: 10px 14px; font-size: 13.5px; }
+.exp-apr .ocorr { color: var(--faint); font-size: 12px; }
+.exp-relatorios { display: grid; gap: 6px; }
+.exp-rel-item { display: flex; gap: 10px; align-items: center; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); cursor: pointer; }
+.exp-rel-item:hover { border-color: var(--brand); }
+.exp-relatorio-md { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 20px 24px; margin-top: 16px; font-size: 14px; line-height: 1.6; }

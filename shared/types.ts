@@ -43,6 +43,25 @@ export type TaskStatus =
   | "concluida"
   | "cancelada";
 
+/** Medições de uma fase do Claude (extraídas do result do SDK). */
+export interface UsoFase {
+  chamadas: number;
+  custoUsd: number;
+  turnos: number;
+  msTotal: number;
+  msApi: number;
+  tokensIn: number;
+  tokensOut: number;
+  negacoesAuto: number;
+}
+/** Acumulado da tarefa para o eval de experiência. */
+export interface TaskUso {
+  porEtapa: Partial<Record<Step, UsoFase>>;
+  falhas: number;
+  ultimosErros: string[];
+  triagemCurta?: boolean;
+}
+
 export interface GateResult {
   name: string; // "TypeScript" | "Lint" | "Testes" | ...
   command: string;
@@ -92,6 +111,8 @@ export interface Task {
   autoAprovar?: boolean;
   /** Histórico de passos com início/fim — mostra quanto tempo cada etapa levou. */
   historico?: { step: Step; inicio: string; fim?: string }[];
+  /** Medições acumuladas para o eval de experiência (custo/turnos por etapa). */
+  uso?: TaskUso;
   createdAt: string;
   updatedAt: string;
 }
@@ -128,7 +149,8 @@ export type ServerEvent =
   | { type: "permission_request"; request: PermissionRequest }
   | { type: "permission_resolved"; requestId: string; allowed: boolean }
   | { type: "preview_ready"; taskId: string; url: string }
-  | { type: "claude_status"; ok: boolean; version?: string; detail?: string };
+  | { type: "claude_status"; ok: boolean; version?: string; detail?: string }
+  | { type: "eval_relatorio"; status: "gerando" | "pronto" | "erro"; arquivo?: string; detalhe?: string };
 
 // ---------- API REST ----------
 // GET  /api/state                       -> { projects, tasks, permissions, claude: {ok, version} }
@@ -143,6 +165,11 @@ export type ServerEvent =
 // POST /api/permissions/:id/decision    { allow, remember? } -> 200
 // POST /api/tasks/:id/preview/start     -> { url }
 // POST /api/tasks/:id/preview/stop      -> 200
+// POST /api/tasks/:id/feedback          { nota, texto? } -> { ok: true }
+// GET  /api/eval/resumo                 -> EvalResumo
+// GET  /api/eval/relatorios             -> { relatorios: {ts, arquivo, tarefasAnalisadas, custoUsd?}[] }
+// GET  /api/eval/relatorios/:arquivo    -> { conteudo }
+// POST /api/eval/relatorios             -> 202 (gera análise; 409 se já gerando)
 
 /** Fonte única dos nomes de ação — rotas validam por aqui; a trava de tipo abaixo
  *  quebra a compilação se este array e o union TaskAction saírem de sincronia. */
@@ -163,12 +190,36 @@ export type TaskAction =
   | { action: "publish"; createPr?: boolean } // merge no main (+ PR opcional)
   | { action: "retry" } // re-roda o passo que falhou
   | { action: "auto_mode"; on: boolean } // permissões automáticas para esta tarefa
-  | { action: "cancel" };
+  | { action: "cancel"; motivo?: string };
 
 // Travas de sincronia (compile-time; sem custo em runtime):
 type _TodasAsAcoesNaLista = TaskAction["action"] extends (typeof TASK_ACTIONS)[number] ? true : never;
 type _NadaSobrandoNaLista = (typeof TASK_ACTIONS)[number] extends TaskAction["action"] ? true : never;
 export const _travaAcoes: [_TodasAsAcoesNaLista, _NadaSobrandoNaLista] = [true, true];
+
+// ---------- Eval de experiência ----------
+
+export const FEEDBACK_NOTAS = ["otimo", "ok", "ruim"] as const;
+export type FeedbackNota = (typeof FEEDBACK_NOTAS)[number];
+
+/** Resumo numérico exibido na tela Experiência (calculado dos jsonl do eval). */
+export interface EvalResumo {
+  /** Métrica norte: publicadas sem resgate / total finalizadas. */
+  taxaSemResgate: { publicadasSemResgate: number; finalizadas: number };
+  /** Métrica secundária: mediana de tempo humano por tarefa publicada (ms). */
+  tempoHumanoMedianoMs: number | null;
+  tempoMaquinaMedianoMs: number | null;
+  concluidas: number;
+  canceladas: number;
+  paradasEmFalhou: number;
+  permissoes: { total: number; esperaMedianaMs: number | null; timeouts: number; autoPct: number };
+  gateMaisReprova: string | null;
+  custoTotalUsd: number;
+  feedback: { otimo: number; ok: number; ruim: number };
+  semDadosDeTempo: number;
+  aprendizados: { chave: string; insight: string; severidade: number; ocorrencias: number }[];
+  relatorios: number;
+}
 
 // ---------- Config por projeto (inhouse.config.json na raiz) ----------
 // Mapeia etapas da esteira para skills do Claude Code da máquina (ex.: gstack).

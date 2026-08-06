@@ -116,6 +116,7 @@ process.env.INHOUSE_PROJECTS_DIR = join(TMP, "projects");
 const store = await import("../server/store.js");
 const { applyAction, startTask } = await import("../server/workflow/machine.js");
 const { MAX_GATE_FIX_ROUNDS } = await import("../server/config.js");
+const coleta = await import("../server/eval/coleta.js");
 
 const project: Project = {
   id: "p1",
@@ -343,6 +344,12 @@ describe("machine: teste, publicação e cancelamento", () => {
 
     const done = await applyAction(t.id, { action: "publish", createPr: true });
     expect(done.step).toBe("concluida");
+    // Eval: terminal gera exatamente 1 registro "concluida" com prCriado.
+    const linhas = coleta
+      .readJsonl<{ taskId: string; desfecho: string; prCriado?: boolean }>(coleta.TAREFAS_FILE())
+      .filter((l) => l.taskId === t.id);
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]).toMatchObject({ desfecho: "concluida", prCriado: true });
     expect(done.status).toBe("concluida");
     expect(done.prUrl).toBe("https://github.com/inhouse/app/pull/7");
     expect(done.previewUrl).toBeUndefined();
@@ -371,8 +378,16 @@ describe("machine: teste, publicação e cancelamento", () => {
 
   it("cancel para o preview, aborta a sessão do claude, mantém o espaço e não pode ser repetido", async () => {
     const t = await criaTaskEmAprovacao();
-    const done = await applyAction(t.id, { action: "cancel" });
+    const done = await applyAction(t.id, { action: "cancel", motivo: "Só estava testando" });
     expect(done.status).toBe("cancelada");
+    // Motivo vira item do usuário no chat e entra no registro do eval.
+    expect(
+      store.transcriptRead(t.id).some((i) => i.kind === "user" && i.text.includes("Só estava testando")),
+    ).toBe(true);
+    const linhaCancel = coleta
+      .readJsonl<{ taskId: string; desfecho: string; motivoCancelamento?: string }>(coleta.TAREFAS_FILE())
+      .find((l) => l.taskId === t.id);
+    expect(linhaCancel).toMatchObject({ desfecho: "cancelada", motivoCancelamento: "Só estava testando" });
     expect(h.state.stopPreviewCalls).toContain(t.id);
     // A sessão do Claude em andamento é abortada (não vira zumbi de 20 min).
     expect(h.state.abortCalls).toContain(t.id);

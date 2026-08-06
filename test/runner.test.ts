@@ -66,6 +66,39 @@ afterEach(() => {
 });
 
 describe("runPhase", () => {
+  it("extrai métricas do result do SDK (custo/turnos/tokens/negações)", async () => {
+    setQuery(async function* () {
+      yield initMsg;
+      yield {
+        type: "result",
+        subtype: "success",
+        result: "ok",
+        is_error: false,
+        total_cost_usd: 0.42,
+        num_turns: 5,
+        duration_ms: 60_000,
+        duration_api_ms: 40_000,
+        usage: { input_tokens: 100, cache_read_input_tokens: 900, cache_creation_input_tokens: 50, output_tokens: 200 },
+        permission_denials: [{}, {}],
+      } as unknown as SDKMessage;
+    });
+    const r = await runPhase({ taskId: "t-metricas", cwd: "/tmp", prompt: "x", permissionMode: "default" });
+    expect(r.success).toBe(true);
+    expect(r.metricas).toEqual({
+      custoUsd: 0.42, turnos: 5, msTotal: 60_000, msApi: 40_000, tokensIn: 1050, tokensOut: 200, negacoesAuto: 2,
+    });
+  });
+
+  it("result sem campos de usage (formato mínimo) → metricas ausente, sem erro", async () => {
+    setQuery(async function* () {
+      yield initMsg;
+      yield resultMsg("ok");
+    });
+    const r = await runPhase({ taskId: "t-sem-metricas", cwd: "/tmp", prompt: "x", permissionMode: "default" });
+    expect(r.success).toBe(true);
+    expect(r.metricas).toBeUndefined();
+  });
+
   it("abortPhase interrompe a sessão em andamento (usado pelo cancel)", async () => {
     setQuery(async function* (props) {
       yield initMsg;

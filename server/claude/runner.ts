@@ -13,6 +13,8 @@ import type {
   SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { TranscriptItem } from "../../shared/types.js";
+import { acumularFase } from "../eval/coleta.js";
+import type { FaseMetricas } from "../eval/coleta.js";
 import { claudeEnv, claudePath } from "../config.js";
 import { broadcast } from "../events.js";
 import { transcriptAppend } from "../store.js";
@@ -42,6 +44,8 @@ export interface PhaseResult {
   errorMessage?: string;
   /** A fase foi interrompida pelo teto de tempo (não é erro — oferecer "Continuar assim mesmo"). */
   timedOut?: boolean;
+  /** Medições do SDK (custo/turnos/tokens) — ausente quando a fase morreu sem result. */
+  metricas?: FaseMetricas;
 }
 
 export interface RunPhaseOpts {
@@ -199,6 +203,7 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   let success = false;
   let resultSeen = false;
   let errorMessage: string | undefined;
+  let metricas: FaseMetricas | undefined;
   /** Último erro de API visto em mensagem assistant (auth, rate limit...). */
   let apiError: SDKAssistantMessage["error"];
 
@@ -248,6 +253,19 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
     }
     if (m.type === "result") {
       resultSeen = true;
+      if (typeof m.total_cost_usd === "number" && m.usage) {
+        const u = m.usage;
+        metricas = {
+          custoUsd: m.total_cost_usd,
+          turnos: m.num_turns ?? 0,
+          msTotal: m.duration_ms ?? 0,
+          msApi: m.duration_api_ms ?? 0,
+          tokensIn:
+            (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
+          tokensOut: u.output_tokens ?? 0,
+          negacoesAuto: m.permission_denials?.length ?? 0,
+        };
+      }
       if (m.subtype === "success") {
         finalText = m.result;
         success = !m.is_error;
@@ -289,7 +307,8 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
     phaseAborts.delete(opts.taskId);
   }
 
-  return { sessionId, finalText, planText, success, errorMessage, timedOut };
+  if (metricas) acumularFase(opts.taskId, metricas);
+  return { sessionId, finalText, planText, success, errorMessage, timedOut, metricas };
 }
 
 /** Traduz erros do SDK/CLI em mensagem amigável para leigos. */

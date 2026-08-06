@@ -7,7 +7,8 @@ import type { CanUseTool, PermissionResult } from "@anthropic-ai/claude-agent-sd
 import type { PermissionRequest } from "../../shared/types.js";
 import { PERMISSION_TIMEOUT_MS } from "../config.js";
 import { broadcast } from "../events.js";
-import { addPermission, getTask, newId, removePermission, transcriptAppend } from "../store.js";
+import { addPermission, getPermission, getTask, newId, removePermission, transcriptAppend } from "../store.js";
+import { registrarPermissao } from "../eval/coleta.js";
 
 interface Decision {
   allow: boolean;
@@ -54,11 +55,29 @@ function friendlyFor(toolName: string, input: Record<string, unknown>): string {
  * Conclui um pedido pendente (decisão humana, timeout ou aborto da fase).
  * Retorna false se o id não está (mais) pendente.
  */
-function finish(requestId: string, allow: boolean, denyMessage?: string, remember?: boolean): boolean {
+function finish(
+  requestId: string,
+  allow: boolean,
+  denyMessage?: string,
+  remember?: boolean,
+  origem: "humano" | "timeout" | "abort" = "humano",
+): boolean {
   const p = pending.get(requestId);
   if (!p) return false;
   pending.delete(requestId);
   clearTimeout(p.timer);
+  // Eval: latência e desfecho da decisão (o registro ainda tem createdAt aqui).
+  const registro = getPermission(requestId);
+  if (registro) {
+    registrarPermissao({
+      taskId: p.taskId,
+      requestId,
+      tool: registro.toolName,
+      esperaMs: Math.max(0, Date.now() - Date.parse(registro.createdAt)),
+      desfecho: origem === "humano" ? (allow ? "permitiu" : "negou") : origem === "timeout" ? "timeout" : "abortada",
+      ...(remember ? { lembrar: true } : {}),
+    });
+  }
   removePermission(requestId);
   broadcast({ type: "permission_resolved", requestId, allowed: allow });
   p.resolve({ allow, remember, denyMessage });
@@ -90,6 +109,13 @@ export function createPermissionGate(taskId: string): CanUseTool {
       };
       transcriptAppend(taskId, item);
       broadcast({ type: "transcript", taskId, item });
+      registrarPermissao({
+        taskId,
+        requestId: newId(),
+        tool: toolName,
+        esperaMs: 0,
+        desfecho: "auto",
+      });
       return {
         behavior: "allow",
         updatedInput: input,
@@ -112,14 +138,14 @@ export function createPermissionGate(taskId: string): CanUseTool {
 
     const decision = await new Promise<Decision>((resolve) => {
       const timer = setTimeout(() => {
-        finish(id, false, "Sem resposta — negado por segurança");
+        finish(id, false, "Sem resposta — negado por segurança", undefined, "timeout");
       }, PERMISSION_TIMEOUT_MS);
       timer.unref();
       pending.set(id, { taskId, resolve, timer });
       // Fase abortada (timeout global / cancelamento): não deixar o pedido órfão.
       options.signal.addEventListener(
         "abort",
-        () => finish(id, false, "A tarefa foi interrompida — pedido cancelado."),
+        () => finish(id, false, "A tarefa foi interrompida — pedido cancelado.", undefined, "abort"),
         { once: true },
       );
     });

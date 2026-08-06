@@ -6,16 +6,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   let n = 0;
-  const added: { id: string; taskId: string; toolName: string; friendly: string }[] = [];
+  const added: { id: string; taskId: string; toolName: string; friendly: string; createdAt: string }[] = [];
   const events: { type: string; requestId?: string; allowed?: boolean }[] = [];
   const removed: string[] = [];
   return {
     added,
     events,
     removed,
+    permissoesEval: [] as { desfecho: string; esperaMs: number; tool: string; lembrar?: boolean }[],
     tasks: {} as Record<string, { autoAprovar?: boolean }>,
     transcripts: [] as string[],
-    addPermission: (p: { id: string; taskId: string; toolName: string; friendly: string }) => {
+    addPermission: (p: { id: string; taskId: string; toolName: string; friendly: string; createdAt: string }) => {
       added.push(p);
       return p;
     },
@@ -36,6 +37,12 @@ vi.mock("../server/store.js", () => ({
   removePermission: mocks.removePermission,
   transcriptAppend: mocks.transcriptAppend,
   getTask: (id: string) => mocks.tasks[id],
+  getPermission: (id: string) => mocks.added.find((p) => p.id === id),
+}));
+vi.mock("../server/eval/coleta.js", () => ({
+  registrarPermissao: (r: { desfecho: string; esperaMs: number; tool: string; lembrar?: boolean }) => {
+    mocks.permissoesEval.push(r);
+  },
 }));
 vi.mock("../server/events.js", () => ({ broadcast: mocks.broadcast, addClient: () => {} }));
 
@@ -61,6 +68,7 @@ afterEach(() => {
   mocks.added.length = 0;
   mocks.events.length = 0;
   mocks.removed.length = 0;
+  mocks.permissoesEval.length = 0;
 });
 
 describe("createPermissionGate", () => {
@@ -192,6 +200,43 @@ describe("createPermissionGate", () => {
     expect(res).toMatchObject({ behavior: "deny" });
     if (res?.behavior === "deny") expect(res.message).toContain("interrompida");
     expect(mocks.removed).toContain(pedido.id);
+  });
+
+  it("eval: desfechos registrados com latência (permitiu/negou/timeout/abort/auto)", async () => {
+    mocks.permissoesEval.length = 0;
+    // humano permite
+    let gate = createPermissionGate("task-ev");
+    let promessa = gate("Bash", { command: "x" }, opcoes());
+    resolvePermission(mocks.added.at(-1)!.id, true, true);
+    await promessa;
+    // humano nega
+    gate = createPermissionGate("task-ev");
+    promessa = gate("Bash", { command: "y" }, opcoes());
+    resolvePermission(mocks.added.at(-1)!.id, false);
+    await promessa;
+    // timeout
+    vi.useFakeTimers();
+    gate = createPermissionGate("task-ev");
+    promessa = gate("Bash", { command: "z" }, opcoes());
+    await vi.advanceTimersByTimeAsync(PERMISSION_TIMEOUT_MS);
+    await promessa;
+    vi.useRealTimers();
+    // abort
+    const ac = new AbortController();
+    gate = createPermissionGate("task-ev");
+    promessa = gate("Bash", { command: "w" }, opcoes(ac.signal));
+    ac.abort();
+    await promessa;
+    // auto
+    mocks.tasks["task-ev"] = { autoAprovar: true };
+    await createPermissionGate("task-ev")("Bash", { command: "v" }, opcoes());
+    delete mocks.tasks["task-ev"];
+
+    const desfechos = mocks.permissoesEval.map((r) => r.desfecho);
+    expect(desfechos).toEqual(["permitiu", "negou", "timeout", "abortada", "auto"]);
+    expect(mocks.permissoesEval[0]?.lembrar).toBe(true);
+    expect(mocks.permissoesEval.every((r) => r.esperaMs >= 0)).toBe(true);
+    mocks.permissoesEval.length = 0;
   });
 
   it("modo auto: concede sem criar pedido, com registro no chat", async () => {

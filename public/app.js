@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.2.5";
+const UI_VERSION = "0.3.1";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -55,6 +55,8 @@ const state = {
   transcripts: {}, // taskId -> { loaded, loading, items[], stream }
   busy: {}, // chaves de ações em andamento ("clone", "create", "preview:<id>", "publish:<id>")
   ui: { createPr: true },
+  eval: null, // resumo carregado ao entrar em #/experiencia
+  evalRelatorio: null, // conteúdo do relatório aberto
 };
 
 // ---------- Utilidades ----------
@@ -342,6 +344,19 @@ function handleEvent(ev) {
       state.permissions = state.permissions.filter((p) => p.id !== ev.requestId);
       render();
       break;
+    case "eval_relatorio":
+      if (ev.status === "pronto") {
+        toast("Análise de experiência pronta.");
+        if (route().name === "experiencia") carregarEval();
+      } else if (ev.status === "erro") {
+        toast(`Não deu para gerar a análise: ${ev.detalhe ?? "erro"}`);
+        state.busy["eval-relatorio"] = false;
+        if (route().name === "experiencia") render();
+      } else {
+        state.busy["eval-relatorio"] = true;
+        if (route().name === "experiencia") render();
+      }
+      break;
     case "preview_ready": {
       const t = getTask(ev.taskId);
       if (t) { t.previewUrl = ev.url; render(); }
@@ -436,12 +451,79 @@ function route() {
   const m = h.match(/^#\/tarefa\/(.+)$/);
   if (m) return { name: "editor", id: decodeURIComponent(m[1]) };
   if (h.startsWith("#/tarefas")) return { name: "board" };
+  if (h.startsWith("#/experiencia")) return { name: "experiencia" };
   return { name: "home" };
 }
 
 function isEditorOf(taskId) {
   const root = $("#app")?.firstElementChild;
   return !!root && root.dataset.view === "editor" && root.dataset.task === taskId;
+}
+
+async function carregarEval() {
+  state.eval = await api("/api/eval/resumo");
+  const idx = await api("/api/eval/relatorios");
+  state.evalRelatorios = idx?.relatorios ?? [];
+  render();
+}
+
+function dur(ms) {
+  if (ms === null || ms === undefined) return "—";
+  const min = Math.round(ms / 60000);
+  return min >= 1 ? `${min} min` : `${Math.round(ms / 1000)} s`;
+}
+
+function renderExperiencia() {
+  const e = state.eval;
+  const busy = !!state.busy["eval-relatorio"];
+  if (!e) { carregarEval(); }
+  const stat = (n, l, norte) => `<div class="exp-stat ${norte ? "norte" : ""}"><div class="n">${esc(String(n))}</div><div class="l">${esc(l)}</div></div>`;
+  const semDados = !e || e.taxaSemResgate.finalizadas === 0;
+
+  const grid = !e ? "<p>Carregando…</p>" : semDados
+    ? `<p class="exp-empty">Finalize algumas tarefas para o Inhouse ter o que analisar.</p>`
+    : `<div class="exp-grid">
+        ${stat(`${e.taxaSemResgate.publicadasSemResgate}/${e.taxaSemResgate.finalizadas}`, "Publicadas sem precisar de socorro", true)}
+        ${stat(dur(e.tempoHumanoMedianoMs), "Tempo mediano esperando você", true)}
+        ${stat(dur(e.tempoMaquinaMedianoMs), "Tempo mediano de trabalho")}
+        ${stat(e.concluidas, "Concluídas")}
+        ${stat(e.canceladas, "Canceladas")}
+        ${stat(e.paradasEmFalhou, "Paradas em falha")}
+        ${stat(`${e.permissoes.total}`, `Permissões (${dur(e.permissoes.esperaMedianaMs)} p/ responder · ${e.permissoes.autoPct}% no auto)`)}
+        ${stat(e.gateMaisReprova ?? "—", "Verificação que mais reprova")}
+        ${stat(`US$ ${e.custoTotalUsd}`, "Custo total (assinatura)")}
+        ${stat(`😃 ${e.feedback.otimo} · 😐 ${e.feedback.ok} · 😖 ${e.feedback.ruim}`, "Como as pessoas avaliaram")}
+      </div>`;
+
+  const aprendizados = (e?.aprendizados ?? []).length
+    ? `<h3>O que o Inhouse aprendeu</h3><div class="exp-aprendizados">${e.aprendizados.map((a) =>
+        `<div class="exp-apr">${esc(a.insight)} <span class="ocorr">· visto ${a.ocorrencias}× · severidade ${a.severidade}/5</span></div>`).join("")}</div>`
+    : "";
+
+  const relatorios = (state.evalRelatorios ?? []).length
+    ? `<h3>Análises geradas</h3><div class="exp-relatorios">${state.evalRelatorios.map((r) =>
+        `<div class="exp-rel-item" data-act="abrir-relatorio" data-arq="${esc(r.arquivo)}">
+          <span>${esc(new Date(r.ts).toLocaleString("pt-BR"))}</span>
+          <span class="gap" style="flex:1"></span>
+          <span class="l">${r.tarefasAnalisadas} tarefas${r.custoUsd ? ` · US$ ${r.custoUsd.toFixed(2)}` : ""}</span>
+        </div>`).join("")}</div>`
+    : "";
+
+  const md = state.evalRelatorio
+    ? `<div class="exp-relatorio-md">${mdBlock(state.evalRelatorio)}</div>`
+    : "";
+
+  renderPage(`<div class="exp-wrap">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <h2 style="margin:0;flex:1">Experiência</h2>
+      <button class="btn primary" data-act="gerar-relatorio" ${busy ? "disabled" : ""}>${busy ? '<span class="spinner"></span> Gerando análise…' : "Gerar análise agora"}</button>
+    </div>
+    <p class="hello-sub">O Inhouse mede sozinho os atritos de quem usa e ranqueia o que melhorar.</p>
+    ${grid}
+    ${aprendizados}
+    ${relatorios}
+    ${md}
+  </div>`);
 }
 
 // ---------- Render raiz ----------
@@ -454,6 +536,7 @@ function render() {
   });
   if (r.name === "home") renderHome();
   else if (r.name === "board") renderBoard();
+  else if (r.name === "experiencia") renderExperiencia();
   else renderEditor(r.id);
 }
 
@@ -520,6 +603,37 @@ function fmtDur(ms) {
 function stepAtualDesde(t) {
   const h = (t.historico ?? [])[ (t.historico ?? []).length - 1 ];
   return h && !h.fim ? h.inicio : null;
+}
+
+function abrirDialogoCancelar(taskId) {
+  const motivos = ["Não era o que eu pedi", "Demorou demais", "Travou / deu erro", "Mudei de ideia", "Só estava testando"];
+  const dlg = document.createElement("dialog");
+  dlg.className = "cancel-dialog";
+  dlg.innerHTML = `<form method="dialog">
+    <h3>Cancelar esta tarefa?</h3>
+    <p>O Claude para de trabalhar nela; o que já foi feito fica guardado no espaço da tarefa.</p>
+    <p class="dlg-label">O que aconteceu? (opcional — ajuda a melhorar o Inhouse)</p>
+    <div class="dlg-chips">${motivos.map((m) => `<button type="button" class="chip-btn" data-motivo="${esc(m)}">${esc(m)}</button>`).join("")}</div>
+    <input class="dlg-input" placeholder="Ou escreva com suas palavras…" maxlength="500">
+    <div class="dlg-acts"><button value="voltar" class="btn sm ghost">Voltar</button><button value="cancelar" class="btn sm danger">Cancelar tarefa</button></div>
+  </form>`;
+  document.body.appendChild(dlg);
+  const input = dlg.querySelector(".dlg-input");
+  dlg.querySelectorAll(".chip-btn").forEach((c) =>
+    c.addEventListener("click", () => {
+      input.value = c.dataset.motivo;
+      dlg.querySelectorAll(".chip-btn").forEach((x) => x.classList.remove("sel"));
+      c.classList.add("sel");
+    }),
+  );
+  dlg.addEventListener("close", () => {
+    if (dlg.returnValue === "cancelar") {
+      const motivo = input.value.trim() || undefined;
+      taskAction(taskId, { action: "cancel", motivo });
+    }
+    dlg.remove();
+  });
+  dlg.showModal();
 }
 
 // ---------- Peças compartilhadas ----------
@@ -749,6 +863,7 @@ function taskFootHtml(t, perm) {
   } else if (t.status === "concluida") {
     rows.push(`<div class="task-foot"><span>Todos os passos concluídos · mudança publicada no projeto</span>
       <span class="gap"></span>
+      ${localStorage.getItem(`inhouse.feedback.${id}`) ? "" : `<span class="fb-inline"><button class="fb-emoji" data-act="feedback" data-task="${id}" data-nota="otimo">😃</button><button class="fb-emoji" data-act="feedback" data-task="${id}" data-nota="ok">😐</button><button class="fb-emoji" data-act="feedback" data-task="${id}" data-nota="ruim">😖</button></span>`}
       ${t.prUrl ? `<a class="link" href="${esc(t.prUrl)}" target="_blank" rel="noreferrer">Ver no GitHub</a>` : ""}</div>`);
   } else if (t.status === "cancelada") {
     rows.push(`<div class="task-foot"><span>Tarefa cancelada.</span></div>`);
@@ -888,9 +1003,23 @@ function chatCardsHtml(t) {
   }
   if (t.status === "concluida") {
     parts.push(`<div class="publish-card"><div class="head">✓ Tarefa concluída</div>
-      <p>A mudança foi publicada no projeto.${t.prUrl ? ` <a href="${esc(t.prUrl)}" target="_blank" rel="noreferrer">Ver o PR no GitHub</a>` : ""}</p></div>`);
+      <p>A mudança foi publicada no projeto.${t.prUrl ? ` <a href="${esc(t.prUrl)}" target="_blank" rel="noreferrer">Ver o PR no GitHub</a>` : ""}</p>
+      ${feedbackWidgetHtml(t)}</div>`);
   }
   return parts.join("");
+}
+
+function feedbackWidgetHtml(t) {
+  const enviado = localStorage.getItem(`inhouse.feedback.${t.id}`);
+  if (enviado) {
+    return `<div class="feedback-widget done">Obrigado! Isso ajuda o Inhouse a melhorar.</div>`;
+  }
+  return `<div class="feedback-widget" data-fb-task="${esc(t.id)}">
+    <span class="fb-q">Como foi essa tarefa?</span>
+    <button class="fb-emoji" data-act="feedback" data-task="${esc(t.id)}" data-nota="otimo" title="Ótima">😃</button>
+    <button class="fb-emoji" data-act="feedback" data-task="${esc(t.id)}" data-nota="ok" title="Ok">😐</button>
+    <button class="fb-emoji" data-act="feedback" data-task="${esc(t.id)}" data-nota="ruim" title="Ruim">😖</button>
+  </div>`;
 }
 
 function permCardHtml(p) {
@@ -1071,10 +1200,39 @@ const actions = {
     taskAction(btn.dataset.task, { action: "auto_mode", on: !t?.autoAprovar });
   },
   "auto-on": (btn) => taskAction(btn.dataset.task, { action: "auto_mode", on: true }),
-  "cancel": (btn) => {
-    if (window.confirm("Cancelar esta tarefa? O Claude para de trabalhar nela; o que já foi feito fica guardado.")) {
-      taskAction(btn.dataset.task, { action: "cancel" });
+  "gerar-relatorio": async () => {
+    state.busy["eval-relatorio"] = true;
+    render();
+    const r = await api("/api/eval/relatorios", {});
+    if (!r) state.busy["eval-relatorio"] = false;
+    render();
+  },
+  "abrir-relatorio": async (btn) => {
+    const r = await api(`/api/eval/relatorios/${encodeURIComponent(btn.dataset.arq)}`);
+    if (r?.conteudo) { state.evalRelatorio = r.conteudo; render(); }
+  },
+  "cancel": (btn) => abrirDialogoCancelar(btn.dataset.task),
+  "feedback": async (btn) => {
+    const id = btn.dataset.task;
+    const nota = btn.dataset.nota;
+    await api(`/api/tasks/${encodeURIComponent(id)}/feedback`, { nota });
+    localStorage.setItem(`inhouse.feedback.${id}`, nota);
+    // Após a nota, oferece o campo de texto no editor (opcional).
+    const widget = document.querySelector(`[data-fb-task="${id}"]`);
+    if (widget) {
+      widget.innerHTML = `<span class="fb-q">Obrigado! Quer contar o que aconteceu? (opcional)</span>
+        <input class="fb-texto" id="fb-texto-${id}" placeholder="Ex.: demorou demais no plano" maxlength="2000">
+        <button class="btn sm" data-act="feedback-texto" data-task="${id}" data-nota="${nota}">Enviar</button>`;
+      widget.querySelector("input")?.focus();
+    } else {
+      render();
     }
+  },
+  "feedback-texto": async (btn) => {
+    const id = btn.dataset.task;
+    const texto = document.querySelector(`#fb-texto-${id}`)?.value?.trim();
+    await api(`/api/tasks/${encodeURIComponent(id)}/feedback`, { nota: btn.dataset.nota, texto: texto || undefined });
+    render();
   },
   "request-changes": (btn) => {
     const msg = window.prompt("O que você quer mudar?");

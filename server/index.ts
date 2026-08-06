@@ -9,9 +9,12 @@ import express from "express";
 import { buildRouter } from "./api/routes.js";
 import { HOST, PORT, ensureDirs } from "./config.js";
 import { stopAllPreviews } from "./services/preview.js";
+import { backfillSeVazio } from "./eval/coleta.js";
 import { load } from "./store.js";
 
 load();
+// Primeira subida com eval: tarefas históricas viram dados (backfill idempotente).
+backfillSeVazio();
 ensureDirs();
 
 const app = express();

@@ -2,13 +2,21 @@
  * Rotas REST da UI (contrato no bloco "API REST" de shared/types.ts).
  * Erros sempre em JSON {error} com mensagem amigável em português.
  */
+import { existsSync, readFileSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import express, { Router } from "express";
 import type { ErrorRequestHandler, Request, RequestHandler, Response } from "express";
 import type { ServerEvent, TaskAction } from "../../shared/types.js";
-import { TASK_ACTIONS } from "../../shared/types.js";
+import { FEEDBACK_NOTAS, TASK_ACTIONS } from "../../shared/types.js";
+import type { FeedbackNota } from "../../shared/types.js";
+import { registrarFeedback } from "../eval/coleta.js";
+import { calcularResumo } from "../eval/resumo.js";
+import { estaGerando, gerarRelatorio } from "../eval/juiz.js";
+import { readJsonl, RELATORIOS_INDEX } from "../eval/coleta.js";
+import { RELATORIOS_DIR } from "../config.js";
 import { resolvePermission } from "../claude/permissions.js";
 import { claudeStatus } from "../claude/runner.js";
-import { addClient } from "../events.js";
+import { addClient, broadcast } from "../events.js";
 import { startPreview, stopPreview } from "../services/preview.js";
 import { cloneProject, createFromTemplate, openProject } from "../services/projects.js";
 import * as store from "../store.js";
@@ -169,6 +177,73 @@ export function buildRouter(): Router {
       const msg = texto(req.body, "text", "a mensagem");
       if (!store.getTask(id)) throw new HttpError(404, "Tarefa não encontrada.");
       await steer(id, msg);
+      res.status(202).json({ ok: true });
+    }),
+  );
+
+  router.post(
+    "/api/tasks/:id/feedback",
+    h(async (req, res) => {
+      const id = req.params.id ?? "";
+      const task = store.getTask(id);
+      if (!task) throw new HttpError(404, "Tarefa não encontrada.");
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const nota = String(body.nota ?? "");
+      if (!(FEEDBACK_NOTAS as readonly string[]).includes(nota)) {
+        throw new HttpError(400, "Escolha uma das opções de avaliação.");
+      }
+      const textoLivre =
+        typeof body.texto === "string" && body.texto.trim() ? body.texto.trim().slice(0, 2000) : undefined;
+      registrarFeedback(id, nota as FeedbackNota, textoLivre);
+      // O juiz vê o feedback em contexto no chat da tarefa.
+      const emoji = nota === "otimo" ? "😃" : nota === "ok" ? "😐" : "😖";
+      const item = {
+        kind: "system" as const,
+        text: `Feedback registrado: ${emoji}${textoLivre ? ` — “${textoLivre}”` : ""}`,
+        at: new Date().toISOString(),
+      };
+      store.transcriptAppend(id, item);
+      broadcast({ type: "transcript", taskId: id, item });
+      res.json({ ok: true });
+    }),
+  );
+
+  // ---------- Eval de experiência ----------
+
+  router.get(
+    "/api/eval/resumo",
+    h(async (_req, res) => {
+      res.json(calcularResumo());
+    }),
+  );
+
+  router.get(
+    "/api/eval/relatorios",
+    h(async (_req, res) => {
+      const relatorios = readJsonl(RELATORIOS_INDEX()).reverse();
+      res.json({ relatorios });
+    }),
+  );
+
+  router.get(
+    "/api/eval/relatorios/:arquivo",
+    h(async (req, res) => {
+      const nome = req.params.arquivo ?? "";
+      // Anti path traversal: só nomes simples de .md, resolvidos DENTRO de RELATORIOS_DIR.
+      if (!/^[\w][\w.-]*\.md$/.test(nome)) throw new HttpError(400, "Nome de arquivo inválido.");
+      const caminho = resolve(RELATORIOS_DIR, nome);
+      if (!caminho.startsWith(resolve(RELATORIOS_DIR) + sep) || !existsSync(caminho)) {
+        throw new HttpError(404, "Relatório não encontrado.");
+      }
+      res.json({ conteudo: readFileSync(caminho, "utf8") });
+    }),
+  );
+
+  router.post(
+    "/api/eval/relatorios",
+    h(async (_req, res) => {
+      if (estaGerando()) throw new HttpError(409, "Uma análise já está sendo gerada. Aguarde.");
+      void gerarRelatorio("manual");
       res.status(202).json({ ok: true });
     }),
   );
