@@ -11,7 +11,7 @@ Isso define o risco: ele vai tocar um repo de produção sem ser o desenvolvedor
 
 O objetivo é uma **v1 segura e funcional**: tudo que ele fizer vira PR revisável (nunca toca o main, local ou remoto), a cópia real de seu-monorepo dele nunca é modificada, o preview funciona para ele ver a mudança, o onboarding não deixa ele travado, e o modo auto tem freio.
 
-## Escopo recomendado da v1 (7 frentes, em ordem de prioridade)
+## Escopo recomendado da v1 (8 frentes, em ordem de prioridade)
 
 ### 1. Segurança do "Publicar" no repo real (severidade máxima)
 Hoje: um clique faz `merge --no-ff` no main **local**, **auto-commita qualquer alteração não salva** da pasta principal (`server/services/publish.ts:56-60`), e o checkbox "Criar PR" vem marcado — tudo **sem confirmação** (`public/app.js:1253-1264`, `:57/:1071`).
@@ -67,6 +67,14 @@ Problema real (o Marlon viveu): na etapa "Seu teste", **qualquer** mensagem no c
 O juiz do eval já rankeou os atritos reais. **Já resolvidos** em iterações anteriores: motivo de cancelamento (diálogo), medição de tempo por etapa (histórico), rota rápida por porte (simples pula reviews). **Novos, a incluir nesta v1:**
 - **Visibilidade + saída rápida no Plano** (atrito "plano demorou demais", sev 4/5, único feedback negativo): durante o Plano, mostrar *qual* revisão está rodando (já há system notes) **+ um botão "É uma mudança simples — ir direto ao plano"** que aborta a cadeia de skills e entrega um plano curto. Transforma espera cega em espera controlada; cobre o caso em que a triagem de porte errou pra mais. (`server/workflow/machine.ts` runPlano + `public/app.js`.)
 - **Declarar a estrutura do projeto p/ o agente não perguntar coisa técnica** (atrito "Esse repo é o monorepo ou é o outro-repo?", sev 4/5): bloco de contexto no `inhouse.config.json` (ou o `CLAUDE.md` do projeto) declarando o layout (é monorepo, app em `apps/web`, etc.) **+ instrução de prompt**: "você trabalha para alguém não-técnico; não devolva dúvidas de estrutura de código — decida e declare sua suposição." (`server/workflow/phases.ts`.)
+
+### 8. Coletar os dados de eval da máquina do tester (export/import)
+Problema: o eval é 100% local (`~/.inhouse/eval/*.jsonl` + `relatorios/*.md`, ~36 KB de texto); o Marlon precisa ver como o teste do Maria foi. Para **um** tester numa v1, sem servidor/telemetria.
+- **Export** (`GET /api/eval/export` + botão na tela Experiência): baixa um único JSON com todo o `eval/` (tarefas, feedback, permissões, aprendizados, relatórios). **Transcripts como checkbox opt-in** (contêm trechos de código do repo; baixa sensibilidade no resto). Metadados: label da fonte (ex.: "Maria"), versão da UI, data.
+- **Import** (`POST /api/eval/import` + botão): carrega o bundle do tester no Inhouse do Marlon, cada registro marcado com `fonte` (UUIDs não colidem; feedback latest-wins; aprendizados dedupe por chave). A tela Experiência ganha um filtro **fonte: meus / \<label\> / todos**; o juiz roda sobre os dados do tester.
+- **Atalho**: o tester pode "Gerar análise" antes de exportar (juiz roda na máquina dele) → o export leva o relatório pronto e o Marlon só lê o markdown.
+- Arquivos: `server/api/routes.ts` (export/import), `server/eval/coleta.ts` + `resumo.ts` (campo `fonte`, merge, filtro), `public/app.js` (botões + filtro).
+- **Escala (adiado)**: multi-tester / zero-toque → auto-sync do `eval/` para um repo git privado da org (padrão gstack-artifacts); exige auth git na máquina do tester + repo compartilhado.
 
 ## Explicitamente adiado (não bloqueia a v1)
 - Windows (Mac confirmado).
