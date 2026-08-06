@@ -1454,15 +1454,27 @@ const actions = {
     state.busy[`preview-config:${id}`] = true;
     delete state.previewErro[id];
     render();
-    // Pode demorar (o agente lê o projeto): o api() cuida do toast em falha.
-    const r = await api(`/api/tasks/${encodeURIComponent(id)}/preview/configure`, {});
-    delete state.busy[`preview-config:${id}`];
-    if (r?.url) {
-      const t = getTask(id);
-      if (t) t.previewUrl = r.url;
-    } else {
-      state.previewErro[id] = { msg: "O preview ainda não subiu. Você pode tentar de novo.", podeConfigurar: true };
+    // Fetch direto (não o api()): pode demorar (o agente lê o projeto) e precisamos
+    // do corpo mesmo em erro — se o agente concluir "não há preview", paramos de oferecer.
+    let body = null;
+    try {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/preview/configure`, { method: "POST" });
+      setOnline(true);
+      body = await res.json().catch(() => null);
+      if (res.ok && body?.url) {
+        const t = getTask(id);
+        if (t) t.previewUrl = body.url;
+      } else {
+        state.previewErro[id] = {
+          msg: body?.error || "O preview ainda não subiu.",
+          podeConfigurar: !!body?.podeConfigurarComAgente,
+        };
+      }
+    } catch {
+      setOnline(false);
+      state.previewErro[id] = { msg: "Não deu para configurar o preview agora.", podeConfigurar: true };
     }
+    delete state.busy[`preview-config:${id}`];
     render();
   },
   "reload-preview": () => {

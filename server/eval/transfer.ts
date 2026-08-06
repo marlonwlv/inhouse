@@ -94,6 +94,12 @@ function asArray<T>(x: unknown): T[] {
   return Array.isArray(x) ? (x as T[]) : [];
 }
 
+/** Mesmo formato dos IDs locais (randomUUID). Barra um taskId malicioso de um
+ *  bundle externo antes que ele chegue a qualquer caminho de arquivo. */
+function taskIdSeguro(id: unknown): id is string {
+  return typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id);
+}
+
 /**
  * Mescla um bundle nos JSONL locais, marcando tudo com `fonte`. Idempotente:
  * dedupe por chave natural dentro da mesma fonte (reimportar não duplica).
@@ -107,14 +113,18 @@ export function importarBundle(raw: unknown, fonte: string): { importados: numbe
   let importados = 0;
   let pulados = 0;
 
+  // escopoGlobal: dedupe contra TODAS as fontes, não só a atual. Usado para
+  // chaves globalmente únicas (taskId/requestId são UUIDs) — evita contar em
+  // dobro se o mesmo bundle for importado sob dois rótulos ("maria" e "Maria").
   function mesclar<T extends { fonte?: string }>(
     file: string,
     incoming: T[],
     chave: (r: T) => string,
+    escopoGlobal = false,
   ): string[] {
     const existentes = new Set(
       readJsonl<T>(file)
-        .filter((r) => r.fonte === fonteTag)
+        .filter((r) => escopoGlobal || r.fonte === fonteTag)
         .map(chave),
     );
     const novas: string[] = [];
@@ -134,9 +144,14 @@ export function importarBundle(raw: unknown, fonte: string): { importados: numbe
     return novas;
   }
 
-  const novasTarefas = mesclar<RegistroTarefa>(TAREFAS_FILE(), asArray(raw.tarefas), (r) => r.taskId);
-  mesclar<RegistroPermissao>(PERMISSOES_FILE(), asArray(raw.permissoes), (r) => r.requestId);
-  mesclar<RegistroFeedback>(FEEDBACK_FILE(), asArray(raw.feedback), (r) => `${r.taskId}|${r.ts}`);
+  // Tarefas com taskId fora do formato local são descartadas: um id malicioso
+  // (ex.: "../../x") jamais entra nos JSONL nem vira caminho de transcript.
+  // taskId/requestId são UUIDs globais → dedupe global. A "chave" de aprendizado
+  // (ex.: "plano-lento") é compartilhada entre máquinas → dedupe por fonte.
+  const tarefasEntrada = asArray<RegistroTarefa>(raw.tarefas).filter((t) => taskIdSeguro(t.taskId));
+  const novasTarefas = mesclar<RegistroTarefa>(TAREFAS_FILE(), tarefasEntrada, (r) => r.taskId, true);
+  mesclar<RegistroPermissao>(PERMISSOES_FILE(), asArray(raw.permissoes), (r) => r.requestId, true);
+  mesclar<RegistroFeedback>(FEEDBACK_FILE(), asArray(raw.feedback), (r) => `${r.taskId}|${r.ts}`, true);
   mesclar<RegistroAprendizado>(APRENDIZADOS_FILE(), asArray(raw.aprendizados), (r) => r.chave);
 
   // Transcripts (opt-in no export) das tarefas realmente novas — só se o local

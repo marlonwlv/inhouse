@@ -96,7 +96,13 @@ export function removePermission(id: string): void {
 }
 
 // ---------- Transcript ----------
+// IDs locais são sempre randomUUID(); este guarda protege o SINK contra um
+// taskId vindo de fora (ex.: import de eval de outra máquina) que tente escapar
+// de TRANSCRIPTS_DIR com "../". Sem barras, sem pontos → sem path traversal.
 function transcriptFile(taskId: string): string {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(taskId)) {
+    throw new Error(`taskId inválido para transcript: ${taskId}`);
+  }
   return join(TRANSCRIPTS_DIR, `${taskId}.jsonl`);
 }
 export function transcriptAppend(taskId: string, item: TranscriptItem): void {

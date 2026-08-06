@@ -3,7 +3,7 @@
  * marca a origem (fonte), é idempotente, filtra o resumo por origem e o export
  * só leva os dados locais desta máquina.
  */
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -84,6 +84,14 @@ describe("importarBundle", () => {
     expect(transfer.fontesDisponiveis()).toEqual(["maria"]);
   });
 
+  it("mesmo bundle sob dois rótulos não conta tarefas em dobro (dedupe global por UUID)", async () => {
+    const { transfer, resumo } = await fresh();
+    transfer.importarBundle(bundleDe([tarefa("a1"), tarefa("a2")]), "maria");
+    transfer.importarBundle(bundleDe([tarefa("a1"), tarefa("a2")]), "Maria");
+    // Sem o dedupe global seriam 4; taskId é UUID, então não re-entra sob outro rótulo.
+    expect(resumo.calcularResumo("todos").concluidas).toBe(2);
+  });
+
   it("é idempotente: reimportar o mesmo bundle não duplica", async () => {
     const { transfer, resumo } = await fresh();
     transfer.importarBundle(bundleDe([tarefa("a1")]), "maria");
@@ -97,6 +105,28 @@ describe("importarBundle", () => {
     const { transfer } = await fresh();
     transfer.importarBundle(bundleDe([tarefa("a1")]), "   ");
     expect(transfer.fontesDisponiveis()).toEqual(["import"]);
+  });
+
+  it("descarta taskId malicioso (path traversal) e não escreve fora do diretório", async () => {
+    const { transfer, resumo } = await fresh();
+    const alvo = "/tmp/inhouse-pwned-transfer.jsonl";
+    const bundle = {
+      v: 1,
+      geradoEm: "2026-08-02T00:00:00.000Z",
+      tarefas: [tarefa("../../../../tmp/inhouse-pwned-transfer"), tarefa("ok-1")],
+      permissoes: [],
+      feedback: [],
+      aprendizados: [],
+      relatorios: [],
+      transcripts: {
+        "../../../../tmp/inhouse-pwned-transfer": [{ kind: "system", text: "x", at: "2026-08-02T00:00:00.000Z" }],
+      },
+    };
+    transfer.importarBundle(bundle, "maria");
+    // Só a tarefa de id seguro entrou.
+    expect(resumo.calcularResumo("maria").concluidas).toBe(1);
+    // Nada foi escrito fora do diretório de transcripts.
+    expect(existsSync(alvo)).toBe(false);
   });
 });
 

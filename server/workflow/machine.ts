@@ -104,6 +104,10 @@ function cancelada(taskId: string): boolean {
 
 /** Marca a tarefa como falhou com mensagem amigável (e registra no transcript). */
 function fail(taskId: string, msg: string): void {
+  // Uma tarefa que falha não pode carregar um "ir direto ao plano" pendente:
+  // senão um clique tardio (durante a consolidação) + Retry pularia silenciosamente
+  // a cadeia de reviews — furando a porteira. O Retry recomeça do fluxo normal.
+  planoDireto.delete(taskId);
   registrarFalha(taskId, msg);
   patch(taskId, { status: "falhou", error: msg });
   sistema(taskId, msg);

@@ -88,6 +88,10 @@ export function buildRouter(): Router {
       const bundle = body?.["bundle"];
       const fonte = typeof body?.["fonte"] === "string" ? (body["fonte"] as string) : "";
       if (!fonte.trim()) throw new HttpError(400, "Diga de quem são estes dados (um nome para a origem).");
+      // "todos"/"meus" são rótulos reservados do filtro; "import" é o fallback interno.
+      if (["todos", "meus", "import"].includes(fonte.trim().toLowerCase())) {
+        throw new HttpError(400, `"${fonte.trim()}" é um nome reservado. Use outro nome para a origem.`);
+      }
       try {
         const r = importarBundle(bundle, fonte);
         res.json(r);
@@ -351,8 +355,18 @@ export function buildRouter(): Router {
       if (!task) throw new HttpError(404, "Tarefa não encontrada.");
       const project = store.getProject(task.projectId);
       if (!project) throw new HttpError(404, "O projeto desta tarefa não foi encontrado.");
-      const url = await configurarPreviewComAgente(task, project);
-      res.json({ url });
+      try {
+        const url = await configurarPreviewComAgente(task, project);
+        res.json({ url });
+      } catch (err) {
+        // O agente concluir "não há preview" é um desfecho ESPERADO, não erro de
+        // servidor (evita 500 no log) — e a UI para de oferecer a configuração.
+        if (err instanceof PreviewIndisponivelError) {
+          res.status(422).json({ error: err.message, podeConfigurarComAgente: false });
+        } else {
+          throw err;
+        }
+      }
     }),
   );
 

@@ -69,7 +69,10 @@ async function verificarClaude(): Promise<void> {
     // ignora — a próxima verificação tenta de novo
   }
 }
-const claudeTimer = setInterval(() => void verificarClaude(), 15_000);
+// 30s: cada verificação faz spawn de `claude --version` (as rotas até cacheiam
+// esse status por ser caro), então evitamos checar com frequência alta — ainda
+// deixa o chip verde em ~meio minuto após o login, sem recarregar.
+const claudeTimer = setInterval(() => void verificarClaude(), 30_000);
 claudeTimer.unref();
 void verificarClaude();
 
