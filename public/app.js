@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.2.3";
+const UI_VERSION = "0.2.4";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -696,7 +696,7 @@ function taskCardHtml(t) {
     : t.status === "rodando" ? "running"
     : perm || t.status === "aguardando" ? "waiting"
     : "done-task";
-  return `<div class="task ${cls}">
+  return `<div class="task ${cls}" data-open-task="${id}" title="Abrir a tarefa (chat, plano e preview)">
     <div class="task-head">
       <b>${esc(t.title)}</b>
       ${statusChip(t)}
@@ -739,6 +739,7 @@ function taskFootHtml(t, perm) {
   } else if (t.step === "teste" && t.status === "aguardando") {
     rows.push(`<div class="task-foot"><span class="minigates">${gateChips(t)}</span>
       <span class="gap"></span>
+      <button class="btn sm ghost" data-act="go-task" data-task="${id}">Abrir chat</button>
       <button class="btn sm" data-act="board-preview" data-task="${id}">Abrir preview</button>
       <button class="btn sm primary" data-act="go-task" data-task="${id}">Aprovar e publicar…</button></div>`);
   } else if (t.step === "publicar" && t.status === "aguardando") {
@@ -1124,7 +1125,18 @@ const actions = {
 
 document.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-act]");
-  if (btn) actions[btn.dataset.act]?.(btn, e);
+  if (btn) {
+    actions[btn.dataset.act]?.(btn, e);
+    return;
+  }
+  // Card inteiro clicável abre o editor — desde que o clique não tenha sido em
+  // botão/link/campo (esses já trataram acima ou têm comportamento próprio) e
+  // que não seja seleção de texto.
+  const card = e.target.closest("[data-open-task]");
+  if (!card) return;
+  if (e.target.closest("button, a, input, select, textarea, label")) return;
+  if (String(window.getSelection() ?? "").length > 0) return;
+  location.hash = `#/tarefa/${card.dataset.openTask}`;
 });
 
 document.addEventListener("change", (e) => {

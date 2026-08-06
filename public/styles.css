@@ -705,3 +705,7 @@ input::placeholder { color: var(--faint); }
 
 .step .step-dur { font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .step.now .step-dur { color: var(--muted); }
+
+/* Card inteiro clicável (abre o editor) */
+.task[data-open-task] { cursor: pointer; transition: border-color .12s ease, box-shadow .12s ease; }
+.task[data-open-task]:hover { border-color: var(--brand); box-shadow: 0 2px 10px -4px rgba(18,38,28,.18); }
