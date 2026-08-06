@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.2.4";
+const UI_VERSION = "0.2.5";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -696,7 +696,7 @@ function taskCardHtml(t) {
     : t.status === "rodando" ? "running"
     : perm || t.status === "aguardando" ? "waiting"
     : "done-task";
-  return `<div class="task ${cls}" data-open-task="${id}" title="Abrir a tarefa (chat, plano e preview)">
+  return `<div class="task ${cls}" data-open-task="${esc(t.id)}" title="Abrir a tarefa (chat, plano e preview)">
     <div class="task-head">
       <b>${esc(t.title)}</b>
       ${statusChip(t)}
