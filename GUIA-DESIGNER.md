@@ -1,6 +1,6 @@
 # Inhouse — guia rápido
 
-Bem-vindo(a)! O **Inhouse** deixa você criar e alterar apps da Inhouse conversando em
+Bem-vindo(a)! O **Inhouse** deixa você criar e alterar apps conversando em
 português, sem terminal e sem mexer no código na mão. Tudo o que você fizer vira um
 **Pull Request** (uma proposta de mudança) para o time revisar — nada vai direto para o
 ar, e a sua cópia de trabalho do projeto **nunca é tocada**.
@@ -49,7 +49,7 @@ separada da sua cópia de trabalho de sempre.
 
 ### Criar uma tarefa
 Entre no projeto e descreva o que você quer, em português. Exemplos:
-- *"trocar o texto do botão de login para 'Entrar na Inhouse'"*
+- *"trocar o texto do botão de login para 'Entrar no app'"*
 - *"deixar o card de turmas com cantos mais arredondados"*
 
 A tarefa roda num **espaço isolado** e passa por estas etapas:

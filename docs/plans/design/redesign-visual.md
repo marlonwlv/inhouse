@@ -20,7 +20,7 @@ O Marlon queria o Inhouse **moderno, light e clean**, referenciado nas melhores 
 - Todo o contrato de classes `app.js ↔ styles.css` preservado (redesign via tokens + ajustes cirúrgicos).
 
 ## Iteração 2 — Accent monocromático (v0.4.1)
-O verde não era a cor real da Inhouse e não precisava ser verde. Trocado por **monocromático**: `--brand` = preto `#18181B` no claro / branco `#F4F4F5` no escuro. Resultado: **âmbar e vermelho viram as únicas cores** da interface (semânticas: "sua vez" / "problema"), então as porteiras humanas saltam naturalmente. Estilo Vercel/Linear. Favicon preto.
+O verde não era a cor certa e não precisava ser verde. Trocado por **monocromático**: `--brand` = preto `#18181B` no claro / branco `#F4F4F5` no escuro. Resultado: **âmbar e vermelho viram as únicas cores** da interface (semânticas: "sua vez" / "problema"), então as porteiras humanas saltam naturalmente. Estilo Vercel/Linear. Favicon preto.
 
 ## Iteração 3 — Audit do impeccable (v0.4.2)
 Instalado o **impeccable** (github.com/pbakaus/impeccable, `npx impeccable detect public/`, 59 regras determinísticas). **11 → 1 anti-padrões.** Fixes:

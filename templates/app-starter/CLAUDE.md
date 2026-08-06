@@ -1,4 +1,4 @@
-# Regras Inhouse para este app
+# Regras deste app
 
 Este app foi criado pelo Inhouse e é mantido por pessoas não-técnicas.
 Siga estas regras em todas as tarefas:
@@ -11,7 +11,7 @@ Siga estas regras em todas as tarefas:
 4. **Não rode comandos destrutivos** (apagar arquivos em massa, resetar histórico,
    forçar push, mexer fora da pasta do projeto).
 5. **Mantenha o design system**: use as cores e espaçamentos definidos como variáveis
-   CSS em `src/styles.css` (verde Inhouse `--verde`, espaçamentos `--espaco-*`).
+   CSS em `src/styles.css` (verde `--verde`, espaçamentos `--espaco-*`).
    Não invente cores novas sem pedido explícito.
 6. **Todo texto visível na interface deve estar em pt-BR** — botões, títulos,
    mensagens de erro, placeholders, tudo.

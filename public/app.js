@@ -762,20 +762,20 @@ function renderHome() {
   <div class="view view-page view-home">
     <div class="home-main">
       <h2 class="hello">Bom te ver.</h2>
-      <p class="hello-sub">Abra um projeto da Inhouse ou crie um app novo — tudo em português, sem terminal.</p>
+      <p class="hello-sub">Abra um projeto do seu GitHub ou crie um app novo — tudo em português, sem terminal.</p>
 
       ${claudeOff ? primeirosPassosHtml() : ""}
 
       <div class="sect"><h3>Meus projetos</h3><span>${projects.length ? "cada tarefa roda num espaço isolado, sem conflito" : ""}</span></div>
       ${projectsHtml}
 
-      <div class="sect"><h3>Adicionar projeto</h3><span>do GitHub da Inhouse ou um app novo do zero</span></div>
+      <div class="sect"><h3>Adicionar projeto</h3><span>do GitHub ou um app novo do zero</span></div>
       <div class="add-grid">
         <form class="repo-card" data-form="clone">
           <div class="rh"><span class="gh-ico">gh</span><b>Abrir do GitHub</b></div>
           <p>Cole o endereço do repositório. O download acontece sozinho, com barra de progresso.</p>
           <div class="field-row">
-            <input id="clone-url" type="url" placeholder="https://github.com/inhouse/…" autocomplete="off" ${busyClone || claudeOff ? "disabled" : ""} required>
+            <input id="clone-url" type="url" placeholder="https://github.com/seu-usuario/…" autocomplete="off" ${busyClone || claudeOff ? "disabled" : ""} required>
             <button class="btn sm primary" type="submit" ${busyClone || claudeOff ? "disabled" : ""}>${busyClone ? `<span class="spinner"></span> Baixando…` : "Baixar e abrir"}</button>
           </div>
           ${progressHtml}
@@ -783,7 +783,7 @@ function renderHome() {
 
         <form class="repo-card" data-form="create-app">
           <div class="rh"><span class="app-ico" style="background:var(--brand)">+</span><b>Criar app novo</b></div>
-          <p>Começa do template <b>App Inhouse</b>: design system, login e navegação já prontos.</p>
+          <p>Começa do template <b>App inicial</b>: design system, login e navegação já prontos.</p>
           <div class="field-row">
             <input id="new-app-name" type="text" placeholder="Nome do app… ex.: Quiz de Onboarding" autocomplete="off" ${busyCreate || claudeOff ? "disabled" : ""} required>
             <button class="btn sm primary" type="submit" ${busyCreate || claudeOff ? "disabled" : ""}>${busyCreate ? `<span class="spinner"></span> Criando…` : "Criar"}</button>

@@ -49,7 +49,7 @@ Princípio: **convenção + configuração + degradação graciosa**. O preview 
 
 ### 4. Distribuição + setup na máquina dele (logística)
 Hoje: sem git remote, sem empacotamento, sem `engines`/`.nvmrc`; depende de Node 24 + `npm install` + git + gh + claude, tudo manual.
-- **Push do Inhouse para um repo privado na org da Inhouse** (ex.: `github.com/sua-org/inhouse`) para ele clonar. (Confirmar o nome/permissão do repo com o Marlon na hora.)
+- **Push do Inhouse para um repo privado na sua organização** (ex.: `github.com/sua-org/inhouse`) para ele clonar. (Confirmar o nome/permissão do repo na hora.)
 - **Script de setup** (`setup.command`): checa/instala Node 24 (via mise ou nvm), verifica git/gh/claude, roda `npm install`. **Launcher de duplo-clique** (`inhouse.command`): sobe `npm start` e abre `http://127.0.0.1:4400` no browser — zero terminal para o dia a dia.
 - **`engines` no `package.json` + `.nvmrc`** para versão errada de Node falhar alto, não silenciosa.
 - **Guia curto em pt-BR para o designer** (`GUIA-DESIGNER.md`): instalar, conectar o Claude, clonar o seu-monorepo, criar/rodar uma tarefa, o que é seguro.

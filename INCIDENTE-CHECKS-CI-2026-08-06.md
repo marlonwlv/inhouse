@@ -7,7 +7,7 @@
 
 ## TL;DR
 
-O PR aberto pelo InHouse (`sua-org/seu-repo` **#174**) apareceu sem os checks
+O PR aberto pelo InHouse (`sua-org/seu-repo` **#123**) apareceu sem os checks
 `ci / lint-and-typecheck`, `ci / unit`, `ci / integration` e
 `guardiao-de-regressoes`. **A causa NÃO é o InHouse.** É uma **pane do GitHub
 Actions** em andamento no momento (incidente `qcvjkzcs7j74`, "Incident with
@@ -30,7 +30,7 @@ enquanto não houver CI real.
   igualmente sem `ci`/`guardiao` — só Vercel e CodeQL (esse último saindo
   `CANCELLED`/`PENDING`, coerente com "queued jobs timing out").
 - Um **push manual normal** (`synchronize`, feito por admin via git puro) na
-  branch do #174 **também não** disparou o `ci`. Ou seja: o gatilho está quebrado
+  branch do #123 **também não** disparou o `ci`. Ou seja: o gatilho está quebrado
   no lado do GitHub, independe de como o PR nasceu.
 - Os checks que aparecem sobrevivem porque não dependem dos runners comuns:
   Vercel é integração externa; CodeQL/Copilot são "default setup" (`event=dynamic`).
@@ -39,7 +39,7 @@ enquanto não houver CI real.
 
 ### Hipóteses descartadas na investigação
 - **Token/bot suprimindo workflows** (o clássico `GITHUB_TOKEN`): descartado — o
-  PR foi aberto por usuário real (`marlonwlv`), token OAuth `gho_` com escopo
+  PR foi aberto por um usuário real (login pessoal via `gh`), token OAuth com escopo
   `workflow`.
 - **Permissão/policy do repo:** descartado — Actions `enabled`, `allowed_actions: all`,
   autor é **admin** (sem gate de first-time contributor).
@@ -72,7 +72,7 @@ ganha essa checagem depois que o #173 for mergeado.
 A investigação revelou, de passagem, uma fragilidade real que vale considerar —
 mas **sem relação com a pane**:
 
-1. **Branch nascida de `main` local desatualizado.** A branch do #174 tinha
+1. **Branch nascida de `main` local desatualizado.** A branch do #123 tinha
    merge-base **35 commits atrás** do `origin/main` (faltava até o
    `claude-dev-agent.yml`). Isso não quebra o CI, mas produz PRs cronicamente
    defasados e sujeitos a conflito/surpresa no merge.

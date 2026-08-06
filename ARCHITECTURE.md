@@ -1,6 +1,6 @@
 # Inhouse — Arquitetura
 
-**O que é**: app builder local da Inhouse (conductor + lovable). Servidor Node/TS local + UI web
+**O que é**: app builder local (conductor + lovable). Servidor Node/TS local + UI web
 (vanilla JS, sem build step). Fala com o Claude através do **Claude Code genuíno da máquina**
 (`~/.local/bin/claude`, login/subscription de cada usuário) via **Agent SDK** com
 `pathToClaudeCodeExecutable` — nunca API key.
@@ -13,7 +13,7 @@
    o SDK cuida do protocolo de controle. `canUseTool` → fluxo de aprovação da UI.
    A API exata do SDK deve ser lida de `node_modules/@anthropic-ai/claude-agent-sdk/*.d.ts`
    (fonte de verdade, não memória).
-3. **`settingSources: ["project"]`** — carrega CLAUDE.md/settings do projeto (regras Inhouse),
+3. **`settingSources: ["project"]`** — carrega CLAUDE.md/settings do projeto (regras do projeto),
    mas NÃO as configs pessoais do usuário (hooks gstack etc. não podem vazar pra cá).
 4. **Worktrees = "espaços"**: `git worktree add` em `~/Inhouse/.espacos/<proj>/espaco-N`,
    branch `tarefa/<slug>`. A palavra "worktree/branch" nunca aparece na UI.
@@ -61,7 +61,7 @@ espec → plano → aprovacao(H) → execucao → verificacoes → teste(H) → 
 - `server/api/routes.ts` + `server/index.ts` + `server/store.ts` + `server/events.ts`
   + `server/config.ts`. Dono: Agente C.
 - `public/` — UI. Dono: Agente D.
-- `templates/app-starter/` — template embutido (Vite+React+TS + CLAUDE.md Inhouse). Dono: B.
+- `templates/app-starter/` — template embutido (Vite+React+TS + CLAUDE.md do template).
 - `test/` — mock do claude + testes de máquina de estados/gates/store. Dono: Agente E.
 
 ## Referências locais (padrões já validados — LER antes de implementar)

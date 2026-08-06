@@ -67,7 +67,7 @@ export function parseVeredito(finalText: string): { ok: boolean; motivo?: string
 /**
  * Instrução transversal: quem usa o Inhouse não é técnico. O agente NUNCA deve
  * devolver dúvidas de estrutura de código para o usuário — deve descobrir sozinho.
- * (Atrito real do eval: "Esse repo é o monorepo ou é o outro-repo?".)
+ * (Atrito real do eval: "Esse repo é o monorepo ou é o outro?".)
  */
 export const CONTEXTO_NAO_TECNICO = [
   "IMPORTANTE: quem lê e responde é uma pessoa NÃO técnica.",

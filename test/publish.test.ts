@@ -59,9 +59,9 @@ afterEach(() => { h.state.calls = []; h.state.mainSujo = false; h.state.ghPrOut 
 
 describe("publishTask — segurança", () => {
   it("repo com origin: PR-only — empurra a branch + gh pr create, NUNCA faz merge no main", async () => {
-    h.state.ghPrOut = "https://github.com/sua-org/seu-repo/pull/42\n";
-    const r = await publishTask(task(), project("https://github.com/sua-org/seu-repo.git"), true);
-    expect(r.prUrl).toBe("https://github.com/sua-org/seu-repo/pull/42");
+    h.state.ghPrOut = "https://github.com/example/repo/pull/42\n";
+    const r = await publishTask(task(), project("https://github.com/example/repo.git"), true);
+    expect(r.prUrl).toBe("https://github.com/example/repo/pull/42");
     const push = h.state.calls.find((c) => c.args[0] === "push");
     expect(push?.cwd).toBe("/tmp/espacos/x"); // empurra do espaço, não do main
     expect(h.state.calls.some((c) => c.fn === "gh" && c.args[0] === "pr")).toBe(true);

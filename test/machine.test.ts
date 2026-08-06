@@ -349,7 +349,7 @@ describe("machine: verificações e retry", () => {
 
 describe("machine: teste, publicação e cancelamento", () => {
   it("fluxo completo: approve_test → publish → concluída (com PR)", async () => {
-    h.state.publishPrUrl = "https://github.com/inhouse/app/pull/7";
+    h.state.publishPrUrl = "https://github.com/example/app/pull/7";
     const t = await ateTeste();
 
     await applyAction(t.id, { action: "approve_test" });
@@ -365,7 +365,7 @@ describe("machine: teste, publicação e cancelamento", () => {
     expect(linhas).toHaveLength(1);
     expect(linhas[0]).toMatchObject({ desfecho: "concluida", prCriado: true });
     expect(done.status).toBe("concluida");
-    expect(done.prUrl).toBe("https://github.com/inhouse/app/pull/7");
+    expect(done.prUrl).toBe("https://github.com/example/app/pull/7");
     expect(done.previewUrl).toBeUndefined();
     expect(h.state.publishCalls).toEqual([{ createPr: true }]);
   });

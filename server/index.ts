@@ -1,5 +1,5 @@
 /**
- * Entrada do servidor do Inhouse Builder.
+ * Entrada do servidor do Inhouse.
  * Escuta APENAS em 127.0.0.1 (decisão de segurança — ver ARCHITECTURE.md).
  */
 import { createServer } from "node:http";
