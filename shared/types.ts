@@ -17,6 +17,8 @@ export interface Project {
   /** URL do GitHub quando kind=repo (ou quando o app foi publicado lá). */
   originUrl?: string;
   defaultBranch: string;
+  /** Quando o projeto foi preparado (setup guiado). Ausente = ainda não preparado. */
+  preparado?: string;
   createdAt: string; // ISO
 }
 
@@ -77,6 +79,8 @@ export type Porte = "simples" | "media" | "grande";
 export interface Task {
   id: string;
   projectId: string;
+  /** "preparacao" = fluxo de setup do repositório (roda no checkout principal, sem esteira/PR). Ausente = tarefa normal. */
+  kind?: "preparacao";
   title: string;
   /** Pedido original do usuário, em português. */
   description: string;

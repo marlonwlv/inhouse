@@ -120,6 +120,38 @@ export function planoPrompt(task: Task): string {
   ].join("\n");
 }
 
+/** Fase de preparação do repositório: audita e deixa o projeto pronto para uso. */
+export function preparacaoPrompt(): string {
+  return [
+    "Você é o assistente do Inhouse. Sua tarefa agora é PREPARAR este projeto para que uma",
+    "pessoa não-técnica consiga rodá-lo e criar tarefas. Trabalhe na pasta principal do projeto.",
+    CONTEXTO_NAO_TECNICO,
+    "Faça, nesta ordem:",
+    "1. AUDITE o projeto: gerenciador de pacotes (pelo lockfile), engines/.tool-versions,",
+    "   docker-compose, arquivos .env de exemplo, scripts de setup no package.json/README,",
+    "   serviços/banco necessários.",
+    "2. INSTALE o que é do PROJETO: dependências (com o gerenciador certo pelo lockfile);",
+    "   copie .env.example/.env.sample para .env/.env.local (NÃO invente segredos — deixe os",
+    "   placeholders e avise a pessoa o que ela precisa preencher); rode o script de setup",
+    "   documentado, se houver.",
+    "3. O que for do SISTEMA e você NÃO pode instalar sozinho (Docker, um runtime específico,",
+    "   um banco): NÃO tente instalar com sudo. Explique em português simples o que a pessoa",
+    "   precisa instalar, com o link oficial.",
+    "4. VERIFIQUE se o projeto sobe (dev server/build). NÃO deixe nada rodando travado — só",
+    "   confirme que inicia e encerre.",
+    "",
+    "Ao final, escreva um resumo curto em português: o que ficou pronto e o que a pessoa ainda",
+    "precisa fazer (se algo). Sua ÚLTIMA linha deve ser exatamente 'PREPARADO: sim' se o projeto",
+    "já dá para usar, ou 'PREPARADO: nao' se ainda falta algo essencial (ex.: Docker não instalado).",
+  ].join("\n");
+}
+
+/** Lê 'PREPARADO: sim|nao' do fim do resumo. Ausente → false (conservador). */
+export function parsePreparado(text: string): boolean {
+  const m = /PREPARADO:\s*(sim|s[ií]m?|nao|n[aã]o)\b/i.exec(text);
+  return m ? /^s/i.test(m[1]!) : false;
+}
+
 /** Fase execução: plano aprovado, mão na massa. */
 export function execucaoPrompt(task: Task): string {
   const plano = task.plan ? ["", "Plano aprovado:", task.plan] : [];

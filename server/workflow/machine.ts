@@ -28,10 +28,12 @@ import {
   fixGatesPrompt,
   limparJulgamento,
   parsePorte,
+  parsePreparado,
   parseUi,
   parseVeredito,
   planoFeedbackPrompt,
   planoPrompt,
+  preparacaoPrompt,
   skillGatePrompt,
   skillPlanoPrompt,
 } from "./phases.js";
@@ -611,6 +613,77 @@ export async function startTask(
   return atual;
 }
 
+/**
+ * Setup guiado do repositório: uma tarefa especial (kind "preparacao") que roda
+ * UMA fase no checkout PRINCIPAL do projeto (não num espaço) — sem esteira e sem
+ * PR. Instala o do projeto, orienta o de sistema, e marca o projeto como pronto.
+ */
+export async function startPreparacao(projectId: string): Promise<Task> {
+  const project = store.getProject(projectId);
+  if (!project) throw new Error("Projeto não encontrado.");
+  // Uma preparação em andamento já basta.
+  const emAndamento = store
+    .listTasks()
+    .find((t) => t.projectId === projectId && t.kind === "preparacao" && t.status === "rodando");
+  if (emAndamento) return emAndamento;
+
+  const now = new Date().toISOString();
+  const task: Task = {
+    id: store.newId(),
+    projectId,
+    kind: "preparacao",
+    title: "Preparar o projeto",
+    description: "Preparar o ambiente do projeto para uso",
+    step: "execucao",
+    status: "rodando",
+    espaco: 0,
+    branch: project.defaultBranch,
+    worktreePath: project.path, // roda no checkout principal
+    gates: [],
+    gateFixRounds: 0,
+    historico: [{ step: "execucao" as Step, inicio: now }],
+    createdAt: now,
+    updatedAt: now,
+  };
+  store.addTask(task);
+  broadcast({ type: "task_updated", task });
+  sistema(task.id, "Preparando o projeto — auditando o que falta e instalando o que dá.");
+  fireAndForget(task.id, () => runPreparacao(task.id));
+  return task;
+}
+
+async function runPreparacao(taskId: string): Promise<boolean> {
+  const task = store.getTask(taskId);
+  if (!task) return false;
+  patch(taskId, { step: "execucao", status: "rodando", error: undefined });
+
+  const r = await runPhase({
+    taskId,
+    cwd: task.worktreePath,
+    prompt: preparacaoPrompt(),
+    permissionMode: "acceptEdits",
+    resume: store.getTask(taskId)?.claudeSessionId,
+    canUseTool: gateComStatus(taskId),
+  });
+
+  if (cancelada(taskId)) return false;
+  if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
+  if (!r.success) {
+    failOuPausa(taskId, r, "A preparação falhou. Tente de novo.");
+    return false;
+  }
+
+  patch(taskId, { step: "concluida", status: "concluida" });
+  if (parsePreparado(r.finalText)) {
+    const p = store.updateProject(task.projectId, { preparado: new Date().toISOString() });
+    broadcast({ type: "project_updated", project: p });
+    sistema(taskId, "Projeto preparado — já dá para criar tarefas.");
+  } else {
+    sistema(taskId, "Preparação concluída, mas ainda falta algo (veja o resumo acima). Rode de novo depois de resolver.");
+  }
+  return true;
+}
+
 /** Aplica uma ação humana, validando a transição pelo passo/status atual. */
 export async function applyAction(taskId: string, action: TaskAction): Promise<Task> {
   const task = store.getTask(taskId);
@@ -709,7 +782,9 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
         // Zera as rodadas de correção: sem isso, um gate com erro determinístico
         // falharia de novo na hora, sem nenhuma tentativa de auto-correção.
         patch(taskId, { status: "rodando", gateFixRounds: 0, error: undefined, pausadaPorTempo: undefined });
-        fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(task)));
+        fireAndForget(taskId, () =>
+          task.kind === "preparacao" ? runPreparacao(taskId) : runExecucao(taskId, execucaoPrompt(task)),
+        );
       } else if (task.step === "verificacoes") {
         patch(taskId, { status: "rodando", gateFixRounds: 0, error: undefined, pausadaPorTempo: undefined });
         fireAndForget(taskId, () => runVerificacoes(taskId));

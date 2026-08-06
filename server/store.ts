@@ -56,6 +56,13 @@ export function addProject(p: Project): Project {
   persist();
   return p;
 }
+export function updateProject(id: string, patch: Partial<Project>): Project {
+  const p = getProject(id);
+  if (!p) throw new Error(`projeto não encontrado: ${id}`);
+  Object.assign(p, patch);
+  persist();
+  return p;
+}
 
 // ---------- Tasks ----------
 export const listTasks = (): Task[] => state.tasks;

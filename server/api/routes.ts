@@ -28,7 +28,7 @@ import {
 import { aplicarUpdate, ultimoUpdate } from "../services/update.js";
 import { cloneProject, createFromTemplate, openProject } from "../services/projects.js";
 import * as store from "../store.js";
-import { applyAction, startTask, steer } from "../workflow/machine.js";
+import { applyAction, startPreparacao, startTask, steer } from "../workflow/machine.js";
 
 /** Erro com status HTTP próprio (validações de input → 400/404). */
 class HttpError extends Error {
@@ -167,6 +167,16 @@ export function buildRouter(): Router {
     h(async (req, res) => {
       const path = texto(req.body, "path", "o caminho da pasta do projeto");
       res.json(await openProject(path));
+    }),
+  );
+
+  // Setup guiado do repositório (cria uma tarefa especial de preparação).
+  router.post(
+    "/api/projects/:id/prepare",
+    h(async (req, res) => {
+      const id = req.params.id ?? "";
+      if (!store.getProject(id)) throw new HttpError(404, "Projeto não encontrado.");
+      res.json(await startPreparacao(id));
     }),
   );
 

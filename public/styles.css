@@ -403,6 +403,13 @@ input::placeholder { color: var(--faint); }
 .task.archived { opacity: .6; padding: 11px 15px; gap: 0; }
 .task.archived .task-head b { font-weight: 550; color: var(--muted); }
 .arquivadas-sep { display: flex; justify-content: center; margin: 6px 0 2px; }
+.prepare-card {
+  background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r-lg);
+  padding: 16px 18px; display: grid; gap: 8px; box-shadow: var(--shadow-sm);
+}
+.prepare-card .head { font-size: 15px; font-weight: 600; }
+.prepare-card p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.prepare-card .btn { justify-self: start; margin-top: 4px; }
 .task-head { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
 .task-head b { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
 .task-head .meta { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--faint); white-space: nowrap; }

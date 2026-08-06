@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.10.0";
+const UI_VERSION = "0.11.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -880,6 +880,9 @@ function renderBoard() {
   const tasks = todas.filter((t) => !t.arquivadaEm);
   const arquivadas = todas.filter((t) => t.arquivadaEm);
   const ativas = tasks.filter((t) => t.status === "rodando" || t.status === "aguardando").length;
+  const proj = state.projects.find((p) => p.id === pid);
+  const temPreparacao = todas.some((t) => t.kind === "preparacao");
+  const mostrarPreparar = !!proj && proj.kind === "repo" && !proj.preparado && !temPreparacao;
   const statusLine = ativas === 0
     ? "nenhuma tarefa em andamento"
     : ativas === 1
@@ -902,6 +905,12 @@ function renderBoard() {
         <button class="btn sm primary" type="submit" ${claudeOff ? "disabled" : ""}>Começar</button>
       </form>
       ${claudeOff ? primeirosPassosHtml() : ""}
+      ${mostrarPreparar && !claudeOff ? `
+        <div class="prepare-card">
+          <div class="head">🛠️ Preparar este projeto</div>
+          <p>Antes de criar tarefas, deixe o Claude conferir e instalar o que o projeto precisa (dependências, variáveis de ambiente, scripts de setup) e te avisar se falta algo do sistema — como o Docker.</p>
+          <button class="btn primary" data-act="preparar-projeto" data-project="${esc(pid)}">Preparar este projeto</button>
+        </div>` : ""}
       ${tasks.length
         ? tasks.map(taskCardHtml).join("")
         : `<div class="empty-card">Nenhuma tarefa neste projeto ainda. Descreva a primeira ali em cima — o Claude cuida do resto.</div>`}
@@ -924,6 +933,7 @@ function taskCardHtml(t) {
       </div>
     </div>`;
   }
+  if (t.kind === "preparacao") return preparacaoCardHtml(t);
   const perm = state.permissions.find((p) => p.taskId === t.id);
   const cls = t.status === "falhou" ? "failed"
     : t.status === "rodando" ? "running"
@@ -938,6 +948,26 @@ function taskCardHtml(t) {
     </div>
     ${t.status === "concluida" || t.status === "cancelada" ? "" : flowHtml(t)}
     ${taskFootHtml(t, perm)}
+  </div>`;
+}
+
+function preparacaoCardHtml(t) {
+  const id = esc(t.id);
+  const cls = t.status === "falhou" ? "failed" : t.status === "rodando" ? "running" : "done-task";
+  const foot = t.status === "rodando"
+    ? `<span><span class="spinner"></span> Preparando o projeto…</span><span class="gap"></span><a class="link" href="#/tarefa/${id}">Acompanhar →</a>`
+    : t.status === "falhou"
+      ? `<span class="fail-msg">${esc(t.error || "A preparação falhou.")}</span><span class="gap"></span>
+         <button class="btn sm" data-act="go-task" data-task="${id}">Ver detalhes</button>
+         <button class="btn sm ghost" data-act="arquivar" data-task="${id}">Arquivar</button>
+         <button class="btn sm primary" data-act="retry" data-task="${id}">Tentar de novo</button>`
+      : `<span>✓ Preparação concluída</span><span class="gap"></span>
+         <a class="link" href="#/tarefa/${id}">Ver o resumo</a>
+         <button class="btn sm ghost" data-act="arquivar" data-task="${id}">Arquivar</button>`;
+  return `<div class="task ${cls}" data-open-task="${id}" title="Preparação do projeto">
+    <div class="task-head"><b>🛠️ Preparação do projeto</b> ${statusChip(t)}
+      <div class="meta">${timeAgo(t.updatedAt)}</div></div>
+    <div class="task-foot">${foot}</div>
   </div>`;
 }
 
@@ -1126,9 +1156,14 @@ function chatCardsHtml(t) {
     if (t.step === "publicar") parts.push(publishCardHtml(t));
   }
   if (t.status === "concluida") {
-    parts.push(`<div class="publish-card"><div class="head">✓ Tarefa concluída</div>
-      <p>A mudança foi publicada no projeto.${t.prUrl ? ` <a href="${esc(t.prUrl)}" target="_blank" rel="noreferrer">Ver o PR no GitHub</a>` : ""}</p>
-      ${feedbackWidgetHtml(t)}</div>`);
+    if (t.kind === "preparacao") {
+      parts.push(`<div class="publish-card"><div class="head">✓ Preparação concluída</div>
+        <p>Veja o resumo acima. Se ainda faltar algo do sistema, resolva e rode a preparação de novo.</p></div>`);
+    } else {
+      parts.push(`<div class="publish-card"><div class="head">✓ Tarefa concluída</div>
+        <p>A mudança foi publicada no projeto.${t.prUrl ? ` <a href="${esc(t.prUrl)}" target="_blank" rel="noreferrer">Ver o PR no GitHub</a>` : ""}</p>
+        ${feedbackWidgetHtml(t)}</div>`);
+    }
   }
   return parts.join("");
 }
@@ -1357,6 +1392,11 @@ const actions = {
   "arquivar": (btn) => taskAction(btn.dataset.task, { action: "arquivar" }),
   "desarquivar": (btn) => taskAction(btn.dataset.task, { action: "desarquivar" }),
   "toggle-arquivadas": () => { state.showArquivadas = !state.showArquivadas; render(); },
+  "preparar-projeto": async (btn) => {
+    const pid = btn.dataset.project;
+    const t = await api(`/api/projects/${encodeURIComponent(pid)}/prepare`, {});
+    if (t?.id) location.hash = `#/tarefa/${t.id}`; // acompanha no editor
+  },
   "aplicar-update": async () => {
     if (state.busy.update) return;
     const ok = await confirmar({

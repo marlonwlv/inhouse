@@ -25,6 +25,7 @@ const h = vi.hoisted(() => {
     removeEspacoCalls: [] as string[],
     abortCalls: [] as string[],
     execFilesTouched: true,
+    prepPronto: true,
   };
   return {
     state,
@@ -46,7 +47,13 @@ const h = vi.hoisted(() => {
         };
       }
       if (opts.permissionMode === "acceptEdits") {
-        return { sessionId: "sess-exec", finalText: "Mudanças feitas.", success: true, filesTouched: state.execFilesTouched };
+        const ehPrep = /PREPARAR este projeto/i.test(opts.prompt);
+        return {
+          sessionId: "sess-exec",
+          finalText: ehPrep ? `Resumo da preparação.\nPREPARADO: ${state.prepPronto ? "sim" : "nao"}` : "Mudanças feitas.",
+          success: true,
+          filesTouched: state.execFilesTouched,
+        };
       }
       // Fase espec (permissionMode "default", read-only).
       return { sessionId: "sess-espec", finalText: "## Objetivo\nEspec estruturada (mock)", success: true };
@@ -119,7 +126,7 @@ process.env.INHOUSE_DATA_DIR = join(TMP, "data");
 process.env.INHOUSE_PROJECTS_DIR = join(TMP, "projects");
 
 const store = await import("../server/store.js");
-const { applyAction, startTask } = await import("../server/workflow/machine.js");
+const { applyAction, startPreparacao, startTask } = await import("../server/workflow/machine.js");
 const { MAX_GATE_FIX_ROUNDS } = await import("../server/config.js");
 const coleta = await import("../server/eval/coleta.js");
 
@@ -141,6 +148,7 @@ beforeEach(() => {
   h.state.calls.length = 0;
   h.state.gateRuns = 0;
   h.state.execFilesTouched = true;
+  h.state.prepPronto = true;
   h.state.publishCalls.length = 0;
   h.state.stopPreviewCalls.length = 0;
   h.state.removeEspacoCalls.length = 0;
@@ -459,5 +467,24 @@ describe("machine: arquivar", () => {
     await applyAction(t.id, { action: "arquivar" });
     await applyAction(t.id, { action: "desarquivar" });
     expect(store.getTask(t.id)?.arquivadaEm).toBeUndefined();
+  });
+});
+
+describe("machine: preparação do repositório", () => {
+  it("startPreparacao roda no checkout principal e marca o projeto como preparado", async () => {
+    store.updateProject("p1", { preparado: undefined });
+    const t = await startPreparacao("p1");
+    expect(t.kind).toBe("preparacao");
+    expect(t.worktreePath).toBe(project.path); // no checkout principal, não num espaço
+    await esperaStep(t.id, "concluida");
+    expect(store.getProject("p1")?.preparado).toBeTruthy();
+  });
+
+  it("sem 'PREPARADO: sim' não marca o projeto (ainda falta algo do sistema)", async () => {
+    store.updateProject("p1", { preparado: undefined });
+    h.state.prepPronto = false;
+    const t = await startPreparacao("p1");
+    await esperaStep(t.id, "concluida");
+    expect(store.getProject("p1")?.preparado).toBeUndefined();
   });
 });
