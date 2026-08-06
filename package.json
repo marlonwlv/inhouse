@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Inhouse — AI app builder local (conductor + lovable) que usa o Claude Code da própria máquina",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "dev": "tsx watch server/index.ts",
     "start": "tsx server/index.ts",
