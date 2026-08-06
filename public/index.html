@@ -4,8 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#151517" media="(prefers-color-scheme: dark)">
   <title>Inhouse</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B8A57'/%3E%3Ctext x='16' y='22' font-family='sans-serif' font-size='17' font-weight='800' fill='white' text-anchor='middle'%3EL%3C/text%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B8A57'/%3E%3Ctext x='16' y='21' font-family='sans-serif' font-size='14' font-weight='700' fill='white' text-anchor='middle'%3EIn%3C/text%3E%3C/svg%3E">
+  <!-- Tema definido ANTES do paint (evita flash). Padrão: claro. -->
+  <script>
+    try {
+      document.documentElement.dataset.theme = localStorage.getItem("inhouse.theme") || "light";
+    } catch (e) { document.documentElement.dataset.theme = "light"; }
+  </script>
+  <link rel="preload" href="./fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="./fonts/jetbrains-mono.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
@@ -22,6 +32,7 @@
       <a href="#/experiencia" data-nav="experiencia">Experiência</a>
     </nav>
     <span id="claude-chip" class="chip">…</span>
+    <button id="theme-toggle" class="icon-btn" data-act="theme-toggle" aria-label="Alternar tema claro e escuro" title="Alternar tema"></button>
   </header>
 
   <main id="app"></main>

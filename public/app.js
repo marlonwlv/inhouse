@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.3.2";
+const UI_VERSION = "0.4.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -1203,6 +1203,12 @@ const actions = {
     taskAction(btn.dataset.task, { action: "auto_mode", on: !t?.autoAprovar });
   },
   "auto-on": (btn) => taskAction(btn.dataset.task, { action: "auto_mode", on: true }),
+  "theme-toggle": () => {
+    const atual = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+    const proximo = atual === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = proximo;
+    try { localStorage.setItem("inhouse.theme", proximo); } catch (e) { /* modo privado */ }
+  },
   "gerar-relatorio": async () => {
     state.busy["eval-relatorio"] = true;
     render();
