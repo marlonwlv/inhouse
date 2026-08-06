@@ -64,9 +64,23 @@ export function parseVeredito(finalText: string): { ok: boolean; motivo?: string
 }
 
 /** Fase espec: estruturar o pedido em spec curta, sem tocar em nada. */
+/**
+ * Instrução transversal: quem usa o Inhouse não é técnico. O agente NUNCA deve
+ * devolver dúvidas de estrutura de código para o usuário — deve descobrir sozinho.
+ * (Atrito real do eval: "Esse repo é o monorepo ou é o outro-repo?".)
+ */
+export const CONTEXTO_NAO_TECNICO = [
+  "IMPORTANTE: quem lê e responde é uma pessoa NÃO técnica.",
+  "Nunca devolva dúvidas de estrutura/organização de código (ex.: 'é monorepo?', 'qual pasta?',",
+  "'qual framework?') — descubra lendo o código do projeto e decida sozinho.",
+  "Se algo for genuinamente ambíguo, escolha a opção mais provável, siga em frente e",
+  "declare a sua suposição em uma linha simples — não pare para perguntar coisa técnica.",
+].join("\n");
+
 export function especPrompt(task: Task): string {
   return [
     "Você é o assistente de desenvolvimento do Inhouse, trabalhando em um app desta organização.",
+    CONTEXTO_NAO_TECNICO,
     "Sua única tarefa agora é estruturar o pedido do usuário em uma especificação curta.",
     "NÃO edite arquivos e NÃO rode comandos — no máximo, leia o código para entender o contexto.",
     "",
@@ -111,6 +125,7 @@ export function execucaoPrompt(task: Task): string {
   const plano = task.plan ? ["", "Plano aprovado:", task.plan] : [];
   return [
     "O usuário aprovou o plano. Execute-o agora, passo a passo, no código deste projeto.",
+    CONTEXTO_NAO_TECNICO,
     "Siga o plano; se algo imprevisto exigir um desvio pequeno, faça e explique.",
     "Ao final, explique em português simples, para uma pessoa não-técnica, o que foi feito.",
     ...plano,

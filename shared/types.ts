@@ -180,6 +180,7 @@ export const TASK_ACTIONS = [
   "publish",
   "retry",
   "auto_mode",
+  "plano_rapido",
   "cancel",
 ] as const;
 
@@ -190,6 +191,7 @@ export type TaskAction =
   | { action: "publish"; createPr?: boolean } // merge no main (+ PR opcional)
   | { action: "retry" } // re-roda o passo que falhou
   | { action: "auto_mode"; on: boolean } // permissões automáticas para esta tarefa
+  | { action: "plano_rapido" } // pular a cadeia de reviews e ir direto ao plano
   | { action: "cancel"; motivo?: string };
 
 // Travas de sincronia (compile-time; sem custo em runtime):

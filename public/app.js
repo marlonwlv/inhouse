@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.4.2";
+const UI_VERSION = "0.5.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -846,6 +846,7 @@ function taskFootHtml(t, perm) {
   } else if (t.status === "rodando") {
     rows.push(`<div class="task-foot"><span><span class="spinner"></span> Claude trabalhando no passo “${esc(STEP_LABELS[t.step] ?? t.step)}”${stepAtualDesde(t) ? ` · ${timeAgo(stepAtualDesde(t))}` : ""}…</span>
       <span class="gap"></span>
+      ${t.step === "plano" ? `<button class="btn sm ghost" data-act="plano-rapido" data-task="${id}" title="Pular os reviews e ir direto ao plano">É simples — ir direto ao plano</button>` : ""}
       <a class="link" href="#/tarefa/${id}">Acompanhar no editor →</a></div>`);
   } else if (t.step === "aprovacao" && t.status === "aguardando") {
     rows.push(`<div class="task-foot"><span class="plan-sum">${esc(planSummary(t))}</span>
@@ -1203,6 +1204,7 @@ const actions = {
     taskAction(btn.dataset.task, { action: "auto_mode", on: !t?.autoAprovar });
   },
   "auto-on": (btn) => taskAction(btn.dataset.task, { action: "auto_mode", on: true }),
+  "plano-rapido": (btn) => taskAction(btn.dataset.task, { action: "plano_rapido" }),
   "theme-toggle": () => {
     const atual = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
     const proximo = atual === "dark" ? "light" : "dark";

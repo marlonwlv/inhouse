@@ -49,6 +49,9 @@ const SKILL_PHASE_OPTS = {
 /** Mensagens de steering enfileiradas por tarefa (entram no próximo resume da execução). */
 const steerQueue = new Map<string, string[]>();
 
+/** Tarefas cujo usuário pediu "ir direto ao plano" (pula a cadeia de reviews). */
+const planoDireto = new Set<string>();
+
 // ---------- Helpers ----------
 
 function formatDur(ms: number): string {
@@ -181,6 +184,8 @@ async function rodarSkillsPlano(
   skills: { skill: string; args?: string; quando?: "ui" }[],
 ): Promise<boolean> {
   for (const step of skills) {
+    // Usuário clicou "ir direto ao plano": para a cadeia de reviews aqui.
+    if (planoDireto.has(taskId)) return false;
     const atual = store.getTask(taskId);
     if (!atual || cancelada(taskId)) return false;
     if (!skillSeAplica(step, atual)) {
@@ -205,6 +210,8 @@ async function rodarSkillsPlano(
       ...(rs.sessionId ? { claudeSessionId: rs.sessionId } : {}),
     });
     if (!rs.success) {
+      // Abort intencional pelo "ir direto ao plano" não é falha.
+      if (planoDireto.has(taskId)) return false;
       failOuPausa(taskId, rs, `A skill /${step.skill} falhou: ${rs.errorMessage ?? "erro desconhecido"}`);
       return false;
     }
@@ -299,9 +306,14 @@ async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
   const cadeia = feedback ? [] : skillsPlanoPara(cfg, task.porte ?? "media");
   const rodouSkills = cadeia.length > 0;
   if (rodouSkills) {
-    if (!(await rodarSkillsPlano(taskId, cadeia))) return false;
-    sistema(taskId, "Consolidando o plano final com o resultado dos reviews…");
+    const chainOk = await rodarSkillsPlano(taskId, cadeia);
+    // Falha real da skill derruba; abort pelo "ir direto ao plano" segue para o plano direto.
+    if (!chainOk && !planoDireto.has(taskId)) return false;
+    if (!planoDireto.has(taskId)) sistema(taskId, "Consolidando o plano final com o resultado dos reviews…");
   }
+  // O usuário pediu "ir direto ao plano"? Consome o pedido e gera um plano enxuto.
+  const rapido = planoDireto.delete(taskId);
+  if (rapido) sistema(taskId, "Ok — indo direto ao plano, sem os reviews pesados.");
 
   // plano = o que o usuário aprova; julgamento = plano + texto final (as linhas
   // PORTE:/UI: do re-julgamento costumam vir fora do bloco do ExitPlanMode).
@@ -332,10 +344,10 @@ async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
   let resultado = await gerarPlano(
     feedback
       ? planoFeedbackPrompt(feedback)
-      : rodouSkills
+      : rodouSkills && !rapido
         ? consolidarPlanoPrompt()
         : planoPrompt(task),
-    rodouSkills,
+    rodouSkills && !rapido,
   );
   if (resultado === null) return false;
 
@@ -358,9 +370,11 @@ async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
     const alvo = store.getTask(taskId);
     if (alvo) {
       const desejada = skillsPlanoPara(cfg, alvo.porte ?? "media");
-      const faltando = desejada.filter(
-        (st) => skillSeAplica(st, alvo) && !(alvo.skillsRodadas ?? []).includes(st.skill),
-      );
+      const faltando = rapido
+        ? [] // usuário pediu plano direto — não puxa reviews adicionais
+        : desejada.filter(
+            (st) => skillSeAplica(st, alvo) && !(alvo.skillsRodadas ?? []).includes(st.skill),
+          );
       if (faltando.length > 0) {
         marcarTriagemCurta(taskId);
         sistema(
@@ -718,6 +732,16 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
           resolvePermission(pr.id, true);
         }
       }
+      break;
+    }
+
+    case "plano_rapido": {
+      if (!(task.step === "plano" && task.status === "rodando")) {
+        throw new Error("Só dá para ir direto ao plano enquanto ele está sendo montado.");
+      }
+      planoDireto.add(taskId);
+      abortPhase(taskId); // interrompe a review em andamento agora
+      sistema(taskId, "Pedido recebido — pulando os reviews e indo direto ao plano.");
       break;
     }
 
