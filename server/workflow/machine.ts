@@ -388,7 +388,11 @@ async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
 }
 
 /** Fase execução ("acceptEdits" + gate de permissões). Ao terminar, roda as verificações. */
-async function runExecucao(taskId: string, prompt: string): Promise<boolean> {
+async function runExecucao(
+  taskId: string,
+  prompt: string,
+  opts?: { pularVerificacaoSemEdicao?: boolean },
+): Promise<boolean> {
   const task = store.getTask(taskId);
   if (!task) return false;
   patch(taskId, { step: "execucao", status: "rodando", error: undefined });
@@ -420,7 +424,14 @@ async function runExecucao(taskId: string, prompt: string): Promise<boolean> {
 
   // Chegaram mensagens novas enquanto o Claude trabalhava? Mais uma rodada antes de verificar.
   if ((steerQueue.get(taskId)?.length ?? 0) > 0) {
-    return runExecucao(taskId, "Continue a tarefa levando em conta as mensagens do usuário abaixo.");
+    return runExecucao(taskId, "Continue a tarefa levando em conta as mensagens do usuário abaixo.", opts);
+  }
+  // "Pedir mudanças" no Seu teste que não mexeu em código (ex.: "sobe o server pra mim"):
+  // não re-roda as verificações à toa — volta pro teste com a resposta do agente visível.
+  if (opts?.pularVerificacaoSemEdicao && !r.filesTouched) {
+    sistema(taskId, "Nenhuma mudança de código — pulando as verificações.");
+    patch(taskId, { step: "teste", status: "aguardando" });
+    return true;
   }
   return runVerificacoes(taskId);
 }
@@ -608,7 +619,9 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       } else if (task.step === "teste" && task.status === "aguardando") {
         usuario(taskId, msg);
         patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
-        fireAndForget(taskId, () => runExecucao(taskId, changesPrompt(msg)));
+        // Recado no Seu teste = conversa/steering: se o agente não mexer em código,
+        // volta pro teste sem re-rodar as verificações (não perde a resposta, não gasta minutos).
+        fireAndForget(taskId, () => runExecucao(taskId, changesPrompt(msg), { pularVerificacaoSemEdicao: true }));
       } else if (
         (task.step === "execucao" || task.step === "verificacoes") &&
         task.status === "falhou"

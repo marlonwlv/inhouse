@@ -46,6 +46,8 @@ export interface PhaseResult {
   timedOut?: boolean;
   /** Medições do SDK (custo/turnos/tokens) — ausente quando a fase morreu sem result. */
   metricas?: FaseMetricas;
+  /** A fase editou algum arquivo (Write/Edit/…)? Usado para não re-verificar sem mudança. */
+  filesTouched?: boolean;
 }
 
 export interface RunPhaseOpts {
@@ -204,6 +206,7 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   let resultSeen = false;
   let errorMessage: string | undefined;
   let metricas: FaseMetricas | undefined;
+  let filesTouched = false;
   /** Último erro de API visto em mensagem assistant (auth, rate limit...). */
   let apiError: SDKAssistantMessage["error"];
 
@@ -217,6 +220,9 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
         const input = (block.input ?? {}) as Record<string, unknown>;
         if (block.name === "ExitPlanMode" && typeof input["plan"] === "string") {
           planText = input["plan"];
+        }
+        if (block.name === "Write" || block.name === "Edit" || block.name === "MultiEdit" || block.name === "NotebookEdit") {
+          filesTouched = true;
         }
         const item = toolItem(block.name, input, opts.cwd);
         transcriptAppend(opts.taskId, item);
@@ -308,7 +314,7 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   }
 
   if (metricas) acumularFase(opts.taskId, metricas);
-  return { sessionId, finalText, planText, success, errorMessage, timedOut, metricas };
+  return { sessionId, finalText, planText, success, errorMessage, timedOut, metricas, filesTouched };
 }
 
 /** Traduz erros do SDK/CLI em mensagem amigável para leigos. */

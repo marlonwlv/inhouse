@@ -1,6 +1,6 @@
 # Inhouse — Primeira versão para o Product Designer testar
 
-> **Categoria:** release · **Criado:** 2026-08-06 · **Status:** Proposto (aguardando execução)
+> **Categoria:** release · **Criado:** 2026-08-06 · **Status:** Em andamento (2026-08-06)
 > Handoff da primeira versão testável para um Product Designer do time (Mac, máquina própria, mexendo no seu-monorepo real).
 
 ## Contexto

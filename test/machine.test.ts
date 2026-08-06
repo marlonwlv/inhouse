@@ -23,6 +23,7 @@ const h = vi.hoisted(() => {
     publishCalls: [] as { createPr: boolean }[],
     stopPreviewCalls: [] as string[],
     abortCalls: [] as string[],
+    execFilesTouched: true,
   };
   return {
     state,
@@ -44,7 +45,7 @@ const h = vi.hoisted(() => {
         };
       }
       if (opts.permissionMode === "acceptEdits") {
-        return { sessionId: "sess-exec", finalText: "Mudanças feitas.", success: true };
+        return { sessionId: "sess-exec", finalText: "Mudanças feitas.", success: true, filesTouched: state.execFilesTouched };
       }
       // Fase espec (permissionMode "default", read-only).
       return { sessionId: "sess-espec", finalText: "## Objetivo\nEspec estruturada (mock)", success: true };
@@ -135,6 +136,7 @@ beforeAll(() => {
 beforeEach(() => {
   h.state.calls.length = 0;
   h.state.gateRuns = 0;
+  h.state.execFilesTouched = true;
   h.state.publishCalls.length = 0;
   h.state.stopPreviewCalls.length = 0;
   h.state.abortCalls.length = 0;
@@ -244,6 +246,18 @@ describe("machine: aprovação e execução", () => {
     expect(execs).toHaveLength(1);
     expect(execs[0]?.prompt).toContain("o botão ficou pequeno");
     expect(h.state.gateRuns).toBe(2); // gates da ida ao teste + gates pós-mudança
+  });
+
+  it("recado no teste que NÃO mexe em código não re-roda as verificações (volta pro teste)", async () => {
+    const t = await ateTeste();
+    h.state.execFilesTouched = false; // ex.: "sobe o server pra mim" — o agente age, não edita
+    const gatesAntes = h.state.gateRuns;
+
+    await applyAction(t.id, { action: "request_changes", message: "sobe o server pra mim" });
+
+    const depois = await esperaStep(t.id, "teste");
+    expect(depois.status).toBe("aguardando");
+    expect(h.state.gateRuns).toBe(gatesAntes); // NENHUM gate novo — não re-validou à toa
   });
 });
 

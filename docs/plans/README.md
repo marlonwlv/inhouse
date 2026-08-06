@@ -17,7 +17,7 @@ Cada plano abre com um cabeçalho: **título · categoria · data (YYYY-MM-DD) �
 ## Índice
 
 ### release
-- [Primeira versão para o Product Designer testar](release/primeira-versao-product-designer.md) — handoff da v1 testável (Mac, seu-monorepo real). **Status: Proposto** (2026-08-06).
+- [Primeira versão para o Product Designer testar](release/primeira-versao-product-designer.md) — handoff da v1 testável (Mac, seu-monorepo real). **Status: Em andamento** (2026-08-06).
 
 ### features
 - [Eval de Experiência](features/eval-de-experiencia.md) — captura/lembra/ranqueia atritos sozinho (métricas + Claude-juiz + aprendizados). **Status: Concluído** (2026-08-06).
