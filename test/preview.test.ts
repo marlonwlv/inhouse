@@ -18,7 +18,14 @@ vi.mock("../server/store.js", () => ({
   updateTask: vi.fn((id: string, patch: Record<string, unknown>) => ({ id, ...patch })),
 }));
 
-import { portaLivre, startPreview, stopPreview } from "../server/services/preview.js";
+import {
+  autoDetectar,
+  parsePreviewRecipe,
+  portaLivre,
+  startPreview,
+  stopPreview,
+} from "../server/services/preview.js";
+import { sanitizePreview } from "../server/workflow/config.js";
 
 function tarefa(worktreePath: string): Task {
   return {
@@ -116,5 +123,105 @@ describe("startPreview/stopPreview", () => {
     expect(pid).toBeGreaterThan(0);
     await stopPreview(task.id);
     expect(await esperaMorrer(pid)).toBe(true);
+  });
+});
+
+describe("sanitizePreview", () => {
+  it("aceita um bloco válido e descarta caminhos perigosos", () => {
+    const cfg = sanitizePreview({
+      cmd: "pnpm --filter web dev",
+      cwd: "apps/web",
+      port: 3000,
+      envFiles: [".env.local", "../secret"],
+      timeoutMs: 60000,
+    });
+    expect(cfg?.cmd).toBe("pnpm --filter web dev");
+    expect(cfg?.cwd).toBe("apps/web");
+    expect(cfg?.port).toBe(3000);
+    expect(cfg?.envFiles).toEqual([".env.local"]); // ../secret é rejeitado
+    expect(cfg?.timeoutMs).toBe(60000);
+  });
+
+  it("rejeita cwd que escapa da pasta e porta inválida", () => {
+    const cfg = sanitizePreview({ cmd: "x", cwd: "../..", port: 99999 });
+    expect(cfg?.cwd).toBeUndefined();
+    expect(cfg?.port).toBeUndefined();
+  });
+
+  it("descarta readyRegex inválido mas mantém o resto", () => {
+    const cfg = sanitizePreview({ cmd: "x", readyRegex: "(" });
+    expect(cfg?.readyRegex).toBeUndefined();
+    expect(cfg?.cmd).toBe("x");
+  });
+
+  it("objeto vazio ou não-objeto vira undefined", () => {
+    expect(sanitizePreview({})).toBeUndefined();
+    expect(sanitizePreview(null)).toBeUndefined();
+    expect(sanitizePreview("x")).toBeUndefined();
+  });
+});
+
+describe("parsePreviewRecipe", () => {
+  it("extrai de um bloco ```json e força a porta reservada", () => {
+    const txt =
+      'Descobri o comando.\n```json\n{ "cmd": "pnpm --filter web dev", "cwd": "apps/web", "port": 1234, "envFiles": [".env.local"] }\n```';
+    const r = parsePreviewRecipe(txt, 4507);
+    expect(r?.cmd).toBe("pnpm --filter web dev");
+    expect(r?.cwd).toBe("apps/web");
+    expect(r?.port).toBe(4507); // sobrescreve a porta que o agente escreveu
+  });
+
+  it("extrai de um objeto solto, sem cerca de código", () => {
+    const r = parsePreviewRecipe('resultado final: { "cmd": "npm run dev" } pronto', 4500);
+    expect(r?.cmd).toBe("npm run dev");
+    expect(r?.port).toBe(4500);
+  });
+
+  it("sem cmd válido devolve null", () => {
+    expect(parsePreviewRecipe('```json\n{ "port": 3000 }\n```', 4500)).toBeNull();
+  });
+
+  it("texto sem JSON devolve null", () => {
+    expect(parsePreviewRecipe("não achei como subir", 4500)).toBeNull();
+  });
+});
+
+describe("autoDetectar", () => {
+  function fixtureDir(files: Record<string, string>): string {
+    const dir = mkdtempSync(join(tmpdir(), "inh-detect-"));
+    for (const [name, content] of Object.entries(files)) {
+      writeFileSync(join(dir, name), content);
+    }
+    return dir;
+  }
+
+  it("npm + script dev, sem framework Vite-like", () => {
+    const dir = fixtureDir({ "package.json": JSON.stringify({ scripts: { dev: "node server.js" } }) });
+    expect(autoDetectar(dir)).toEqual({ cmd: "npm", args: ["run", "dev"], viteLike: false });
+  });
+
+  it("pnpm pelo lockfile + vite pela dependência", () => {
+    const dir = fixtureDir({
+      "package.json": JSON.stringify({ scripts: { dev: "vite" }, devDependencies: { vite: "^5" } }),
+      "pnpm-lock.yaml": "",
+    });
+    const d = autoDetectar(dir);
+    expect(d?.cmd).toBe("corepack");
+    expect(d?.args).toEqual(["pnpm", "run", "dev"]);
+    expect(d?.viteLike).toBe(true);
+  });
+
+  it("cai para o script start quando não há dev", () => {
+    const dir = fixtureDir({ "package.json": JSON.stringify({ scripts: { start: "next start" } }) });
+    expect(autoDetectar(dir)?.args).toEqual(["run", "start"]);
+  });
+
+  it("sem script dev/start devolve null (degradação graciosa)", () => {
+    const dir = fixtureDir({ "package.json": JSON.stringify({ scripts: { build: "tsc" } }) });
+    expect(autoDetectar(dir)).toBeNull();
+  });
+
+  it("sem package.json devolve null", () => {
+    expect(autoDetectar(fixtureDir({}))).toBeNull();
   });
 });

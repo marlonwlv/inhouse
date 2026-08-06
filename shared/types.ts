@@ -240,6 +240,27 @@ export interface SkillStepConfig {
   gate?: string;
 }
 
+/**
+ * Como subir o preview (dev server) de um projeto — bloco "preview" do
+ * inhouse.config.json OU receita aprendida pelo agente (camada 2.5). Tudo
+ * opcional: sem nada, o Inhouse auto-detecta (gerenciador + script dev/start)
+ * e, se não der, cai para a degradação graciosa (sem preview de tela).
+ */
+export interface PreviewConfig {
+  /** Comando completo do dev server (ex.: "pnpm --filter web dev"). Roda via shell. */
+  cmd?: string;
+  /** Subpasta (relativa à raiz do projeto) onde rodar — cobre monorepos. */
+  cwd?: string;
+  /** Porta desejada; o Inhouse procura a primeira livre a partir dela. */
+  port?: number;
+  /** Arquivos de ambiente (ex.: [".env.local"]) copiados da pasta principal para o espaço. */
+  envFiles?: string[];
+  /** Regex custom p/ detectar que subiu (default: procura uma URL http://localhost:porta). */
+  readyRegex?: string;
+  /** Timeout de subida em ms (default: 120000). */
+  timeoutMs?: number;
+}
+
 export interface InhouseConfig {
   skills?: {
     /**
@@ -251,6 +272,8 @@ export interface InhouseConfig {
     /** Gates extras após as verificações do projeto (veredito APROVADO/REPROVADO). */
     verificacoes?: SkillStepConfig[];
   };
+  /** Como subir o preview deste projeto (opcional; auto-detecção cobre o resto). */
+  preview?: PreviewConfig;
 }
 
 // ---------- Utilidades ----------

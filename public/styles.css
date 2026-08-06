@@ -782,6 +782,7 @@ input::placeholder { color: var(--faint); }
   padding: 30px;
 }
 .preview-empty p { margin: 0; color: var(--muted); font-size: 13px; max-width: 40ch; }
+.preview-empty .preview-hint { color: var(--ink); }
 .preview-foot {
   flex: none;
   display: flex;

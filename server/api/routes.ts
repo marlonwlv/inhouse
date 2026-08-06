@@ -17,7 +17,13 @@ import { RELATORIOS_DIR } from "../config.js";
 import { resolvePermission } from "../claude/permissions.js";
 import { claudeStatus } from "../claude/runner.js";
 import { addClient, broadcast } from "../events.js";
-import { startPreview, stopPreview } from "../services/preview.js";
+import {
+  PreviewIndisponivelError,
+  configurarPreviewComAgente,
+  startPreview,
+  stopPreview,
+  temPreviewConfigCommitada,
+} from "../services/preview.js";
 import { cloneProject, createFromTemplate, openProject } from "../services/projects.js";
 import * as store from "../store.js";
 import { applyAction, startTask, steer } from "../workflow/machine.js";
@@ -277,7 +283,30 @@ export function buildRouter(): Router {
       if (!task) throw new HttpError(404, "Tarefa não encontrada.");
       const project = store.getProject(task.projectId);
       if (!project) throw new HttpError(404, "O projeto desta tarefa não foi encontrado.");
-      const url = await startPreview(task, project);
+      try {
+        const url = await startPreview(task, project);
+        res.json({ url });
+      } catch (err) {
+        // Degradação graciosa: sem tela para pré-visualizar (ou a subida falhou).
+        // Só oferecemos o agente quando NÃO há config commitada (que venceria a receita).
+        const msg = err instanceof Error ? err.message : "Não foi possível abrir o preview.";
+        const status = err instanceof PreviewIndisponivelError ? 422 : 502;
+        const podeConfigurarComAgente = !temPreviewConfigCommitada(project, task.worktreePath);
+        res.status(status).json({ error: msg, podeConfigurarComAgente });
+      }
+    }),
+  );
+
+  // Camada 2.5: o Claude descobre a receita de preview e o Inhouse a usa.
+  router.post(
+    "/api/tasks/:id/preview/configure",
+    h(async (req, res) => {
+      const id = req.params.id ?? "";
+      const task = store.getTask(id);
+      if (!task) throw new HttpError(404, "Tarefa não encontrada.");
+      const project = store.getProject(task.projectId);
+      if (!project) throw new HttpError(404, "O projeto desta tarefa não foi encontrado.");
+      const url = await configurarPreviewComAgente(task, project);
       res.json({ url });
     }),
   );

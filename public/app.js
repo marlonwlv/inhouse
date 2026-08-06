@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.6.0";
+const UI_VERSION = "0.7.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -54,6 +54,7 @@ const state = {
   progress: {}, // name -> { projectId?, message, pct? }
   transcripts: {}, // taskId -> { loaded, loading, items[], stream }
   busy: {}, // chaves de ações em andamento ("clone", "create", "preview:<id>", "publish:<id>")
+  previewErro: {}, // taskId -> { msg, podeConfigurar } quando o preview não sobe
   ui: { createPr: true },
   eval: null, // resumo carregado ao entrar em #/experiencia
   evalRelatorio: null, // conteúdo do relatório aberto
@@ -361,6 +362,7 @@ function handleEvent(ev) {
       break;
     case "preview_ready": {
       const t = getTask(ev.taskId);
+      delete state.previewErro[ev.taskId];
       if (t) { t.previewUrl = ev.url; render(); }
       break;
     }
@@ -1177,7 +1179,9 @@ function updatePreview(root, t) {
   if (!pane) return;
   const url = t.previewUrl || "";
   const busy = !!state.busy[`preview:${t.id}`];
-  const key = `${url}|${busy}`;
+  const config = !!state.busy[`preview-config:${t.id}`];
+  const erro = state.previewErro[t.id];
+  const key = `${url}|${busy}|${config}|${erro ? erro.msg + erro.podeConfigurar : ""}`;
   if (pane.dataset.key === key) return; // não recarregar o iframe à toa
   pane.dataset.key = key;
   if (url) {
@@ -1189,6 +1193,25 @@ function updatePreview(root, t) {
       </div>
       <iframe id="preview-frame" src="${esc(url)}" title="Preview do app"></iframe>
       <div class="preview-foot"><span class="dot"></span> Preview local do espaço ${t.espaco} · as outras tarefas não são afetadas</div>`;
+  } else if (config) {
+    // Agente descobrindo a receita — o progresso aparece no chat da tarefa.
+    pane.innerHTML = `
+      <div class="preview-bar"><div class="url muted">configurando…</div></div>
+      <div class="preview-empty">
+        <p><span class="spinner"></span> O Claude está descobrindo como abrir o preview deste projeto. Acompanhe no chat ao lado.</p>
+      </div>`;
+  } else if (erro) {
+    // Camada 3 — degradação graciosa: sem susto, com uma saída.
+    pane.innerHTML = `
+      <div class="preview-bar"><div class="url muted">sem preview</div></div>
+      <div class="preview-empty">
+        <p>${esc(erro.msg)}</p>
+        ${erro.podeConfigurar
+          ? `<p class="preview-hint">Posso pedir ao Claude para descobrir como abrir o preview deste projeto.</p>
+             <button class="btn primary" data-act="configure-preview" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>Pedir ao Claude para configurar o preview</button>
+             <button class="btn ghost sm" data-act="start-preview" data-task="${esc(t.id)}">Tentar de novo</button>`
+          : `<button class="btn primary" data-act="start-preview" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>${busy ? `<span class="spinner"></span> Iniciando…` : "Tentar de novo"}</button>`}
+      </div>`;
   } else {
     pane.innerHTML = `
       <div class="preview-bar"><div class="url muted">preview parado</div></div>
@@ -1348,12 +1371,44 @@ const actions = {
     const id = btn.dataset.task;
     if (state.busy[`preview:${id}`]) return;
     state.busy[`preview:${id}`] = true;
+    delete state.previewErro[id];
     render();
-    const r = await api(`/api/tasks/${encodeURIComponent(id)}/preview/start`, {});
+    // Fetch direto (não o api()): precisamos do corpo mesmo em erro para saber
+    // se dá para oferecer a configuração pelo agente (degradação graciosa).
+    let body = null;
+    try {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/preview/start`, { method: "POST" });
+      setOnline(true);
+      body = await res.json().catch(() => null);
+      if (res.ok && body?.url) {
+        const t = getTask(id);
+        if (t) t.previewUrl = body.url;
+      } else {
+        state.previewErro[id] = {
+          msg: body?.error || "Não foi possível abrir o preview.",
+          podeConfigurar: !!body?.podeConfigurarComAgente,
+        };
+      }
+    } catch {
+      setOnline(false);
+    }
     delete state.busy[`preview:${id}`];
+    render();
+  },
+  "configure-preview": async (btn) => {
+    const id = btn.dataset.task;
+    if (state.busy[`preview:${id}`] || state.busy[`preview-config:${id}`]) return;
+    state.busy[`preview-config:${id}`] = true;
+    delete state.previewErro[id];
+    render();
+    // Pode demorar (o agente lê o projeto): o api() cuida do toast em falha.
+    const r = await api(`/api/tasks/${encodeURIComponent(id)}/preview/configure`, {});
+    delete state.busy[`preview-config:${id}`];
     if (r?.url) {
       const t = getTask(id);
       if (t) t.previewUrl = r.url;
+    } else {
+      state.previewErro[id] = { msg: "O preview ainda não subiu. Você pode tentar de novo.", podeConfigurar: true };
     }
     render();
   },

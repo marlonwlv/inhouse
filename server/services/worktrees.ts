@@ -4,11 +4,12 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { cp, mkdir, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { Project } from "../../shared/types.js";
 import { ESPACOS_DIR, claudeEnv } from "../config.js";
 import { broadcast } from "../events.js";
+import { loadConfigCascata } from "../workflow/config.js";
 import { withProjectLock } from "./locks.js";
 import { git, gitCommit, lastLines, tryGit } from "./proc.js";
 
@@ -81,6 +82,11 @@ async function doCreateEspaco(
     });
   }
 
+  // Arquivos de ambiente (.env.local etc.) são gitignored: não vêm no worktree.
+  // Copia os declarados no bloco `preview` do config — gates e preview precisam.
+  const envFiles = loadConfigCascata(worktreePath, project.path)?.preview?.envFiles;
+  if (envFiles?.length) await copiarEnvFiles(project, worktreePath, envFiles);
+
   // Falha ao instalar dependências NÃO derruba a tarefa: plano e execução
   // funcionam sem node_modules — só gates/preview ficarão limitados (e avisamos).
   try {
@@ -95,6 +101,30 @@ async function doCreateEspaco(
     });
   }
   return { branch, worktreePath };
+}
+
+/**
+ * Copia arquivos de ambiente (ex.: .env.local) da pasta principal para o espaço.
+ * São gitignored, logo não vêm no worktree, e são a causa nº1 de "subiu mas
+ * quebrou". Idempotente: só copia o que existe na origem e ainda falta no destino.
+ * Os caminhos já vêm sanitizados (sem `..`/absolutos) pelo config.
+ */
+export async function copiarEnvFiles(
+  project: Project,
+  worktreePath: string,
+  envFiles: string[],
+): Promise<void> {
+  for (const rel of envFiles) {
+    const origem = join(project.path, rel);
+    const destino = join(worktreePath, rel);
+    if (!existsSync(origem) || existsSync(destino)) continue;
+    try {
+      await mkdir(dirname(destino), { recursive: true });
+      await cp(origem, destino);
+    } catch {
+      // Melhor esforço: falha ao copiar um env não pode derrubar a tarefa.
+    }
+  }
 }
 
 export async function removeEspaco(

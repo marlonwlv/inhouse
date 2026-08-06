@@ -5,7 +5,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { InhouseConfig, Porte, SkillStepConfig } from "../../shared/types.js";
+import type { InhouseConfig, Porte, PreviewConfig, SkillStepConfig } from "../../shared/types.js";
 import { DATA_DIR } from "../config.js";
 
 const CONFIG_FILE = "inhouse.config.json";
@@ -28,6 +28,47 @@ function sanitizeSteps(raw: unknown): SkillStepConfig[] | undefined {
     });
   }
   return steps.length > 0 ? steps : undefined;
+}
+
+/** Um caminho relativo seguro dentro do projeto? (sem escapar com `..` nem ser absoluto) */
+function caminhoRelativoSeguro(p: string): boolean {
+  if (typeof p !== "string" || !p.trim()) return false;
+  if (p.startsWith("/") || /^[A-Za-z]:/.test(p)) return false; // absoluto
+  return !p.split(/[/\\]/).includes("..");
+}
+
+/**
+ * Sanitiza o bloco `preview` (do config OU da receita do agente). Tudo opcional;
+ * campos inválidos são descartados. Exportado para a camada 2.5 reaproveitar.
+ */
+export function sanitizePreview(raw: unknown): PreviewConfig | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const o = raw as Record<string, unknown>;
+  const out: PreviewConfig = {};
+  if (typeof o.cmd === "string" && o.cmd.trim()) out.cmd = o.cmd.trim().slice(0, 400);
+  if (typeof o.cwd === "string" && caminhoRelativoSeguro(o.cwd)) out.cwd = o.cwd.trim();
+  if (typeof o.port === "number" && Number.isInteger(o.port) && o.port > 0 && o.port < 65536) {
+    out.port = o.port;
+  }
+  if (Array.isArray(o.envFiles)) {
+    const files = o.envFiles.filter(
+      (f): f is string => typeof f === "string" && caminhoRelativoSeguro(f),
+    );
+    if (files.length) out.envFiles = files.slice(0, 20);
+  }
+  if (typeof o.readyRegex === "string" && o.readyRegex.trim()) {
+    // Só aceita se compilar — evita quebrar a subida do preview com um regex inválido.
+    try {
+      new RegExp(o.readyRegex);
+      out.readyRegex = o.readyRegex.slice(0, 300);
+    } catch {
+      // descarta regex inválido
+    }
+  }
+  if (typeof o.timeoutMs === "number" && o.timeoutMs > 0 && o.timeoutMs <= 600_000) {
+    out.timeoutMs = Math.round(o.timeoutMs);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** Lista OU objeto por porte → sanitizado na mesma forma de entrada. */
@@ -91,8 +132,9 @@ export function loadConfigFile(file: string): InhouseConfig | null {
     const skills = (raw.skills ?? {}) as Record<string, unknown>;
     const plano = sanitizePlano(skills.plano);
     const verificacoes = sanitizeSteps(skills.verificacoes);
-    if (!plano && !verificacoes) return null;
-    return { skills: { plano, verificacoes } };
+    const preview = sanitizePreview(raw.preview);
+    if (!plano && !verificacoes && !preview) return null;
+    return { skills: { plano, verificacoes }, ...(preview ? { preview } : {}) };
   } catch (err) {
     console.warn(`[config] ${file} inválido — ignorando:`, err instanceof Error ? err.message : err);
     return null;
