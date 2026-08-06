@@ -11,6 +11,7 @@ import { claudeStatus } from "./claude/runner.js";
 import { HOST, PORT, ensureDirs } from "./config.js";
 import { broadcast } from "./events.js";
 import { stopAllPreviews } from "./services/preview.js";
+import { checarUpdate } from "./services/update.js";
 import { backfillSeVazio } from "./eval/coleta.js";
 import { load } from "./store.js";
 
@@ -75,6 +76,25 @@ async function verificarClaude(): Promise<void> {
 const claudeTimer = setInterval(() => void verificarClaude(), 30_000);
 claudeTimer.unref();
 void verificarClaude();
+
+// Aviso de versão nova do próprio Inhouse: checa no boot e a cada 3h; avisa a UI
+// por SSE quando muda. Degrada em silêncio se não for clone git / estiver offline.
+let ultimoUpdateJson = "";
+async function verificarUpdate(): Promise<void> {
+  try {
+    const u = await checarUpdate();
+    const j = JSON.stringify(u);
+    if (j !== ultimoUpdateJson) {
+      ultimoUpdateJson = j;
+      broadcast({ type: "update_status", update: u });
+    }
+  } catch {
+    // ignora — a próxima checagem tenta de novo
+  }
+}
+const updateTimer = setInterval(() => void verificarUpdate(), 3 * 60 * 60 * 1000);
+updateTimer.unref();
+void verificarUpdate();
 
 let encerrando = false;
 function shutdown(sinal: string): void {

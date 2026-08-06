@@ -25,6 +25,7 @@ import {
   stopPreview,
   temPreviewConfigCommitada,
 } from "../services/preview.js";
+import { aplicarUpdate, ultimoUpdate } from "../services/update.js";
 import { cloneProject, createFromTemplate, openProject } from "../services/projects.js";
 import * as store from "../store.js";
 import { applyAction, startTask, steer } from "../workflow/machine.js";
@@ -113,7 +114,16 @@ export function buildRouter(): Router {
         tasks: store.listTasks(),
         permissions: store.listPermissions(),
         claude: await cachedClaudeStatus(),
+        update: ultimoUpdate(),
       });
+    }),
+  );
+
+  // Atualizar o próprio Inhouse (git pull --ff-only); pede reiniciar depois.
+  router.post(
+    "/api/update",
+    h(async (_req, res) => {
+      res.json(await aplicarUpdate());
     }),
   );
 

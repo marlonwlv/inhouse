@@ -138,6 +138,17 @@ export type TranscriptItem =
   | { kind: "tool"; op: "+" | "✎" | "$" | "?"; label: string; detail?: string; at: string }
   | { kind: "system"; text: string; at: string }; // mudanças de passo, gates, etc.
 
+/** Estado do aviso de versão nova do próprio Inhouse (via git). */
+export interface UpdateInfo {
+  /** É um clone git com origin? (senão, não dá para checar/atualizar) */
+  suportado: boolean;
+  /** Há commits novos em origin? */
+  disponivel: boolean;
+  /** Quantos commits atrás do origin. */
+  atras: number;
+  checadoEm?: string;
+}
+
 // ---------- Eventos SSE (GET /api/events) ----------
 
 export type ServerEvent =
@@ -152,6 +163,7 @@ export type ServerEvent =
   | { type: "permission_resolved"; requestId: string; allowed: boolean }
   | { type: "preview_ready"; taskId: string; url: string }
   | { type: "claude_status"; ok: boolean; version?: string; detail?: string }
+  | { type: "update_status"; update: UpdateInfo }
   | { type: "eval_relatorio"; status: "gerando" | "pronto" | "erro"; arquivo?: string; detalhe?: string };
 
 // ---------- API REST ----------

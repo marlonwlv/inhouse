@@ -160,6 +160,17 @@ h1, h2, h3 { letter-spacing: -0.02em; }
 .nav a.active { background: var(--surface-2); color: var(--ink); }
 #claude-chip { margin-left: auto; }
 
+.update-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 550;
+  background: var(--brand); color: var(--brand-ink);
+  border: 1px solid var(--brand); border-radius: 999px;
+  padding: 4px 12px; cursor: pointer;
+}
+.update-pill:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
+.update-pill .dot { background: var(--brand-ink); }
+.update-pill[hidden] { display: none; }
+
 .icon-btn {
   flex: none;
   width: 32px; height: 32px;

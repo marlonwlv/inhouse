@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.9.0";
+const UI_VERSION = "0.10.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -49,6 +49,7 @@ const state = {
   tasks: [],
   permissions: [],
   claude: { ok: false },
+  update: { suportado: false, disponivel: false, atras: 0 }, // aviso de versão nova
   online: true,
   loaded: false, // já recebemos /api/state ao menos uma vez
   progress: {}, // name -> { projectId?, message, pct? }
@@ -186,6 +187,7 @@ async function fetchState() {
   state.tasks = s.tasks ?? [];
   state.permissions = s.permissions ?? [];
   state.claude = s.claude ?? { ok: false };
+  if (s.update) state.update = s.update;
   state.loaded = true;
   render();
 }
@@ -378,6 +380,11 @@ function handleEvent(ev) {
       if (antes !== ev.ok && (route().name === "home" || route().name === "board")) render();
       break;
     }
+    case "update_status": {
+      state.update = ev.update;
+      renderUpdatePill();
+      break;
+    }
   }
 }
 
@@ -555,6 +562,7 @@ function renderExperiencia() {
 // ---------- Render raiz ----------
 function render() {
   renderClaudeChip();
+  renderUpdatePill();
   const r = route();
   document.querySelectorAll("[data-nav]").forEach((a) => {
     const active = a.dataset.nav === r.name || (r.name === "editor" && a.dataset.nav === "board");
@@ -607,6 +615,22 @@ function renderClaudeChip() {
     el.className = "chip bad";
     el.textContent = "Claude desconectado";
     el.title = "Claude Code não encontrado neste computador";
+  }
+}
+
+// Pílula "versão nova" no cabeçalho — só aparece quando há update disponível.
+function renderUpdatePill() {
+  const el = $("#update-pill");
+  if (!el) return;
+  const u = state.update;
+  if (u && u.disponivel && !state.busy.update) {
+    el.hidden = false;
+    el.innerHTML = `<span class="dot"></span> Versão nova · Atualizar`;
+  } else if (state.busy.update) {
+    el.hidden = false;
+    el.innerHTML = `<span class="spinner"></span> Atualizando…`;
+  } else {
+    el.hidden = true;
   }
 }
 
@@ -1333,6 +1357,27 @@ const actions = {
   "arquivar": (btn) => taskAction(btn.dataset.task, { action: "arquivar" }),
   "desarquivar": (btn) => taskAction(btn.dataset.task, { action: "desarquivar" }),
   "toggle-arquivadas": () => { state.showArquivadas = !state.showArquivadas; render(); },
+  "aplicar-update": async () => {
+    if (state.busy.update) return;
+    const ok = await confirmar({
+      titulo: "Atualizar o Inhouse?",
+      corpo: "Vou baixar a versão nova (git pull). Depois é só fechar e abrir o Inhouse de novo pra aplicar. Suas tarefas e dados não são afetados.",
+      textoConfirmar: "Atualizar",
+    });
+    if (!ok) return;
+    state.busy.update = true;
+    renderUpdatePill();
+    const r = await api("/api/update", {});
+    state.busy.update = false;
+    if (r?.ok) {
+      state.update = { ...state.update, disponivel: false };
+      renderUpdatePill();
+      await confirmar({ titulo: "Atualizado!", corpo: r.mensagem, textoConfirmar: "Entendi" });
+    } else {
+      renderUpdatePill();
+      if (r) toast(r.mensagem);
+    }
+  },
   "theme-toggle": () => {
     const atual = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
     const proximo = atual === "dark" ? "light" : "dark";
