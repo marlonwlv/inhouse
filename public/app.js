@@ -608,6 +608,29 @@ function stepAtualDesde(t) {
   return h && !h.fim ? h.inicio : null;
 }
 
+/* Diálogo de confirmação reutilizável (<dialog> nativo). Resolve true/false. */
+function confirmar({ titulo, corpo, textoConfirmar = "Confirmar", perigo = false }) {
+  return new Promise((resolve) => {
+    const dlg = document.createElement("dialog");
+    dlg.className = "cancel-dialog";
+    dlg.innerHTML = `<form method="dialog">
+      <h3>${esc(titulo)}</h3>
+      <p>${esc(corpo)}</p>
+      <div class="dlg-acts">
+        <button value="nao" class="btn sm ghost">Voltar</button>
+        <button value="sim" class="btn sm ${perigo ? "danger" : "primary"}">${esc(textoConfirmar)}</button>
+      </div>
+    </form>`;
+    document.body.appendChild(dlg);
+    dlg.addEventListener("close", () => {
+      const ok = dlg.returnValue === "sim";
+      dlg.remove();
+      resolve(ok);
+    });
+    dlg.showModal();
+  });
+}
+
 function abrirDialogoCancelar(taskId) {
   const motivos = ["Não era o que eu pedi", "Demorou demais", "Travou / deu erro", "Mudei de ideia", "Só estava testando"];
   const dlg = document.createElement("dialog");
@@ -1068,10 +1091,13 @@ function publishCardHtml(t) {
   const busy = !!state.busy[`publish:${t.id}`];
   return `<div class="publish-card">
     <div class="head">✓ Pronto para publicar</div>
-    <p>Verificações e o seu teste aprovados. Publicar junta as mudanças do espaço ${t.espaco} no projeto principal.</p>
-    ${p?.originUrl ? `<label class="remember"><input type="checkbox" id="create-pr" ${state.ui.createPr ? "checked" : ""}> Criar PR no GitHub para revisão</label>` : ""}
+    <p>Verificações e o seu teste aprovados. ${
+      p?.originUrl
+        ? "Publicar abre um <strong>Pull Request no GitHub</strong> para o time revisar — o projeto não é alterado direto."
+        : `Publicar junta as mudanças do espaço ${t.espaco} no app.`
+    }</p>
     <div class="acts">
-      <button class="btn sm primary" data-act="publish" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>${busy ? `<span class="spinner"></span> Publicando…` : "Publicar no projeto"}</button>
+      <button class="btn sm primary" data-act="publish" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>${busy ? `<span class="spinner"></span> Publicando…` : p?.originUrl ? "Abrir Pull Request" : "Publicar no app"}</button>
     </div>
   </div>`;
 }
@@ -1257,10 +1283,18 @@ const actions = {
     const t = getTask(id);
     if (!t || state.busy[`publish:${id}`]) return;
     const p = getProject(t.projectId);
-    const createPr = !!(p?.originUrl && state.ui.createPr);
+    const temOrigin = !!p?.originUrl;
+    const ok = await confirmar({
+      titulo: temOrigin ? "Publicar como Pull Request?" : "Publicar no app?",
+      corpo: temOrigin
+        ? "Isto envia sua mudança como um Pull Request no GitHub para o time revisar. O projeto (main) não é alterado direto."
+        : "Isto junta as mudanças deste espaço no app.",
+      textoConfirmar: temOrigin ? "Abrir Pull Request" : "Publicar",
+    });
+    if (!ok) return;
     state.busy[`publish:${id}`] = true;
     render();
-    await taskAction(id, { action: "publish", createPr });
+    await taskAction(id, { action: "publish", createPr: temOrigin });
     delete state.busy[`publish:${id}`];
     render();
   },
