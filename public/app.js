@@ -631,6 +631,14 @@ function confirmar({ titulo, corpo, textoConfirmar = "Confirmar", perigo = false
   });
 }
 
+function confirmarModoAuto() {
+  return confirmar({
+    titulo: "Ligar o modo automático?",
+    corpo: "Isto deixa o Claude executar tudo nesta tarefa sem te perguntar (inclusive rodar comandos). Ligue só numa tarefa em que você confia.",
+    textoConfirmar: "Ligar modo auto",
+  });
+}
+
 function abrirDialogoCancelar(taskId) {
   const motivos = ["Não era o que eu pedi", "Demorou demais", "Travou / deu erro", "Mudei de ideia", "Só estava testando"];
   const dlg = document.createElement("dialog");
@@ -1225,11 +1233,16 @@ const actions = {
   "approve-plan": (btn) => taskAction(btn.dataset.task, { action: "approve_plan" }),
   "approve-test": (btn) => taskAction(btn.dataset.task, { action: "approve_test" }),
   "retry": (btn) => taskAction(btn.dataset.task, { action: "retry" }),
-  "auto-toggle": (btn) => {
+  "auto-toggle": async (btn) => {
     const t = getTask(btn.dataset.task);
-    taskAction(btn.dataset.task, { action: "auto_mode", on: !t?.autoAprovar });
+    const ligando = !t?.autoAprovar;
+    if (ligando && !(await confirmarModoAuto())) return;
+    taskAction(btn.dataset.task, { action: "auto_mode", on: ligando });
   },
-  "auto-on": (btn) => taskAction(btn.dataset.task, { action: "auto_mode", on: true }),
+  "auto-on": async (btn) => {
+    if (!(await confirmarModoAuto())) return;
+    taskAction(btn.dataset.task, { action: "auto_mode", on: true });
+  },
   "plano-rapido": (btn) => taskAction(btn.dataset.task, { action: "plano_rapido" }),
   "theme-toggle": () => {
     const atual = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
