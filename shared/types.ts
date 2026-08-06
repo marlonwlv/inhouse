@@ -113,6 +113,8 @@ export interface Task {
   historico?: { step: Step; inicio: string; fim?: string }[];
   /** Medições acumuladas para o eval de experiência (custo/turnos por etapa). */
   uso?: TaskUso;
+  /** Arquivada (ISO): some do quadro e o worktree é liberado. Ausente = ativa. */
+  arquivadaEm?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -184,6 +186,8 @@ export const TASK_ACTIONS = [
   "retry",
   "auto_mode",
   "plano_rapido",
+  "arquivar",
+  "desarquivar",
   "cancel",
 ] as const;
 
@@ -195,6 +199,8 @@ export type TaskAction =
   | { action: "retry" } // re-roda o passo que falhou
   | { action: "auto_mode"; on: boolean } // permissões automáticas para esta tarefa
   | { action: "plano_rapido" } // pular a cadeia de reviews e ir direto ao plano
+  | { action: "arquivar" } // some do quadro + libera o worktree (mantém a branch)
+  | { action: "desarquivar" } // reexibe no quadro
   | { action: "cancel"; motivo?: string };
 
 // Travas de sincronia (compile-time; sem custo em runtime):

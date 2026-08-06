@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.8.0";
+const UI_VERSION = "0.9.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -55,6 +55,7 @@ const state = {
   transcripts: {}, // taskId -> { loaded, loading, items[], stream }
   busy: {}, // chaves de ações em andamento ("clone", "create", "preview:<id>", "publish:<id>")
   previewErro: {}, // taskId -> { msg, podeConfigurar } quando o preview não sobe
+  showArquivadas: false, // mostrar as tarefas arquivadas no quadro
   ui: { createPr: true },
   eval: null, // resumo carregado ao entrar em #/experiencia
   evalRelatorio: null, // conteúdo do relatório aberto
@@ -849,9 +850,11 @@ function renderBoard() {
     return;
   }
   const pid = selectedProjectId();
-  const tasks = state.tasks
+  const todas = state.tasks
     .filter((t) => t.projectId === pid)
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const tasks = todas.filter((t) => !t.arquivadaEm);
+  const arquivadas = todas.filter((t) => t.arquivadaEm);
   const ativas = tasks.filter((t) => t.status === "rodando" || t.status === "aguardando").length;
   const statusLine = ativas === 0
     ? "nenhuma tarefa em andamento"
@@ -878,11 +881,25 @@ function renderBoard() {
       ${tasks.length
         ? tasks.map(taskCardHtml).join("")
         : `<div class="empty-card">Nenhuma tarefa neste projeto ainda. Descreva a primeira ali em cima — o Claude cuida do resto.</div>`}
+      ${arquivadas.length ? `
+        <div class="arquivadas-sep">
+          <button class="btn sm ghost" data-act="toggle-arquivadas">${state.showArquivadas ? "Ocultar" : "Ver"} arquivadas (${arquivadas.length})</button>
+        </div>
+        ${state.showArquivadas ? arquivadas.map(taskCardHtml).join("") : ""}` : ""}
     </div>
   </div>`);
 }
 
 function taskCardHtml(t) {
+  if (t.arquivadaEm) {
+    return `<div class="task archived">
+      <div class="task-head">
+        <b>${esc(t.title)}</b>
+        <span class="chip">arquivada</span>
+        <div class="meta">${t.prUrl ? `<a class="link" href="${esc(t.prUrl)}" target="_blank" rel="noreferrer">Ver no GitHub</a> · ` : ""}<button class="btn sm ghost" data-act="desarquivar" data-task="${esc(t.id)}">Desarquivar</button></div>
+      </div>
+    </div>`;
+  }
   const perm = state.permissions.find((p) => p.taskId === t.id);
   const cls = t.status === "falhou" ? "failed"
     : t.status === "rodando" ? "running"
@@ -917,6 +934,7 @@ function taskFootHtml(t, perm) {
     rows.push(`<div class="task-foot"><span class="fail-msg">${esc(t.error || "Algo deu errado neste passo.")}</span>
       <span class="gap"></span>
       <button class="btn sm" data-act="go-task" data-task="${id}">Ver detalhes</button>
+      <button class="btn sm ghost" data-act="arquivar" data-task="${id}" title="Some do quadro e libera o espaço">Arquivar</button>
       <button class="btn sm primary" data-act="retry" data-task="${id}">Tentar de novo</button></div>`);
   } else if (t.status === "rodando") {
     rows.push(`<div class="task-foot"><span><span class="spinner"></span> Claude trabalhando no passo “${esc(STEP_LABELS[t.step] ?? t.step)}”${stepAtualDesde(t) ? ` · ${timeAgo(stepAtualDesde(t))}` : ""}…</span>
@@ -943,9 +961,12 @@ function taskFootHtml(t, perm) {
     rows.push(`<div class="task-foot"><span>Todos os passos concluídos · mudança publicada no projeto</span>
       <span class="gap"></span>
       ${localStorage.getItem(`inhouse.feedback.${id}`) ? "" : `<span class="fb-inline"><button class="fb-emoji" data-act="feedback" data-task="${id}" data-nota="otimo">😃</button><button class="fb-emoji" data-act="feedback" data-task="${id}" data-nota="ok">😐</button><button class="fb-emoji" data-act="feedback" data-task="${id}" data-nota="ruim">😖</button></span>`}
-      ${t.prUrl ? `<a class="link" href="${esc(t.prUrl)}" target="_blank" rel="noreferrer">Ver no GitHub</a>` : ""}</div>`);
+      ${t.prUrl ? `<a class="link" href="${esc(t.prUrl)}" target="_blank" rel="noreferrer">Ver no GitHub</a>` : ""}
+      <button class="btn sm ghost" data-act="arquivar" data-task="${id}" title="Some do quadro e libera o espaço">Arquivar</button></div>`);
   } else if (t.status === "cancelada") {
-    rows.push(`<div class="task-foot"><span>Tarefa cancelada.</span></div>`);
+    rows.push(`<div class="task-foot"><span>Tarefa cancelada.</span>
+      <span class="gap"></span>
+      <button class="btn sm ghost" data-act="arquivar" data-task="${id}" title="Some do quadro e libera o espaço">Arquivar</button></div>`);
   } else if (!perm) {
     rows.push(`<div class="task-foot"><a class="link" href="#/tarefa/${id}">Abrir no editor →</a></div>`);
   }
@@ -1309,6 +1330,9 @@ const actions = {
     taskAction(btn.dataset.task, { action: "auto_mode", on: true });
   },
   "plano-rapido": (btn) => taskAction(btn.dataset.task, { action: "plano_rapido" }),
+  "arquivar": (btn) => taskAction(btn.dataset.task, { action: "arquivar" }),
+  "desarquivar": (btn) => taskAction(btn.dataset.task, { action: "desarquivar" }),
+  "toggle-arquivadas": () => { state.showArquivadas = !state.showArquivadas; render(); },
   "theme-toggle": () => {
     const atual = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
     const proximo = atual === "dark" ? "light" : "dark";

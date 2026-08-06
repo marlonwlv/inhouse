@@ -15,7 +15,7 @@ import { broadcast } from "../events.js";
 import { runGates } from "../services/gates.js";
 import { startPreview, stopPreview } from "../services/preview.js";
 import { publishTask } from "../services/publish.js";
-import { createEspaco, slugify } from "../services/worktrees.js";
+import { createEspaco, removeEspaco, slugify } from "../services/worktrees.js";
 import * as store from "../store.js";
 import { marcarTriagemCurta, registrarFalha, registrarTarefaFinalizada } from "../eval/coleta.js";
 import { verificarGatilhoAuto } from "../eval/juiz.js";
@@ -746,6 +746,37 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       planoDireto.add(taskId);
       abortPhase(taskId); // interrompe a review em andamento agora
       sistema(taskId, "Pedido recebido — pulando os reviews e indo direto ao plano.");
+      break;
+    }
+
+    case "arquivar": {
+      const terminal =
+        task.status === "concluida" || task.status === "cancelada" || task.status === "falhou";
+      if (!terminal) {
+        throw new Error("Só dá para arquivar tarefas finalizadas. Cancele a tarefa antes, se precisar.");
+      }
+      if (!task.arquivadaEm) {
+        patch(taskId, { arquivadaEm: new Date().toISOString() });
+        await stopPreview(taskId);
+        const project = store.getProject(task.projectId);
+        if (project) {
+          // Libera o espaço em disco; a branch (e o PR, se houver) ficam.
+          // O worktree pode já não existir (ex.: tarefa publicada) — removeEspaco tolera.
+          try {
+            await removeEspaco(project, task.worktreePath, { keepBranch: true });
+          } catch {
+            // melhor esforço
+          }
+        }
+        sistema(taskId, "Tarefa arquivada. O espaço foi liberado; a branch e o histórico ficam.");
+      }
+      break;
+    }
+
+    case "desarquivar": {
+      if (!task.arquivadaEm) throw new Error("Esta tarefa não está arquivada.");
+      patch(taskId, { arquivadaEm: undefined });
+      sistema(taskId, "Tarefa desarquivada.");
       break;
     }
 

@@ -389,6 +389,9 @@ input::placeholder { color: var(--faint); }
   box-shadow: var(--shadow-sm);
 }
 .task.done-task { opacity: .72; }
+.task.archived { opacity: .6; padding: 11px 15px; gap: 0; }
+.task.archived .task-head b { font-weight: 550; color: var(--muted); }
+.arquivadas-sep { display: flex; justify-content: center; margin: 6px 0 2px; }
 .task-head { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
 .task-head b { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
 .task-head .meta { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--faint); white-space: nowrap; }

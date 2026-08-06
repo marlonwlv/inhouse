@@ -22,6 +22,7 @@ const h = vi.hoisted(() => {
     gateRuns: 0,
     publishCalls: [] as { createPr: boolean }[],
     stopPreviewCalls: [] as string[],
+    removeEspacoCalls: [] as string[],
     abortCalls: [] as string[],
     execFilesTouched: true,
   };
@@ -80,6 +81,9 @@ const h = vi.hoisted(() => {
     async stopPreview(taskId: string) {
       state.stopPreviewCalls.push(taskId);
     },
+    async removeEspaco(_project: unknown, worktreePath: string) {
+      state.removeEspacoCalls.push(worktreePath);
+    },
   };
 });
 
@@ -98,7 +102,7 @@ vi.mock("../server/services/gates.js", () => ({
 vi.mock("../server/services/worktrees.js", () => ({
   createEspaco: h.createEspaco,
   slugify: (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
-  removeEspaco: async () => {},
+  removeEspaco: h.removeEspaco,
   ensureDeps: async () => {},
 }));
 vi.mock("../server/services/preview.js", () => ({
@@ -139,6 +143,7 @@ beforeEach(() => {
   h.state.execFilesTouched = true;
   h.state.publishCalls.length = 0;
   h.state.stopPreviewCalls.length = 0;
+  h.state.removeEspacoCalls.length = 0;
   h.state.abortCalls.length = 0;
   h.state.gatesOk = true;
   h.state.planFails = false;
@@ -425,5 +430,34 @@ describe("machine: ações inválidas", () => {
     await expect(applyAction("nao-existe", { action: "approve_plan" })).rejects.toThrow(
       /não encontrada/,
     );
+  });
+});
+
+describe("machine: arquivar", () => {
+  it("arquivar uma tarefa cancelada mata o worktree e marca arquivadaEm", async () => {
+    const t = await criaTaskEmAprovacao("Arquivável");
+    const worktree = store.getTask(t.id)!.worktreePath;
+    await applyAction(t.id, { action: "cancel" });
+    expect(store.getTask(t.id)?.status).toBe("cancelada");
+
+    await applyAction(t.id, { action: "arquivar" });
+    const arq = store.getTask(t.id)!;
+    expect(arq.arquivadaEm).toBeTruthy();
+    expect(h.state.removeEspacoCalls).toContain(worktree); // worktree liberado
+    expect(h.state.stopPreviewCalls).toContain(t.id);
+  });
+
+  it("arquivar uma tarefa em andamento é recusado", async () => {
+    const t = await criaTaskEmAprovacao("Em andamento"); // aprovacao/aguardando = não terminal
+    await expect(applyAction(t.id, { action: "arquivar" })).rejects.toThrow(/finalizadas/i);
+    expect(store.getTask(t.id)?.arquivadaEm).toBeUndefined();
+  });
+
+  it("desarquivar limpa a marca", async () => {
+    const t = await criaTaskEmAprovacao("Voltar");
+    await applyAction(t.id, { action: "cancel" });
+    await applyAction(t.id, { action: "arquivar" });
+    await applyAction(t.id, { action: "desarquivar" });
+    expect(store.getTask(t.id)?.arquivadaEm).toBeUndefined();
   });
 });
