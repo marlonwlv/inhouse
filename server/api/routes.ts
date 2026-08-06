@@ -11,6 +11,7 @@ import { FEEDBACK_NOTAS, TASK_ACTIONS } from "../../shared/types.js";
 import type { FeedbackNota } from "../../shared/types.js";
 import { registrarFeedback } from "../eval/coleta.js";
 import { calcularResumo } from "../eval/resumo.js";
+import { exportarBundle, fontesDisponiveis, importarBundle } from "../eval/transfer.js";
 import { estaGerando, gerarRelatorio } from "../eval/juiz.js";
 import { readJsonl, RELATORIOS_INDEX } from "../eval/coleta.js";
 import { RELATORIOS_DIR } from "../config.js";
@@ -75,6 +76,27 @@ const ACTIONS: ReadonlySet<string> = new Set(TASK_ACTIONS);
 
 export function buildRouter(): Router {
   const router = Router();
+
+  // Import de eval pode ser grande (inclui transcripts). Parser dedicado com
+  // limite maior, registrado ANTES do parser global de 1mb — que, por rodar
+  // primeiro, recusaria o upload com 413.
+  router.post(
+    "/api/eval/import",
+    express.json({ limit: "50mb" }),
+    h(async (req, res) => {
+      const body = req.body as Record<string, unknown> | null | undefined;
+      const bundle = body?.["bundle"];
+      const fonte = typeof body?.["fonte"] === "string" ? (body["fonte"] as string) : "";
+      if (!fonte.trim()) throw new HttpError(400, "Diga de quem são estes dados (um nome para a origem).");
+      try {
+        const r = importarBundle(bundle, fonte);
+        res.json(r);
+      } catch (err) {
+        throw new HttpError(400, err instanceof Error ? err.message : "Arquivo de dados inválido.");
+      }
+    }),
+  );
+
   router.use(express.json({ limit: "1mb" }));
 
   // ---------- Estado e eventos ----------
@@ -218,8 +240,31 @@ export function buildRouter(): Router {
 
   router.get(
     "/api/eval/resumo",
+    h(async (req, res) => {
+      const fonte = typeof req.query.fonte === "string" ? req.query.fonte : undefined;
+      res.json({ ...calcularResumo(fonte), gerando: estaGerando() });
+    }),
+  );
+
+  // Fontes importadas disponíveis (para o filtro da tela Experiência).
+  router.get(
+    "/api/eval/fontes",
     h(async (_req, res) => {
-      res.json({ ...calcularResumo(), gerando: estaGerando() });
+      res.json({ fontes: fontesDisponiveis() });
+    }),
+  );
+
+  // Exporta os dados locais desta máquina como um bundle para download.
+  router.get(
+    "/api/eval/export",
+    h(async (req, res) => {
+      const incluirTranscripts = req.query.transcripts === "1";
+      const label = typeof req.query.label === "string" ? req.query.label.slice(0, 40) : undefined;
+      const bundle = exportarBundle(incluirTranscripts, label);
+      const nome = `inhouse-eval-${label ? label.replace(/[^\w-]/g, "") + "-" : ""}${bundle.geradoEm.slice(0, 10)}.json`;
+      res.setHeader("Content-Disposition", `attachment; filename="${nome}"`);
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.send(JSON.stringify(bundle));
     }),
   );
 

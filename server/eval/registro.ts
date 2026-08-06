@@ -33,6 +33,8 @@ export interface RegistroTarefa {
   errorFinal?: string;
   prCriado?: boolean;
   origem?: "backfill";
+  /** Máquina de origem quando o registro veio de um import (ex.: "maria"). Ausente = local. */
+  fonte?: string;
 }
 
 export interface RegistroPermissao {
@@ -44,6 +46,7 @@ export interface RegistroPermissao {
   esperaMs: number;
   desfecho: "permitiu" | "negou" | "timeout" | "abortada" | "auto";
   lembrar?: boolean;
+  fonte?: string;
 }
 
 export interface RegistroFeedback {
@@ -52,6 +55,7 @@ export interface RegistroFeedback {
   taskId: string;
   nota: FeedbackNota;
   texto?: string;
+  fonte?: string;
 }
 
 export interface RegistroRelatorio {
@@ -60,6 +64,7 @@ export interface RegistroRelatorio {
   arquivo: string;
   tarefasAnalisadas: number;
   custoUsd?: number;
+  fonte?: string;
 }
 
 export interface RegistroAprendizado {
@@ -70,4 +75,5 @@ export interface RegistroAprendizado {
   severidade: number;
   evidencia?: string;
   ocorrencias: number;
+  fonte?: string;
 }

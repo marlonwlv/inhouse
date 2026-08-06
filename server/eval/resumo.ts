@@ -27,6 +27,21 @@ function mediana(valores: number[]): number | null {
   return s.length % 2 === 1 ? s[meio]! : Math.round((s[meio - 1]! + s[meio]!) / 2);
 }
 
+/**
+ * Filtra registros por origem: undefined/"todos" = tudo; "meus" = só locais
+ * (sem fonte); qualquer outro rótulo = só aquela fonte importada.
+ */
+function filtrarFonte<T extends { fonte?: string }>(rs: T[], fonte?: string): T[] {
+  if (!fonte || fonte === "todos") return rs;
+  if (fonte === "meus") return rs.filter((r) => !r.fonte);
+  return rs.filter((r) => r.fonte === fonte);
+}
+
+/** Inclui as tarefas vivas (locais) na conta? Só quando a fonte abrange o local. */
+function incluiLocais(fonte?: string): boolean {
+  return !fonte || fonte === "todos" || fonte === "meus";
+}
+
 /** "Sem resgate" = concluída sem falha exposta, sem pausa de 1h e sem estourar as rodadas de correção. */
 function semResgate(r: RegistroTarefa): boolean {
   if (r.desfecho !== "concluida") return false;
@@ -34,27 +49,27 @@ function semResgate(r: RegistroTarefa): boolean {
   return falhas === 0 && !r.pausadaPorTempo && r.gateFixRounds < 2;
 }
 
-/** Feedback com latest-wins por taskId. */
-export function feedbackPorTarefa(): Map<string, RegistroFeedback> {
+/** Feedback com latest-wins por taskId (filtrado por fonte). */
+export function feedbackPorTarefa(fonte?: string): Map<string, RegistroFeedback> {
   const m = new Map<string, RegistroFeedback>();
-  for (const f of readJsonl<RegistroFeedback>(FEEDBACK_FILE())) m.set(f.taskId, f);
+  for (const f of filtrarFonte(readJsonl<RegistroFeedback>(FEEDBACK_FILE()), fonte)) m.set(f.taskId, f);
   return m;
 }
 
-export function aprendizadosOrdenados(): RegistroAprendizado[] {
+export function aprendizadosOrdenados(fonte?: string): RegistroAprendizado[] {
   // Dedupe por chave (latest-wins), ordenado por ocorrências × severidade.
   const m = new Map<string, RegistroAprendizado>();
-  for (const a of readJsonl<RegistroAprendizado>(APRENDIZADOS_FILE())) m.set(a.chave, a);
+  for (const a of filtrarFonte(readJsonl<RegistroAprendizado>(APRENDIZADOS_FILE()), fonte)) m.set(a.chave, a);
   return [...m.values()].sort(
     (a, b) => b.ocorrencias * b.severidade - a.ocorrencias * a.severidade,
   );
 }
 
-export function calcularResumo(): EvalResumo {
-  const tarefas = readJsonl<RegistroTarefa>(TAREFAS_FILE());
-  const permissoes = readJsonl<RegistroPermissao>(PERMISSOES_FILE());
-  const relatorios = readJsonl<RegistroRelatorio>(RELATORIOS_INDEX());
-  const feedback = feedbackPorTarefa();
+export function calcularResumo(fonte?: string): EvalResumo {
+  const tarefas = filtrarFonte(readJsonl<RegistroTarefa>(TAREFAS_FILE()), fonte);
+  const permissoes = filtrarFonte(readJsonl<RegistroPermissao>(PERMISSOES_FILE()), fonte);
+  const relatorios = filtrarFonte(readJsonl<RegistroRelatorio>(RELATORIOS_INDEX()), fonte);
+  const feedback = feedbackPorTarefa(fonte);
 
   const concluidas = tarefas.filter((t) => t.desfecho === "concluida");
   const canceladas = tarefas.filter((t) => t.desfecho === "cancelada");
@@ -79,9 +94,11 @@ export function calcularResumo(): EvalResumo {
   const notas = { otimo: 0, ok: 0, ruim: 0 };
   for (const f of feedback.values()) notas[f.nota]++;
 
-  const paradasEmFalhou = store
-    .listTasks()
-    .filter((t) => t.status === "falhou").length;
+  // Tarefas vivas travadas em "falhou" só entram quando a visão inclui o local
+  // (dados importados não têm tarefas vivas nesta máquina).
+  const paradasEmFalhou = incluiLocais(fonte)
+    ? store.listTasks().filter((t) => t.status === "falhou").length
+    : 0;
 
   return {
     taxaSemResgate: { publicadasSemResgate, finalizadas: tarefas.length },
@@ -103,7 +120,7 @@ export function calcularResumo(): EvalResumo {
     custoTotalUsd: Math.round(custoTotalUsd * 100) / 100,
     feedback: notas,
     semDadosDeTempo: concluidas.length - comTempo.length,
-    aprendizados: aprendizadosOrdenados()
+    aprendizados: aprendizadosOrdenados(fonte)
       .slice(0, 8)
       .map((a) => ({ chave: a.chave, insight: a.insight, severidade: a.severidade, ocorrencias: a.ocorrencias })),
     relatorios: relatorios.length,

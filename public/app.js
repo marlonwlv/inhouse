@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.7.0";
+const UI_VERSION = "0.8.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -58,6 +58,8 @@ const state = {
   ui: { createPr: true },
   eval: null, // resumo carregado ao entrar em #/experiencia
   evalRelatorio: null, // conteúdo do relatório aberto
+  evalFonte: "todos", // filtro de origem: "todos" | "meus" | <rótulo importado>
+  evalFontes: [], // rótulos de origens importadas
 };
 
 // ---------- Utilidades ----------
@@ -469,9 +471,12 @@ function isEditorOf(taskId) {
 }
 
 async function carregarEval() {
-  state.eval = await api("/api/eval/resumo");
+  const f = state.evalFonte && state.evalFonte !== "todos" ? `?fonte=${encodeURIComponent(state.evalFonte)}` : "";
+  state.eval = await api(`/api/eval/resumo${f}`);
   const idx = await api("/api/eval/relatorios");
   state.evalRelatorios = idx?.relatorios ?? [];
+  const fontes = await api("/api/eval/fontes");
+  state.evalFontes = fontes?.fontes ?? [];
   render();
 }
 
@@ -522,12 +527,23 @@ function renderExperiencia() {
     ? `<div class="exp-relatorio-md">${mdBlock(state.evalRelatorio)}</div>`
     : "";
 
+  const temFontes = (state.evalFontes ?? []).length > 0;
+  const fonteSelect = temFontes
+    ? `<select id="eval-fonte" class="repo-pick" aria-label="Filtrar por origem dos dados">
+        ${["todos", "meus", ...state.evalFontes].map((f) =>
+          `<option value="${esc(f)}" ${state.evalFonte === f ? "selected" : ""}>${f === "todos" ? "Todas as origens" : f === "meus" ? "Só os meus" : esc(f)}</option>`).join("")}
+      </select>`
+    : "";
+
   renderPage(`<div class="exp-wrap">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <h2 style="margin:0;flex:1">Experiência</h2>
+      ${fonteSelect}
+      <button class="btn sm ghost" data-act="eval-export" title="Baixar os dados desta máquina para enviar a quem analisa">Exportar dados</button>
+      <button class="btn sm ghost" data-act="eval-import" title="Carregar os dados exportados de outra máquina">Importar dados</button>
       <button class="btn primary" data-act="gerar-relatorio" ${busy ? "disabled" : ""}>${busy ? '<span class="spinner"></span> Gerando análise…' : "Gerar análise agora"}</button>
     </div>
-    <p class="hello-sub">O Inhouse mede sozinho os atritos de quem usa e ranqueia o que melhorar.</p>
+    <p class="hello-sub">O Inhouse mede sozinho os atritos de quem usa e ranqueia o que melhorar.${temFontes ? " Use o filtro para separar por quem testou." : ""}</p>
     ${grid}
     ${aprendizados}
     ${relatorios}
@@ -1310,6 +1326,43 @@ const actions = {
     const r = await api(`/api/eval/relatorios/${encodeURIComponent(btn.dataset.arq)}`);
     if (r?.conteudo) { state.evalRelatorio = r.conteudo; render(); }
   },
+  "eval-export": () => {
+    // Baixa o arquivo de dados desta máquina (só métricas; sem conversas).
+    const a = document.createElement("a");
+    a.href = "/api/eval/export";
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    toast("Baixando os dados desta máquina…");
+  },
+  "eval-import": () => {
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = "application/json,.json";
+    inp.onchange = async () => {
+      const file = inp.files && inp.files[0];
+      if (!file) return;
+      let bundle;
+      try {
+        bundle = JSON.parse(await file.text());
+      } catch {
+        toast("Arquivo inválido — não parece um export do Inhouse.");
+        return;
+      }
+      const sugestao = (bundle && bundle.origem && bundle.origem.label) || "";
+      const fonte = window.prompt("De quem são estes dados? (um nome para a origem, ex.: Maria)", sugestao);
+      if (!fonte || !fonte.trim()) return;
+      const r = await api("/api/eval/import", { bundle, fonte: fonte.trim() });
+      if (r) {
+        toast(`Importados ${r.importados} registro(s)${r.pulados ? ` · ${r.pulados} já existiam` : ""}.`);
+        state.evalFonte = fonte.trim();
+        state.eval = null;
+        carregarEval();
+      }
+    };
+    inp.click();
+  },
   "cancel": (btn) => abrirDialogoCancelar(btn.dataset.task),
   "feedback": async (btn) => {
     const id = btn.dataset.task;
@@ -1443,6 +1496,10 @@ document.addEventListener("change", (e) => {
     render();
   } else if (el.id === "create-pr") {
     state.ui.createPr = el.checked;
+  } else if (el.id === "eval-fonte") {
+    state.evalFonte = el.value;
+    state.eval = null; // força recarregar o resumo com o novo filtro
+    carregarEval();
   }
 });
 

@@ -166,10 +166,13 @@ export type ServerEvent =
 // POST /api/tasks/:id/preview/start     -> { url }
 // POST /api/tasks/:id/preview/stop      -> 200
 // POST /api/tasks/:id/feedback          { nota, texto? } -> { ok: true }
-// GET  /api/eval/resumo                 -> EvalResumo
+// GET  /api/eval/resumo?fonte=          -> EvalResumo (fonte: "todos" | "meus" | <rótulo>)
 // GET  /api/eval/relatorios             -> { relatorios: {ts, arquivo, tarefasAnalisadas, custoUsd?}[] }
 // GET  /api/eval/relatorios/:arquivo    -> { conteudo }
 // POST /api/eval/relatorios             -> 202 (gera análise; 409 se já gerando)
+// GET  /api/eval/fontes                 -> { fontes: string[] } (origens importadas)
+// GET  /api/eval/export?transcripts=1   -> bundle JSON (dados locais, download)
+// POST /api/eval/import                 { bundle, fonte } -> { importados, pulados }
 
 /** Fonte única dos nomes de ação — rotas validam por aqui; a trava de tipo abaixo
  *  quebra a compilação se este array e o union TaskAction saírem de sincronia. */
