@@ -219,6 +219,8 @@ export interface EvalResumo {
   semDadosDeTempo: number;
   aprendizados: { chave: string; insight: string; severidade: number; ocorrencias: number }[];
   relatorios: number;
+  /** Uma análise está sendo gerada agora (fonte da verdade p/ o botão). */
+  gerando?: boolean;
 }
 
 // ---------- Config por projeto (inhouse.config.json na raiz) ----------

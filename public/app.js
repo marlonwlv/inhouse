@@ -19,7 +19,7 @@ const HUMAN_STEPS = ["aprovacao", "teste", "publicar"];
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.3.1";
+const UI_VERSION = "0.3.2";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -346,8 +346,10 @@ function handleEvent(ev) {
       break;
     case "eval_relatorio":
       if (ev.status === "pronto") {
+        state.busy["eval-relatorio"] = false;
         toast("Análise de experiência pronta.");
         if (route().name === "experiencia") carregarEval();
+        else render();
       } else if (ev.status === "erro") {
         toast(`Não deu para gerar a análise: ${ev.detalhe ?? "erro"}`);
         state.busy["eval-relatorio"] = false;
@@ -475,8 +477,9 @@ function dur(ms) {
 
 function renderExperiencia() {
   const e = state.eval;
-  const busy = !!state.busy["eval-relatorio"];
+  const busy = !!state.busy["eval-relatorio"] || !!(e && e.gerando);
   if (!e) { carregarEval(); }
+  else if (busy) { clearTimeout(state._evalPoll); state._evalPoll = setTimeout(carregarEval, 5000); }
   const stat = (n, l, norte) => `<div class="exp-stat ${norte ? "norte" : ""}"><div class="n">${esc(String(n))}</div><div class="l">${esc(l)}</div></div>`;
   const semDados = !e || e.taxaSemResgate.finalizadas === 0;
 

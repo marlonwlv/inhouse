@@ -213,7 +213,7 @@ export function buildRouter(): Router {
   router.get(
     "/api/eval/resumo",
     h(async (_req, res) => {
-      res.json(calcularResumo());
+      res.json({ ...calcularResumo(), gerando: estaGerando() });
     }),
   );
 
