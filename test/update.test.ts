@@ -18,6 +18,8 @@ vi.mock("../server/services/proc.js", () => ({
   RunError: h.RunError,
   tryGit: async (_cwd: string, ...args: string[]) => {
     h.state.calls.push(args);
+    // ehRepoInhouse compara o show-toplevel com o REPO_ROOT (a raiz do repo = cwd do vitest).
+    if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return h.state.isRepo ? process.cwd() : null;
     if (args[0] === "rev-parse" && args[1] === "--is-inside-work-tree") return h.state.isRepo ? "true" : null;
     if (args[0] === "remote" && args[1] === "get-url") return h.state.hasOrigin ? "https://github.com/x/y.git" : null;
     if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return "main";

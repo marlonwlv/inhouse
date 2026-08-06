@@ -5,7 +5,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { cp, mkdir, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Project } from "../../shared/types.js";
 import { ESPACOS_DIR, claudeEnv } from "../config.js";
 import { broadcast } from "../events.js";
@@ -132,6 +132,9 @@ export async function removeEspaco(
   worktreePath: string,
   opts?: { keepBranch?: boolean },
 ): Promise<void> {
+  // Salvaguarda: NUNCA apagar o checkout principal. Sem isto, um worktreePath
+  // igual a project.path cairia no rm(recursive) do catch e destruiria o projeto.
+  if (!worktreePath || resolve(worktreePath) === resolve(project.path)) return;
   // Descobre o branch antes de remover (para o caso keepBranch === false).
   const branch = await tryGit(worktreePath, "rev-parse", "--abbrev-ref", "HEAD");
   try {

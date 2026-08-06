@@ -2,7 +2,7 @@
  * Rotas REST da UI (contrato no bloco "API REST" de shared/types.ts).
  * Erros sempre em JSON {error} com mensagem amigável em português.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import express, { Router } from "express";
 import type { ErrorRequestHandler, Request, RequestHandler, Response } from "express";
@@ -399,7 +399,11 @@ export function buildRouter(): Router {
     const alvo = resolve(base, sub || "index.html");
     if (alvo !== base && !alvo.startsWith(base + sep)) throw new HttpError(400, "Caminho inválido.");
     if (!existsSync(alvo)) throw new HttpError(404, "Protótipo não encontrado.");
-    res.sendFile(alvo);
+    // Revalida pelo realpath: um symlink dentro da pasta não pode apontar pra fora.
+    const real = realpathSync(alvo);
+    const baseReal = realpathSync(base);
+    if (real !== baseReal && !real.startsWith(baseReal + sep)) throw new HttpError(400, "Caminho inválido.");
+    res.sendFile(real);
   };
   router.get("/api/tasks/:id/mockup", h(async (req, res) => serveMockup(req, res, "")));
   router.get("/api/tasks/:id/mockup/*", h(async (req, res) => serveMockup(req, res, (req.params as Record<string, string>)[0] ?? "")));

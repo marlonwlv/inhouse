@@ -24,7 +24,7 @@ function rodaDesign(t) {
   return t.design === "sim" || (t.design !== "nao" && Boolean(t.precisaDesign));
 }
 function stepsAtivos(t) {
-  const simples = (t.porte || "media") === "simples";
+  const simples = (t.porte ?? "media") === "simples";
   const out = ["espec", "plano", "aprovacao"];
   if (!simples) out.push("detalhamento");
   if (!simples && rodaDesign(t)) out.push("prototipo", "aprovacao_prototipo");
@@ -736,9 +736,12 @@ function abrirDialogoCancelar(taskId) {
 // ---------- Peças compartilhadas ----------
 function flowHtml(t) {
   const ativos = stepsAtivos(t);
-  const idx = ativos.indexOf(t.step);
+  // Se o step atual não está no fluxo previsto (ex.: design mudou no meio), usa a
+  // ordem global pra não renderizar a barra toda cinza.
+  const seq = ativos.includes(t.step) ? ativos : STEPS;
+  const idx = seq.indexOf(t.step);
   const parts = [];
-  ativos.forEach((s, i) => {
+  seq.forEach((s, i) => {
     if (i > 0) parts.push(`<div class="bar ${i <= idx ? "done" : ""}"></div>`);
     const done = i < idx || (i === idx && t.step === "concluida");
     const now = i === idx && t.step !== "concluida";
@@ -1133,8 +1136,9 @@ function nextGateChip(t) {
   if (HUMAN_STEPS.includes(t.step)) {
     return `<span class="chip wait">sua vez: ${esc(STEP_LABELS[t.step].toLowerCase())}</span>`;
   }
-  const idx = STEPS.indexOf(t.step);
-  const next = STEPS.slice(idx + 1).find((s) => HUMAN_STEPS.includes(s));
+  const seq = stepsAtivos(t); // próxima porteira DESTE fluxo (não a global)
+  const idx = seq.indexOf(t.step);
+  const next = seq.slice(idx + 1).find((s) => HUMAN_STEPS.includes(s));
   return next ? `<span class="chip">próxima porteira: ${esc(STEP_LABELS[next].toLowerCase())}</span>` : "";
 }
 

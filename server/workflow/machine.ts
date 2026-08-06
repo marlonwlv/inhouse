@@ -432,7 +432,9 @@ async function runDetalhamento(taskId: string): Promise<boolean> {
 
   const atual = store.getTask(taskId);
   if (!atual || cancelada(taskId)) return false;
-  if (rodaDesign(atual)) return runPrototipo(taskId);
+  // Protótipo só quando o fluxo o prevê (igual a stepsAtivos): !simples && design.
+  // Se o re-julgamento rebaixou pra simples aqui, vai direto pra execução.
+  if ((atual.porte ?? "media") !== "simples" && rodaDesign(atual)) return runPrototipo(taskId);
 
   patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
   return runExecucao(taskId, execucaoPrompt(atual));
@@ -718,6 +720,11 @@ async function runPreparacao(taskId: string): Promise<boolean> {
   if (!task) return false;
   patch(taskId, { step: "execucao", status: "rodando", error: undefined });
 
+  // De propósito roda no checkout PRINCIPAL (não num worktree): preparar o
+  // ambiente (instalar deps, copiar .env) SÓ faz sentido no próprio projeto.
+  // acceptEdits libera as edições de arquivo; Bash continua com porteira de
+  // permissão. É um clone gerenciado pelo Inhouse (git recupera), não a cópia
+  // de trabalho de dev da pessoa.
   const r = await runPhase({
     taskId,
     cwd: task.worktreePath,
@@ -780,7 +787,8 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
     }
 
     case "set_design": {
-      const travado = ["execucao", "verificacoes", "teste", "publicar", "concluida"].includes(task.step);
+      // Só antes do detalhamento: depois dele o fluxo (design/protótipo) já foi escolhido.
+      const travado = ["detalhamento", "prototipo", "aprovacao_prototipo", "execucao", "verificacoes", "teste", "publicar", "concluida"].includes(task.step);
       if (travado) throw new Error("O design/protótipo já foi decidido nesta etapa.");
       patch(taskId, { design: action.valor });
       sistema(
@@ -940,7 +948,9 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
         patch(taskId, { arquivadaEm: new Date().toISOString() });
         await stopPreview(taskId);
         const project = store.getProject(task.projectId);
-        if (project) {
+        // NUNCA remove o worktree de uma preparação: ela roda no checkout PRINCIPAL
+        // (worktreePath === project.path); removeEspaco apagaria o projeto inteiro.
+        if (project && task.kind !== "preparacao" && task.worktreePath !== project.path) {
           // Libera o espaço em disco; a branch (e o PR, se houver) ficam.
           // O worktree pode já não existir (ex.: tarefa publicada) — removeEspaco tolera.
           try {

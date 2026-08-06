@@ -68,3 +68,13 @@ describe("createEspaco", () => {
     expect(existsSync(join(r2.worktreePath, "a.txt"))).toBe(true);
   });
 });
+
+describe("removeEspaco — salvaguarda do checkout principal", () => {
+  it("NUNCA remove quando worktreePath é o próprio project.path (não apaga o projeto)", async () => {
+    // Cenário da tarefa de preparação: worktreePath === project.path.
+    await worktrees.removeEspaco(project, project.path, { keepBranch: true });
+    // O checkout principal e seus arquivos continuam intactos.
+    expect(existsSync(project.path)).toBe(true);
+    expect(existsSync(join(project.path, "a.txt"))).toBe(true);
+  });
+});
