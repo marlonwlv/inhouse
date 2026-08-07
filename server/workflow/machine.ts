@@ -8,7 +8,7 @@
  * (Agente B). Toda transição atualiza o store e faz broadcast de task_updated.
  */
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
-import type { Step, Task, TaskAction, TranscriptItem } from "../../shared/types.js";
+import type { Step, Task, TaskAction, TaskAnexo, TranscriptItem } from "../../shared/types.js";
 import { STEP_LABELS, isHumanStep, proximoStep, rodaDesign } from "../../shared/types.js";
 import {
   createPermissionGate,
@@ -73,6 +73,9 @@ const steerQueue = new Map<string, string[]>();
 /** Tarefas cujo usuário pediu "ir direto ao plano" (pula a cadeia de reviews). */
 const planoDireto = new Set<string>();
 
+/** Tarefas que o usuário pediu para PAUSAR (o abort aterrissa em estado retomável). */
+const pausaManual = new Set<string>();
+
 // ---------- Helpers ----------
 
 function formatDur(ms: number): string {
@@ -135,10 +138,32 @@ function fail(taskId: string, msg: string): void {
 }
 
 /**
+ * Aterrissa o estado "pausado pelo usuário" (se ele pediu pausa) e sinaliza que a
+ * fase deve parar. Espelha o teto de 1h: status "falhou" + flag, SEM registrarFalha
+ * (não é erro), retomável pelo retry. Devolve true se consumiu um pedido de pausa.
+ */
+function pausou(taskId: string): boolean {
+  if (!pausaManual.delete(taskId)) return false;
+  patch(taskId, {
+    status: "falhou",
+    pausadaManual: true,
+    pausadaPorTempo: undefined,
+    error: "Pausado por você. Clique em “Retomar” para continuar de onde parou.",
+  });
+  sistema(
+    taskId,
+    "Pausado. Clique em “Retomar” para o Claude continuar de onde parou — ou escreva um ajuste antes de retomar.",
+  );
+  return true;
+}
+
+/**
  * Falha de fase OU pausa amigável pelo teto de 1h: timeout não é erro — a UI
  * mostra "passo longo" com o botão "Continuar assim mesmo" (action retry).
  */
 function failOuPausa(taskId: string, r: { timedOut?: boolean; errorMessage?: string }, fallback: string): void {
+  // Pausa manual vence: o abort foi pedido pelo usuário, não é falha.
+  if (pausou(taskId)) return;
   if (r.timedOut) {
     patch(taskId, {
       status: "falhou",
@@ -314,6 +339,7 @@ async function runEspec(taskId: string): Promise<boolean> {
   }
 
   if (cancelada(taskId)) return false;
+  if (pausou(taskId)) return false; // usuário pausou durante a espec
   patch(taskId, { spec });
   return true;
 }
@@ -479,7 +505,7 @@ async function runPrototipo(taskId: string, feedback?: string): Promise<boolean>
     failOuPausa(taskId, r, "O protótipo falhou. Tente de novo.");
     return false;
   }
-  patch(taskId, { step: "aprovacao_prototipo", status: "aguardando" });
+  patch(taskId, { step: "aprovacao_prototipo", status: "aguardando", temPrototipo: true });
   sistema(taskId, "Protótipo pronto — veja o mockup e aprove (ou peça mudanças).");
   return true;
 }
@@ -707,6 +733,7 @@ async function runPreviewCheck(taskId: string): Promise<boolean> {
   // 1) Setup: o agente prepara o ambiente (env, docker) sem rodar o server.
   await faseAgente(previewSetupPrompt());
   if (cancelada(taskId)) return false;
+  if (pausou(taskId)) { await stopPreview(taskId); return false; }
 
   // 2) Inhouse sobe o preview gerenciado (fonte única da verdade).
   let url = await subir();
@@ -725,6 +752,7 @@ async function runPreviewCheck(taskId: string): Promise<boolean> {
   const cfg = resolvePreviewConfig(project, task.worktreePath);
   await faseAgente(previewExercisePrompt(url, cfg?.healthPaths ?? []));
   if (cancelada(taskId)) return false;
+  if (pausou(taskId)) { await stopPreview(taskId); return false; }
 
   // 4) Confirmação determinística; tolera 1 reinício (frameworks que não recarregam .env).
   for (let tentativa = 0; tentativa < 2; tentativa++) {
@@ -771,6 +799,7 @@ export async function startTask(
   projectId: string,
   title: string,
   description: string,
+  anexos?: TaskAnexo[],
 ): Promise<Task> {
   const project = store.getProject(projectId);
   if (!project) throw new Error("Projeto não encontrado.");
@@ -789,6 +818,7 @@ export async function startTask(
     worktreePath: "",
     gates: [],
     gateFixRounds: 0,
+    ...(anexos && anexos.length > 0 ? { anexos } : {}),
     historico: [{ step: "espec" as Step, inicio: now }],
     createdAt: now,
     updatedAt: now,
@@ -796,6 +826,9 @@ export async function startTask(
   store.addTask(task);
   broadcast({ type: "task_updated", task });
   usuario(task.id, description);
+  if (anexos && anexos.length > 0) {
+    sistema(task.id, `Arquivos anexados: ${anexos.map((a) => a.nome).join(", ")}.`);
+  }
 
   const ok = await ensureEspaco(task.id);
   if (ok) {
@@ -1004,10 +1037,11 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       if (task.status !== "falhou") {
         throw new Error("Só dá para tentar de novo quando a tarefa falhou.");
       }
+      pausaManual.delete(taskId); // "Retomar" após pausa cai aqui; não deixa flag pendente
       if (isHumanStep(task.step)) {
         // Falha num passo humano (ex.: publish falhou ou o server reiniciou):
         // volta a aguardar a ação da pessoa.
-        patch(taskId, { status: "aguardando", error: undefined, pausadaPorTempo: undefined });
+        patch(taskId, { status: "aguardando", error: undefined, pausadaPorTempo: undefined, pausadaManual: undefined });
         sistema(taskId, "Pronto — a tarefa voltou a aguardar a sua ação.");
       } else if (
         task.step === "espec" ||
@@ -1015,7 +1049,7 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
         task.step === "detalhamento" ||
         task.step === "prototipo"
       ) {
-        patch(taskId, { status: "rodando", error: undefined, pausadaPorTempo: undefined });
+        patch(taskId, { status: "rodando", error: undefined, pausadaPorTempo: undefined, pausadaManual: undefined });
         fireAndForget(taskId, () => {
           if (task.step === "espec") return pipelineFromEspec(taskId);
           if (task.step === "plano") return runPlano(taskId);
@@ -1025,12 +1059,12 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       } else if (task.step === "execucao") {
         // Zera as rodadas de correção: sem isso, um gate com erro determinístico
         // falharia de novo na hora, sem nenhuma tentativa de auto-correção.
-        patch(taskId, { status: "rodando", gateFixRounds: 0, error: undefined, pausadaPorTempo: undefined });
+        patch(taskId, { status: "rodando", gateFixRounds: 0, error: undefined, pausadaPorTempo: undefined, pausadaManual: undefined });
         fireAndForget(taskId, () =>
           task.kind === "preparacao" ? runPreparacao(taskId) : runExecucao(taskId, execucaoPrompt(task)),
         );
       } else if (task.step === "verificacoes") {
-        patch(taskId, { status: "rodando", gateFixRounds: 0, error: undefined, pausadaPorTempo: undefined });
+        patch(taskId, { status: "rodando", gateFixRounds: 0, error: undefined, pausadaPorTempo: undefined, pausadaManual: undefined });
         fireAndForget(taskId, () => runVerificacoes(taskId));
       } else {
         throw new Error("Este passo não pode ser re-executado.");
@@ -1065,6 +1099,25 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       planoDireto.add(taskId);
       abortPhase(taskId); // interrompe a review em andamento agora
       sistema(taskId, "Pedido recebido — pulando os reviews e indo direto ao plano.");
+      break;
+    }
+
+    case "pause": {
+      // Só passos AUTOMÁTICOS em andamento têm o que interromper. (publicar chega a
+      // "rodando" durante o merge, mas não é uma fase do Claude — não dá para pausar.)
+      if (task.status !== "rodando" || isHumanStep(task.step) || task.step === "publicar") {
+        throw new Error("Só dá para pausar enquanto o Claude está trabalhando neste passo.");
+      }
+      // Sinaliza a pausa ANTES de abortar (espelha o cancel): quem estiver em
+      // runPhase vê o pedido e aterrissa em "pausado" (retomável) — não em "falhou".
+      pausaManual.add(taskId);
+      if (!abortPhase(taskId)) {
+        pausaManual.delete(taskId);
+        throw new Error("Não há nada em execução para pausar agora. Tente de novo em instantes.");
+      }
+      // Resolve pedidos de permissão pendentes para não deixar cards órfãos.
+      finishAllForTask(taskId, "Passo pausado — pedido cancelado. Retome quando quiser.");
+      sistema(taskId, "Pausando o passo… o Claude para em instantes e a tarefa fica pronta pra retomar.");
       break;
     }
 
@@ -1108,6 +1161,7 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       const motivo = action.motivo?.trim() || undefined;
       if (motivo) usuario(taskId, `Motivo do cancelamento: ${motivo}`);
       steerQueue.delete(taskId);
+      pausaManual.delete(taskId);
       // Marca cancelada ANTES de abortar: quem estiver no meio de runPhase vê
       // o status novo e não sobrescreve com "falhou".
       patch(taskId, { status: "cancelada" });
@@ -1133,15 +1187,30 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
  * Steering: mensagem do usuário durante a execução. Sempre vai para o transcript;
  * se a execução está em andamento, entra na fila e é enviada no próximo resume.
  */
-export async function steer(taskId: string, text: string): Promise<void> {
+export async function steer(taskId: string, text: string, anexos?: TaskAnexo[]): Promise<void> {
   const task = store.getTask(taskId);
   if (!task) throw new Error("Tarefa não encontrada.");
   const msg = text.trim();
   if (!msg) throw new Error("Escreva uma mensagem.");
   usuario(taskId, msg);
-  if (task.step === "execucao" && (task.status === "rodando" || task.status === "aguardando")) {
+
+  // Anexos entram no acervo da tarefa (ficam acessíveis) e no texto que vai pro Claude.
+  let msgFila = msg;
+  if (anexos && anexos.length > 0) {
+    const t2 = store.updateTask(taskId, { anexos: [...(task.anexos ?? []), ...anexos] });
+    broadcast({ type: "task_updated", task: t2 });
+    sistema(taskId, `Arquivos anexados: ${anexos.map((a) => a.nome).join(", ")}.`);
+    msgFila = `${msg}\nArquivos anexados pelo usuário (leia com a ferramenta Read — abre imagens e PDFs): ${anexos
+      .map((a) => `${a.nome} → ${a.path}`)
+      .join("; ")}`;
+  }
+
+  // Enfileira quando a execução está em andamento OU pausada (retoma com o ajuste junto).
+  const naExecucao = task.step === "execucao" && (task.status === "rodando" || task.status === "aguardando");
+  const pausadaNaExecucao = task.step === "execucao" && task.status === "falhou" && !!task.pausadaManual;
+  if (naExecucao || pausadaNaExecucao) {
     const q = steerQueue.get(taskId) ?? [];
-    q.push(msg);
+    q.push(msgFila);
     steerQueue.set(taskId, q);
   }
 }

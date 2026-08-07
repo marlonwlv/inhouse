@@ -51,7 +51,7 @@ function stepsAtivos(t) {
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.14.0";
+const UI_VERSION = "0.16.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -88,6 +88,8 @@ const state = {
   transcripts: {}, // taskId -> { loaded, loading, items[], stream }
   busy: {}, // chaves de ações em andamento ("clone", "create", "preview:<id>", "publish:<id>")
   previewErro: {}, // taskId -> { msg, podeConfigurar } quando o preview não sobe
+  anexosPendentes: {}, // alvo ("new-task" | "composer") -> TaskAnexo[] já enviados, aguardando o envio da mensagem
+  artefatos: {}, // taskId -> { at, temPrototipo, docs[], loading } (barra de artefatos do editor)
   showArquivadas: false, // mostrar as tarefas arquivadas no quadro
   ui: { createPr: true },
   eval: null, // resumo carregado ao entrar em #/experiencia
@@ -625,16 +627,18 @@ function renderPage(html) {
   const focusId = focused && appEl.contains(focused) ? focused.id : null;
   const selStart = focusId && typeof focused.selectionStart === "number" ? focused.selectionStart : null;
   const values = {};
-  appEl.querySelectorAll("input[id]").forEach((i) => {
+  appEl.querySelectorAll("input[id], textarea[id]").forEach((i) => {
     values[i.id] = i.type === "checkbox" ? i.checked : i.value;
   });
   appEl.innerHTML = html;
-  appEl.querySelectorAll("input[id]").forEach((i) => {
+  appEl.querySelectorAll("input[id], textarea[id]").forEach((i) => {
     if (i.id in values) {
       if (i.type === "checkbox") i.checked = values[i.id];
       else i.value = values[i.id];
     }
   });
+  // Textareas auto-crescentes recalculam a altura após restaurar o valor.
+  appEl.querySelectorAll("textarea.grow-area").forEach(autoGrow);
   if (focusId) {
     const el = document.getElementById(focusId);
     if (el) {
@@ -761,6 +765,160 @@ function abrirDialogoCancelar(taskId) {
   dlg.showModal();
 }
 
+// ---------- Caixa de texto (auto-crescente) ----------
+/* Cresce com o conteúdo até um teto e então rola — usado na nova tarefa e no compositor. */
+function autoGrow(el) {
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+}
+
+// ---------- Anexos (imagem/PDF no prompt) ----------
+function iconeAnexo(a) {
+  const t = (a.tipo || "") + " " + (a.nome || "");
+  if (/image\//.test(a.tipo) || /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(a.nome)) return "🖼️";
+  if (/pdf/i.test(t)) return "📕";
+  return "📎";
+}
+function anexoChipsHtml(target) {
+  const arr = state.anexosPendentes[target] || [];
+  const enviando = !!state.busy[`anexo:${target}`];
+  const chips = arr.map((a, i) =>
+    `<span class="anexo-chip" title="${esc(a.nome)}">${iconeAnexo(a)} <span class="an-nome">${esc(a.nome)}</span>` +
+    `<button type="button" class="an-x" data-act="anexo-remove" data-target="${esc(target)}" data-idx="${i}" aria-label="Remover anexo" title="Remover">×</button></span>`).join("");
+  const spin = enviando ? `<span class="anexo-chip loading"><span class="spinner"></span> enviando…</span>` : "";
+  return chips + spin;
+}
+function renderAnexos(target) {
+  const el = document.getElementById(target === "new-task" ? "anexos-new-task" : "anexos-composer");
+  if (el) el.innerHTML = anexoChipsHtml(target);
+}
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result));
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(file);
+  });
+}
+function escolherAnexos(target) {
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.multiple = true;
+  inp.accept = "image/*,application/pdf,.pdf,.txt,.md,.csv";
+  inp.onchange = () => { uploadAnexos(target, inp.files); };
+  inp.click();
+}
+async function uploadAnexos(target, fileList) {
+  const files = [...(fileList || [])];
+  if (files.length === 0) return;
+  const atuais = state.anexosPendentes[target] || [];
+  if (atuais.length + files.length > 8) { toast("Você pode anexar no máximo 8 arquivos."); return; }
+  state.busy[`anexo:${target}`] = true;
+  renderAnexos(target);
+  try {
+    const payload = {
+      files: await Promise.all(files.map(async (f) => ({ nome: f.name, tipo: f.type, dataBase64: await fileToBase64(f) }))),
+    };
+    const r = await api("/api/anexos", payload);
+    if (r && Array.isArray(r.anexos)) {
+      state.anexosPendentes[target] = [...(state.anexosPendentes[target] || []), ...r.anexos];
+    }
+  } catch {
+    toast("Não deu para anexar os arquivos. Tente de novo.");
+  } finally {
+    state.busy[`anexo:${target}`] = false;
+    renderAnexos(target);
+  }
+}
+function limparAnexos(target) {
+  state.anexosPendentes[target] = [];
+  renderAnexos(target);
+}
+
+// ---------- Artefatos (docs + protótipo) do editor ----------
+async function loadArtefatos(taskId) {
+  const t = getTask(taskId);
+  if (!t) return;
+  const cur = state.artefatos[taskId];
+  if (cur && (cur.loading || cur.at === t.updatedAt)) return; // já em dia
+  state.artefatos[taskId] = { ...(cur || { docs: [] }), loading: true, at: t.updatedAt };
+  const r = await api(`/api/tasks/${encodeURIComponent(taskId)}/artefatos`);
+  state.artefatos[taskId] = { at: t.updatedAt, temPrototipo: !!(r && r.temPrototipo), docs: (r && r.docs) || [], loading: false };
+  const root = $("#app")?.firstElementChild;
+  if (root && isEditorOf(taskId)) renderArtefatos(root, getTask(taskId));
+}
+const DOCS_FOLDER_SVG = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.2 1.5h4.8A1.5 1.5 0 0 1 14 6v6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+const DOC_FILE_SVG = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M4 1.5h5L12.5 5v9.5H4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8.8 1.7V5H12.3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+
+/* Só os documentos QUE A TAREFA GEROU (o excesso do repo não entra); tudo atrás de
+   um botão "Documentos · N" com lista rolável e filtro (quando são muitos). */
+function docsControlHtml(taskId, docs) {
+  const id = esc(taskId);
+  const comFiltro = docs.length > 8;
+  const rows = docs.map((d) => {
+    const parts = String(d.rel).split("/");
+    const nome = parts.pop();
+    const path = parts.length ? `${parts.join("/")}/` : "";
+    return `<button class="doc-row" data-act="ver-doc" data-task="${id}" data-rel="${esc(d.rel)}" data-name="${esc(String(d.rel).toLowerCase())}" title="${esc(d.rel)}">${DOC_FILE_SVG}<span class="fn">${path ? `<span class="dpath">${esc(path)}</span>` : ""}${esc(nome)}</span></button>`;
+  }).join("");
+  return `<span class="abar-div"></span><span class="af-anchor">
+    <button class="docs-btn" data-act="toggle-docs" data-task="${id}" aria-haspopup="true">${DOCS_FOLDER_SVG} Documentos <span class="cnt">${docs.length}</span> <span class="caret">▾</span></button>
+    <div class="docs-pop" id="docs-pop-${id}">
+      <div class="docs-head"><div class="dh-t">Documentos<span>${docs.length}</span></div>${comFiltro ? `<input class="docs-filter" type="text" placeholder="Filtrar por nome…" aria-label="Filtrar documentos">` : ""}</div>
+      <div class="docs-list">${rows}</div>
+    </div>
+  </span>`;
+}
+
+function renderArtefatos(root, t) {
+  const el = $("#ed-artefatos", root);
+  if (!el || !t) return;
+  const art = state.artefatos[t.id] || {};
+  const docs = art.docs || [];
+  const temProto = !!(art.temPrototipo || t.temPrototipo);
+  // Assinatura do conteúdo: só reconstrói quando muda de fato (preserva dropdown/filtro aberto).
+  const key = [t.id, !!t.spec, !!t.plan, temProto, docs.map((d) => d.rel).join("|")].join("::");
+  if (el.dataset.key === key) return;
+  el.dataset.key = key;
+  const chips = [];
+  if (t.spec) chips.push(`<button class="art-chip" data-act="ver-espec" data-task="${esc(t.id)}">📋 Espec</button>`);
+  if (t.plan) chips.push(`<button class="art-chip" data-act="ver-plano" data-task="${esc(t.id)}">🗺️ Plano</button>`);
+  if (temProto) chips.push(`<a class="art-chip" href="/api/tasks/${esc(t.id)}/mockup/" target="_blank" rel="noreferrer">🎨 Protótipo</a>`);
+  const docsCtl = docs.length ? docsControlHtml(t.id, docs) : "";
+  el.innerHTML = (chips.length || docs.length) ? `<span class="art-label">Artefatos</span>${chips.join("")}${docsCtl}` : "";
+}
+
+/* Filtro ao vivo da lista de documentos (mostra "nenhum" quando nada casa). */
+function filtrarDocs(input) {
+  const list = input.closest(".docs-pop")?.querySelector(".docs-list");
+  if (!list) return;
+  const q = input.value.trim().toLowerCase();
+  let vis = 0;
+  list.querySelectorAll(".doc-row").forEach((r) => {
+    const casa = r.dataset.name.includes(q);
+    r.style.display = casa ? "" : "none";
+    if (casa) vis++;
+  });
+  let vazio = list.querySelector(".docs-empty");
+  if (vis === 0) {
+    if (!vazio) { vazio = document.createElement("div"); vazio.className = "docs-empty"; vazio.textContent = "Nenhum documento com esse nome."; list.appendChild(vazio); }
+    vazio.style.display = "";
+  } else if (vazio) vazio.style.display = "none";
+}
+/* Modal simples para ler um artefato em markdown (<dialog> nativo). */
+function abrirDocModal(titulo, markdown) {
+  const dlg = document.createElement("dialog");
+  dlg.className = "doc-dialog";
+  dlg.innerHTML = `<div class="doc-dialog-head"><b>${esc(titulo)}</b>
+    <button class="icon-btn" data-act="fechar-doc" aria-label="Fechar" title="Fechar">✕</button></div>
+    <div class="doc-dialog-body">${mdBlock(String(markdown || ""))}</div>`;
+  document.body.appendChild(dlg);
+  dlg.addEventListener("close", () => dlg.remove());
+  dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); }); // clicar no backdrop fecha
+  dlg.showModal();
+}
+
 // ---------- Peças compartilhadas ----------
 function flowHtml(t) {
   const ativos = stepsAtivos(t);
@@ -792,6 +950,7 @@ function statusChip(t) {
   if (t.status === "aguardando") {
     return `<span class="chip wait">${t.step === "teste" ? "Pronto pro seu teste" : "Aguardando você"}</span>`;
   }
+  if (t.status === "falhou" && t.pausadaManual) return `<span class="chip wait">Pausada</span>`;
   if (t.status === "falhou" && t.pausadaPorTempo) return `<span class="chip wait">Passo longo</span>`;
   if (t.status === "falhou") return `<span class="chip bad">Falhou</span>`;
   if (t.status === "concluida") return `<span class="chip ok">Concluída ✓</span>`;
@@ -996,9 +1155,14 @@ function renderBoard() {
       <button class="btn sm primary" data-act="focus-new-task">+ Nova tarefa</button>
     </div>
     <div class="board">
-      <form class="new-task" data-form="new-task">
-        <input id="new-task-desc" placeholder="Descreva uma tarefa… ex.: “corrigir o filtro de turmas por data no backoffice”" autocomplete="off" aria-label="Descrição da nova tarefa" ${claudeOff ? "disabled" : ""}>
-        <button class="btn sm primary" type="submit" ${claudeOff ? "disabled" : ""}>Começar</button>
+      <form class="new-task compose-form" data-form="new-task">
+        <textarea id="new-task-desc" class="grow-area" rows="1" data-enter-submit placeholder="Descreva uma tarefa… ex.: “corrigir o filtro de turmas por data no backoffice” — Shift+Enter quebra linha" aria-label="Descrição da nova tarefa" ${claudeOff ? "disabled" : ""}></textarea>
+        <div class="compose-anexos" id="anexos-new-task">${anexoChipsHtml("new-task")}</div>
+        <div class="compose-bar">
+          <button type="button" class="attach-btn" data-act="attach" data-target="new-task" title="Anexar arquivos (imagem, PDF)" ${claudeOff ? "disabled" : ""}>📎 Anexar</button>
+          <span class="gap"></span>
+          <button class="btn sm primary" type="submit" ${claudeOff ? "disabled" : ""}>Começar</button>
+        </div>
       </form>
       ${claudeOff ? primeirosPassosHtml() : ""}
       ${mostrarPreparar && !claudeOff ? `
@@ -1075,7 +1239,12 @@ function taskFootHtml(t, perm) {
       <span class="gap"></span>
       <button class="btn sm primary" data-act="go-task" data-task="${id}">Responder</button></div>`);
   }
-  if (t.status === "falhou" && t.pausadaPorTempo) {
+  if (t.status === "falhou" && t.pausadaManual) {
+    rows.push(`<div class="task-foot"><span class="wait-msg">⏸ Pausada por você.</span>
+      <span class="gap"></span>
+      <button class="btn sm" data-act="go-task" data-task="${id}">Abrir</button>
+      <button class="btn sm primary" data-act="retry" data-task="${id}">Retomar</button></div>`);
+  } else if (t.status === "falhou" && t.pausadaPorTempo) {
     rows.push(`<div class="task-foot"><span class="wait-msg">⏱ Este passo está trabalhando há mais de 1 hora — nada quebrou.</span>
       <span class="gap"></span>
       <button class="btn sm" data-act="go-task" data-task="${id}">Ver o que ele está fazendo</button>
@@ -1090,6 +1259,7 @@ function taskFootHtml(t, perm) {
     rows.push(`<div class="task-foot"><span><span class="spinner"></span> Claude trabalhando no passo “${esc(STEP_LABELS[t.step] ?? t.step)}”${stepAtualDesde(t) ? ` · ${timeAgo(stepAtualDesde(t))}` : ""}…</span>
       <span class="gap"></span>
       ${t.step === "plano" ? `<button class="btn sm ghost" data-act="plano-rapido" data-task="${id}" title="Pular os reviews e ir direto ao plano">É simples — ir direto ao plano</button>` : ""}
+      ${t.step !== "publicar" ? `<button class="btn sm ghost" data-act="pause" data-task="${id}" title="Pausar este passo — dá para retomar depois">Pausar</button>` : ""}
       <a class="link" href="#/tarefa/${id}">Acompanhar no editor →</a></div>`);
   } else if (t.step === "aprovacao" && t.status === "aguardando") {
     rows.push(`<div class="task-foot"><span class="plan-sum">${esc(planSummary(t))}</span>
@@ -1145,6 +1315,7 @@ function renderEditor(id) {
   if (!root || root.dataset.view !== "editor" || root.dataset.task !== id) {
     appEl.innerHTML = editorShellHtml(t, p);
     root = appEl.firstElementChild;
+    state.anexosPendentes["composer"] = []; // não vaza anexos pendentes entre tarefas
     loadTranscript(id);
   }
 
@@ -1157,12 +1328,17 @@ function renderEditor(id) {
     t.step === "publicar" && t.status === "aguardando"
       ? `<button class="btn sm primary" data-act="publish" data-task="${esc(t.id)}" ${state.busy[`publish:${t.id}`] ? "disabled" : ""}>Publicar</button>`
       : "",
+    t.status === "rodando" && t.step !== "publicar"
+      ? `<button class="btn sm ghost" data-act="pause" data-task="${esc(t.id)}" title="Pausar este passo — dá para retomar depois">Pausar</button>`
+      : "",
     ativa
       ? `<button class="btn sm ghost" data-act="cancel" data-task="${esc(t.id)}">Cancelar tarefa</button>`
       : "",
   ].join("");
   $("#ed-flowstrip", root).innerHTML =
     `<span>Onde essa tarefa está: <b>${esc(STEP_LABELS[t.step] ?? t.step)}</b></span>${flowHtml(t)}${nextGateChip(t)}`;
+  renderArtefatos(root, t);
+  loadArtefatos(id);
   renderChat(id);
   updatePreview(root, t);
   updateComposer(root, t);
@@ -1182,12 +1358,15 @@ function editorShellHtml(t, p) {
       <span id="ed-topactions"></span>
     </div>
     <div class="flow-strip" id="ed-flowstrip"></div>
+    <div class="artefatos-bar" id="ed-artefatos"></div>
     <div class="editor-body">
       <div class="chat">
         <div class="chat-scroll" id="chat-scroll"></div>
         <form class="composer" data-form="composer">
+          <div class="compose-anexos" id="anexos-composer"></div>
           <div class="composer-box">
-            <input id="composer-input" autocomplete="off" placeholder="" aria-label="Mensagem para o Claude">
+            <button type="button" class="attach-btn icon" id="composer-attach" data-act="attach" data-target="composer" title="Anexar arquivos (imagem, PDF)" aria-label="Anexar arquivos">📎</button>
+            <textarea id="composer-input" class="grow-area" rows="1" autocomplete="off" data-enter-submit placeholder="" aria-label="Mensagem para o Claude"></textarea>
             <button class="send" id="composer-send" type="submit" title="Enviar">↑</button>
           </div>
         </form>
@@ -1201,6 +1380,7 @@ function editorStatusHtml(t) {
   const permPend = state.permissions.some((p) => p.taskId === t.id);
   if (permPend) return `<span style="color:var(--amber);font-weight:600">Aguardando sua permissão — veja o chat</span>`;
   if (t.status === "rodando") return `<b class="live-dot">●</b> Claude trabalhando · ${esc(STEP_LABELS[t.step] ?? t.step)}`;
+  if (t.status === "falhou" && t.pausadaManual) return `<span class="wait-msg">Pausada — retome quando quiser</span>`;
   if (t.status === "falhou") return `<span class="fail-msg">Este passo falhou — veja o chat</span>`;
   if (t.status === "concluida") return `Tarefa concluída ✓`;
   if (t.status === "cancelada") return `Tarefa cancelada`;
@@ -1366,6 +1546,17 @@ function publishCardHtml(t) {
 }
 
 function failCardHtml(t) {
+  if (t.pausadaManual) {
+    return `<div class="approval">
+      <div class="head"><span class="pulse"></span> ⏸ Pausada</div>
+      <p>Você pausou este passo. O Claude parou de trabalhar; o que já foi feito está guardado no espaço da tarefa.
+      Clique em <b>Retomar</b> para ele continuar de onde parou — se quiser, escreva um ajuste na caixa abaixo antes.</p>
+      <div class="acts">
+        <button class="btn sm primary" data-act="retry" data-task="${esc(t.id)}">Retomar</button>
+        <button class="btn sm ghost" data-act="cancel" data-task="${esc(t.id)}">Cancelar tarefa</button>
+      </div>
+    </div>`;
+  }
   if (t.pausadaPorTempo) {
     return `<div class="approval">
       <div class="head"><span class="pulse"></span> ⏱ Passo longo</div>
@@ -1484,12 +1675,22 @@ function updateComposer(root, t) {
       ? "Aguarde o plano ficar pronto — aí você pode pedir mudanças."
       : "Aguarde as verificações terminarem.";
   } else if (t.status === "concluida") ph = "Tarefa concluída — nada mais a fazer aqui.";
-  else if (t.status === "falhou") ph = "O passo falhou — use “Tentar de novo” acima.";
+  else if (t.status === "falhou" && t.pausadaManual) {
+    // Pausada: só a execução aceita ajuste antes de retomar; nos demais passos, só retomar.
+    enabled = t.step === "execucao";
+    ph = enabled
+      ? "Escreva um ajuste (opcional) e clique em Retomar acima…"
+      : "Pausado — clique em “Retomar” acima para continuar.";
+  } else if (t.status === "falhou") ph = "O passo falhou — use “Tentar de novo” acima.";
   else if (t.step === "publicar") ph = "Tudo pronto — é só clicar em Publicar.";
   else ph = "A tarefa está parada.";
   input.disabled = !enabled;
   input.placeholder = ph;
   if (btn) btn.disabled = !enabled;
+  const attach = $("#composer-attach", root);
+  if (attach) attach.disabled = !enabled;
+  renderAnexos("composer");
+  autoGrow(input);
 }
 
 // ---------- Ações ----------
@@ -1525,6 +1726,31 @@ const actions = {
   "set-design": (btn) => taskAction(btn.dataset.task, { action: "set_design", valor: btn.dataset.valor }),
   "approve-test": (btn) => taskAction(btn.dataset.task, { action: "approve_test" }),
   "retry": (btn) => taskAction(btn.dataset.task, { action: "retry" }),
+  "pause": (btn) => taskAction(btn.dataset.task, { action: "pause" }),
+  "attach": (btn) => { if (!btn.disabled) escolherAnexos(btn.dataset.target); },
+  "anexo-remove": (btn) => {
+    const target = btn.dataset.target;
+    const arr = state.anexosPendentes[target] || [];
+    arr.splice(Number(btn.dataset.idx), 1);
+    state.anexosPendentes[target] = arr;
+    renderAnexos(target);
+  },
+  "ver-espec": (btn) => { const t = getTask(btn.dataset.task); if (t?.spec) abrirDocModal("Especificação", t.spec); },
+  "ver-plano": (btn) => { const t = getTask(btn.dataset.task); if (t?.plan) abrirDocModal("Plano", t.plan); },
+  "toggle-docs": (btn) => {
+    const pop = document.getElementById(`docs-pop-${btn.dataset.task}`);
+    if (!pop) return;
+    const abrir = !pop.classList.contains("open");
+    document.querySelectorAll(".docs-pop.open").forEach((p) => p.classList.remove("open"));
+    pop.classList.toggle("open", abrir);
+    if (abrir) { const f = pop.querySelector(".docs-filter"); if (f) setTimeout(() => f.focus(), 30); }
+  },
+  "ver-doc": async (btn) => {
+    document.getElementById(`docs-pop-${btn.dataset.task}`)?.classList.remove("open");
+    const r = await api(`/api/tasks/${encodeURIComponent(btn.dataset.task)}/artefatos/doc?rel=${encodeURIComponent(btn.dataset.rel)}`);
+    if (r && r.conteudo != null) abrirDocModal(btn.dataset.rel, r.conteudo);
+  },
+  "fechar-doc": (btn) => { btn.closest("dialog")?.close(); },
   "auto-toggle": async (btn) => {
     const t = getTask(btn.dataset.task);
     const ligando = !t?.autoAprovar;
@@ -1803,10 +2029,12 @@ document.addEventListener("submit", async (e) => {
     if (!description) return;
     const projectId = selectedProjectId();
     if (!projectId) { toast("Escolha um projeto primeiro."); return; }
-    const t = await api("/api/tasks", { projectId, title: titleFrom(description), description });
+    const anexos = state.anexosPendentes["new-task"] || [];
+    const t = await api("/api/tasks", { projectId, title: titleFrom(description), description, ...(anexos.length ? { anexos } : {}) });
     if (t && t.id) {
       const el = $("#new-task-desc");
-      if (el) el.value = "";
+      if (el) { el.value = ""; autoGrow(el); }
+      limparAnexos("new-task");
       upsert(state.tasks, t);
       render();
     }
@@ -1852,15 +2080,21 @@ document.addEventListener("submit", async (e) => {
     const t = getTask(r.id);
     const input = $("#composer-input");
     const text = input.value.trim();
-    if (!t || !text) return;
+    const anexos = state.anexosPendentes["composer"] || [];
+    if (!t || !text) {
+      if (anexos.length && !text) toast("Escreva uma mensagem para enviar junto com os anexos.");
+      return;
+    }
     input.value = "";
+    autoGrow(input);
     if (t.status === "aguardando" && (t.step === "aprovacao" || t.step === "teste")) {
       pushLocalUser(t.id, text);
-      taskAction(t.id, { action: "request_changes", message: text });
+      taskAction(t.id, { action: "request_changes", message: text, ...(anexos.length ? { anexos } : {}) });
     } else {
       pushLocalUser(t.id, text);
-      api(`/api/tasks/${encodeURIComponent(t.id)}/message`, { text });
+      api(`/api/tasks/${encodeURIComponent(t.id)}/message`, { text, ...(anexos.length ? { anexos } : {}) });
     }
+    limparAnexos("composer");
   }
 });
 
@@ -1882,6 +2116,44 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     navegarPreview(e.target);
   }
+});
+
+// Caixas de prompt: Enter envia; Shift+Enter quebra linha (padrão do Mac que o usuário espera).
+document.addEventListener("keydown", (e) => {
+  const el = e.target;
+  if (el && el.tagName === "TEXTAREA" && el.dataset.enterSubmit !== undefined
+      && e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    const form = el.closest("form");
+    if (form) {
+      if (form.requestSubmit) form.requestSubmit();
+      else form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+    }
+  }
+});
+// Auto-crescer o textarea; filtrar a lista de documentos ao digitar.
+document.addEventListener("input", (e) => {
+  const el = e.target;
+  if (!el || !el.classList) return;
+  if (el.classList.contains("grow-area")) autoGrow(el);
+  else if (el.classList.contains("docs-filter")) filtrarDocs(el);
+});
+// Fecha o dropdown de Documentos ao clicar fora dele (o próprio gatilho é ignorado).
+document.addEventListener("click", (e) => {
+  if (e.target.closest?.('[data-act="toggle-docs"]') || e.target.closest?.(".docs-pop")) return;
+  document.querySelectorAll(".docs-pop.open").forEach((p) => p.classList.remove("open"));
+});
+// Arrastar-e-soltar arquivos direto na caixa de nova tarefa ou no compositor.
+document.addEventListener("dragover", (e) => {
+  if (e.target.closest && e.target.closest(".compose-form, .composer")) e.preventDefault();
+});
+document.addEventListener("drop", (e) => {
+  const box = e.target.closest && e.target.closest(".compose-form, .composer");
+  if (!box) return;
+  e.preventDefault();
+  const target = box.classList.contains("composer") ? "composer" : "new-task";
+  const files = e.dataTransfer && e.dataTransfer.files;
+  if (files && files.length) uploadAnexos(target, files);
 });
 
 // ---------- Tooltip do stepper (nome + o que faz + skills que dispara) ----------
@@ -1936,6 +2208,12 @@ document.addEventListener("scroll", hideStepTip, true);
 window.addEventListener("hashchange", hideStepTip);
 
 // ---------- Inicialização ----------
+// Modais de artefato vivem em <body> (fora do #app): fecha os que ficaram abertos
+// ao trocar de rota, senão o re-render deixa um modal órfão sobre a nova tela.
+window.addEventListener("hashchange", () => {
+  document.querySelectorAll("dialog.doc-dialog[open]").forEach((d) => d.close());
+  document.querySelectorAll(".docs-pop.open").forEach((p) => p.classList.remove("open"));
+});
 window.addEventListener("hashchange", render);
 connectSSE();
 fetchState();

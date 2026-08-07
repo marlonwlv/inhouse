@@ -72,6 +72,12 @@ export interface RunPhaseOpts {
   settingSources?: Options["settingSources"];
   /** Variáveis extras de ambiente (ex.: marcador de sessão spawned p/ gstack). */
   extraEnv?: Record<string, string>;
+  /**
+   * Não gravar/transmitir transcript (para fases SEM tarefa real, ex.: o juiz do
+   * eval). Sem isto, o taskId sintético do juiz (com ":" e ".") faz o sink de
+   * transcript recusar o id e derruba a fase inteira.
+   */
+  semTranscript?: boolean;
 }
 
 function truncate(s: string, max = 80): string {
@@ -215,6 +221,14 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   /** Último erro de API visto em mensagem assistant (auth, rate limit...). */
   let apiError: SDKAssistantMessage["error"];
 
+  // Fases sem tarefa real (ex.: juiz do eval) não gravam transcript — o taskId
+  // sintético nem passaria pela validação do sink.
+  const emitir = (item: TranscriptItem): void => {
+    if (opts.semTranscript) return;
+    transcriptAppend(opts.taskId, item);
+    broadcast({ type: "transcript", taskId: opts.taskId, item });
+  };
+
   const handleAssistant = (m: SDKAssistantMessage): void => {
     if (m.error) apiError = m.error;
     let text = "";
@@ -229,17 +243,13 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
         if (block.name === "Write" || block.name === "Edit" || block.name === "MultiEdit" || block.name === "NotebookEdit") {
           filesTouched = true;
         }
-        const item = toolItem(block.name, input, opts.cwd);
-        transcriptAppend(opts.taskId, item);
-        broadcast({ type: "transcript", taskId: opts.taskId, item });
+        emitir(toolItem(block.name, input, opts.cwd));
       }
     }
     // Texto consolidado gravado uma vez por mensagem (os deltas foram só streaming).
     if (text.trim().length > 0) {
       lastAssistantText = text;
-      const item: TranscriptItem = { kind: "assistant", text, at: new Date().toISOString() };
-      transcriptAppend(opts.taskId, item);
-      broadcast({ type: "transcript", taskId: opts.taskId, item });
+      emitir({ kind: "assistant", text, at: new Date().toISOString() });
     }
   };
 
@@ -250,6 +260,7 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
     }
     if (m.type === "stream_event") {
       if (
+        !opts.semTranscript &&
         m.parent_tool_use_id === null &&
         m.event.type === "content_block_delta" &&
         m.event.delta.type === "text_delta"

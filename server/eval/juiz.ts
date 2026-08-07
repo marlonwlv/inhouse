@@ -175,7 +175,10 @@ export async function gerarRelatorio(origem: "manual" | "auto"): Promise<Resulta
     const contexto = montarContextoJuiz();
     const ts = new Date().toISOString();
     const r = await runPhase({
-      taskId: `eval-relatorio-${ts}`,
+      // Análise de fundo, sem tarefa real: não escreve transcript (o id sintético
+      // nem passaria pela validação do sink). Id saneado por garantia.
+      taskId: `eval-relatorio-${ts.replace(/[:.]/g, "-")}`,
+      semTranscript: true,
       cwd: RELATORIOS_DIR,
       prompt: promptJuiz(contexto),
       permissionMode: "default",

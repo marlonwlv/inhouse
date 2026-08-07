@@ -821,6 +821,127 @@ input::placeholder { color: var(--faint); }
 .send:hover { background: var(--brand-hover); }
 .send:disabled { opacity: .4; cursor: default; }
 
+/* ---------- Caixa de prompt multilinha (nova tarefa + compositor) ---------- */
+.grow-area {
+  border: none; background: transparent; color: var(--ink);
+  font-family: inherit; font-size: 14px; line-height: 1.5;
+  resize: none; overflow-y: auto;
+  min-height: 22px; max-height: 200px;
+  width: 100%; min-width: 0; padding: 2px 0;
+}
+.grow-area:focus { outline: none; box-shadow: none; }
+.grow-area::placeholder { color: var(--faint); }
+
+/* nova tarefa: empilha caixa → anexos → barra (clipe + começar) */
+.new-task.compose-form { flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 12px; }
+.new-task .grow-area { font-size: 13px; }
+.compose-bar { display: flex; align-items: center; gap: 8px; }
+
+/* compositor: clipe à esquerda, textarea no meio, enviar à direita */
+.composer-box { align-items: flex-end; }
+.composer-box textarea { flex: 1; padding: 6px 0; }
+
+.attach-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 11px;
+  border: 1px solid var(--line-2); background: var(--surface); color: var(--muted);
+  border-radius: var(--r-sm); font-size: 12px; cursor: pointer;
+  transition: border-color .13s ease, color .13s ease, background .13s ease;
+}
+.attach-btn:hover:not(:disabled) { border-color: var(--faint); color: var(--ink); background: var(--surface-2); }
+.attach-btn:disabled { opacity: .4; cursor: default; }
+.attach-btn.icon { border: none; background: transparent; width: 32px; height: 34px; padding: 0; justify-content: center; font-size: 16px; }
+
+/* chips dos arquivos anexados (aguardando envio) */
+.compose-anexos { display: flex; flex-wrap: wrap; gap: 6px; }
+.compose-anexos:empty { display: none; }
+.composer .compose-anexos { padding: 0 4px 8px; }
+.anexo-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 230px;
+  padding: 3px 5px 3px 8px; background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  font-size: 12px; color: var(--ink);
+}
+.anexo-chip .an-nome { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.anexo-chip .an-x {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--faint); font-size: 15px; line-height: 1; padding: 0 1px;
+}
+.anexo-chip .an-x:hover { color: var(--danger); }
+.anexo-chip.loading { color: var(--muted); gap: 7px; }
+
+/* ---------- Barra de artefatos (editor) — enxuta, uma linha só ---------- */
+.artefatos-bar {
+  flex: none; display: flex; align-items: center; flex-wrap: nowrap; gap: 8px;
+  padding: 8px 15px; border-bottom: 1px solid var(--line); background: var(--chrome);
+}
+.artefatos-bar:empty { display: none; }
+.art-label { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin-right: 2px; flex: none; }
+.art-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 27px; padding: 0 11px; flex: none;
+  border: 1px solid var(--line-2); background: var(--surface); color: var(--ink);
+  border-radius: var(--r-sm); font-size: 12px; cursor: pointer; text-decoration: none;
+  transition: border-color .13s ease, box-shadow .13s ease;
+}
+.art-chip:hover { border-color: var(--faint); box-shadow: var(--shadow-sm); }
+.art-chip svg, .docs-btn svg, .doc-row svg { display: block; flex: none; }
+.artefatos-bar .abar-div { width: 1px; height: 18px; background: var(--line); flex: none; margin: 0 2px; }
+
+/* Botão "Documentos · N" — todo o excesso mora aqui, então a barra não cresce. */
+.af-anchor { position: relative; display: inline-flex; flex: none; }
+.docs-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 27px; padding: 0 11px; flex: none;
+  border: 1px solid var(--line-2); background: var(--surface); color: var(--ink);
+  border-radius: var(--r-sm); font: inherit; font-size: 12px; cursor: pointer;
+  box-shadow: var(--shadow-sm); transition: border-color .13s ease;
+}
+.docs-btn:hover { border-color: var(--faint); }
+.docs-btn .cnt { font-variant-numeric: tabular-nums; color: var(--muted); background: var(--surface-2); border-radius: 999px; padding: 0 7px; font-size: 11px; font-weight: 600; }
+.docs-btn .caret { color: var(--faint); font-size: 10px; }
+
+.docs-pop {
+  position: absolute; z-index: 60; top: calc(100% + 6px); left: 0;
+  width: 340px; max-width: 78vw;
+  background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r-md);
+  box-shadow: var(--shadow); overflow: hidden;
+  opacity: 0; transform: translateY(-4px) scale(.985); transform-origin: top left; pointer-events: none;
+  transition: opacity .12s ease, transform .12s ease;
+}
+.docs-pop.open { opacity: 1; transform: none; pointer-events: auto; }
+.docs-head { padding: 9px 11px 8px; border-bottom: 1px solid var(--line); }
+.docs-head .dh-t { font-size: 12px; font-weight: 650; color: var(--ink); }
+.docs-head .dh-t span { color: var(--faint); font-weight: 550; margin-left: 3px; }
+.docs-filter { margin-top: 8px; width: 100%; border: 1px solid var(--line-2); background: var(--ground); color: var(--ink); border-radius: var(--r-sm); padding: 6px 9px; font: inherit; font-size: 12px; }
+.docs-filter:focus { outline: none; border-color: var(--faint); box-shadow: none; }
+.docs-filter::placeholder { color: var(--faint); }
+.docs-list { max-height: 288px; overflow-y: auto; padding: 5px; }
+.doc-row {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  border: none; background: transparent; color: var(--ink); font: inherit; font-size: 12.5px;
+  padding: 6px 8px; border-radius: var(--r-sm); cursor: pointer;
+}
+.doc-row:hover { background: var(--surface-2); }
+.doc-row svg { color: var(--faint); }
+.doc-row .fn { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-row .dpath { color: var(--faint); }
+.docs-empty { padding: 16px; text-align: center; color: var(--faint); font-size: 12px; }
+
+/* ---------- Modal de artefato (docs/plano/espec) ---------- */
+.doc-dialog {
+  border: none; border-radius: var(--r-lg); padding: 0;
+  width: min(760px, 92vw); max-height: 82vh;
+  background: var(--surface); color: var(--ink); box-shadow: var(--shadow); overflow: hidden;
+}
+.doc-dialog::backdrop { background: rgba(24, 24, 27, .35); }
+.doc-dialog-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 13px 16px 13px 20px; border-bottom: 1px solid var(--line); font-size: 14px;
+}
+.doc-dialog-body { padding: 18px 22px; overflow-y: auto; max-height: calc(82vh - 52px); font-size: 14px; line-height: 1.65; }
+.doc-dialog-body .md-h { display: block; margin: 14px 0 6px; }
+
 .preview { flex: 1; display: flex; flex-direction: column; background: var(--surface); min-width: 0; min-height: 0; }
 .preview-bar {
   flex: none;

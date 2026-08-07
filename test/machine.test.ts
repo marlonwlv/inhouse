@@ -29,6 +29,11 @@ const h = vi.hoisted(() => {
     espPorte: "media" as "simples" | "media" | "grande",
     espUi: false,
     espDesign: false,
+    // Pausa: quando execHang liga, a fase acceptEdits "trava" até o abort (releaseExec)
+    // e devolve falha por interrupção — simula uma fase real em andamento sendo abortada.
+    execHang: false,
+    abortReturns: false,
+    releaseExec: undefined as undefined | (() => void),
   };
   return {
     state,
@@ -50,6 +55,16 @@ const h = vi.hoisted(() => {
         };
       }
       if (opts.permissionMode === "acceptEdits") {
+        // Simula fase em andamento sendo pausada: trava até o abort e volta como interrompida.
+        if (state.execHang) {
+          await new Promise<void>((resolve) => {
+            state.releaseExec = () => {
+              state.releaseExec = undefined;
+              resolve();
+            };
+          });
+          return { sessionId: "sess-exec", success: false, errorMessage: "O passo foi interrompido." };
+        }
         const ehPrep = /PREPARAR este projeto/i.test(opts.prompt);
         return {
           sessionId: "sess-exec",
@@ -105,7 +120,8 @@ vi.mock("../server/claude/runner.js", () => ({
   runPhase: h.runPhase,
   abortPhase: (taskId: string) => {
     h.state.abortCalls.push(taskId);
-    return false;
+    h.state.releaseExec?.(); // destrava a fase "em andamento" simulada
+    return h.state.abortReturns;
   },
   claudeStatus: async () => ({ ok: true }),
 }));
@@ -169,6 +185,9 @@ beforeEach(() => {
   h.state.publishFails = false;
   h.state.publishPrUrl = undefined;
   h.state.planText = "1. Editar App.tsx\n2. Ajustar estilos";
+  h.state.execHang = false;
+  h.state.abortReturns = false;
+  h.state.releaseExec = undefined;
 });
 
 async function esperaStep(taskId: string, step: Task["step"]): Promise<Task> {
@@ -225,6 +244,45 @@ describe("machine: pipeline automático", () => {
     expect(t.status).toBe("falhou");
     expect(t.worktreePath).toBe("");
     expect(t.error).toContain("mock");
+  });
+});
+
+describe("machine: pausar e retomar", () => {
+  it("pausar a execução aterrissa 'pausada' (retomável), preserva a sessão e não conta falha", async () => {
+    h.state.execHang = true; // a execução fica "em andamento"
+    h.state.abortReturns = true; // há uma fase para abortar
+    const t = await criaTaskEmAprovacao();
+    await applyAction(t.id, { action: "approve_plan", direto: true }); // vai direto pra execução
+
+    await vi.waitFor(() => {
+      const x = store.getTask(t.id)!;
+      expect(x.step).toBe("execucao");
+      expect(x.status).toBe("rodando");
+    }, { timeout: 3000 });
+
+    await applyAction(t.id, { action: "pause" });
+    expect(h.state.abortCalls).toContain(t.id);
+
+    const pausada = await vi.waitFor(() => {
+      const x = store.getTask(t.id)!;
+      expect(x.status).toBe("falhou");
+      expect(x.pausadaManual).toBe(true);
+      return x;
+    }, { timeout: 3000 });
+    expect(pausada.claudeSessionId).toBe("sess-exec"); // sessão salva → retoma de onde parou
+    expect(pausada.uso?.falhas ?? 0).toBe(0); // pausa não é falha no eval
+
+    // Retomar: sem a trava, conclui a execução → verificações → teste.
+    h.state.execHang = false;
+    await applyAction(t.id, { action: "retry" });
+    const emTeste = await esperaStep(t.id, "teste");
+    expect(emTeste.status).toBe("aguardando");
+    expect(emTeste.pausadaManual).toBeUndefined();
+  });
+
+  it("não dá para pausar um passo que espera por você (porteira humana)", async () => {
+    const t = await criaTaskEmAprovacao(); // aprovacao / aguardando
+    await expect(applyAction(t.id, { action: "pause" })).rejects.toThrow(/pausar/i);
   });
 });
 
