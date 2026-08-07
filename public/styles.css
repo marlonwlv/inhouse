@@ -238,6 +238,7 @@ h1, h2, h3 { letter-spacing: -0.02em; }
   color: var(--brand-ink);
 }
 .btn.primary:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
+.btn.primary .dot { background: var(--brand-ink); }
 .btn.ghost { border-color: transparent; background: transparent; color: var(--muted); box-shadow: none; }
 .btn.ghost:hover { background: var(--surface-2); color: var(--ink); }
 .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
@@ -265,6 +266,22 @@ input[type="text"], input[type="url"], select {
   transition: border-color .13s ease, box-shadow .13s ease;
 }
 input:focus, select:focus { outline: none; border-color: var(--brand); box-shadow: var(--ring); }
+
+/* Chevron próprio, monocromático (currentColor não resolve dentro de data-URI:
+   dois SVGs trocados por tema). Reserva padding-right pra não colar no texto. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%2352525B' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px;
+  cursor: pointer;
+}
+:root[data-theme="dark"] select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%23A1A1AA' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E");
+}
 input:disabled { opacity: .6; }
 input::placeholder { color: var(--faint); }
 
@@ -297,6 +314,30 @@ input::placeholder { color: var(--faint); }
   z-index: 60;
 }
 
+/* Tooltip do stepper — presa ao <body>, some do fluxo (pointer-events:none). */
+.steptip {
+  position: fixed;
+  z-index: 70;
+  max-width: 260px;
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+  animation: steptip-in .12s ease;
+}
+.steptip[hidden] { display: none; }
+.steptip-name { font-weight: 650; font-size: 13px; color: var(--ink); letter-spacing: -.01em; }
+.steptip-desc { color: var(--muted); margin-top: 3px; }
+.steptip-skills { margin-top: 9px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.steptip-k { font-size: 10px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); }
+.steptip-skills code { font-family: var(--mono); font-size: 11px; background: var(--surface-2); color: var(--ink); padding: 1px 6px; border-radius: 5px; }
+.steptip-when { font-size: 11px; color: var(--faint); }
+@keyframes steptip-in { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
+
 .empty-card {
   background: var(--surface);
   border: 1px dashed var(--line-2);
@@ -317,7 +358,7 @@ input::placeholder { color: var(--faint); }
 }
 
 /* ---------- esteira (stepper) ---------- */
-.flow-wrap { overflow-x: auto; }
+.flow-wrap { overflow-x: auto; padding: 10px 4px; }
 .flow { display: flex; align-items: flex-start; min-width: 560px; }
 .step { display: grid; justify-items: center; gap: 5px; min-width: 64px; }
 .step .pin {
@@ -329,7 +370,7 @@ input::placeholder { color: var(--faint); }
   place-items: center;
   transition: border-color .2s ease, background .2s ease, box-shadow .2s ease;
 }
-.step span { font-size: 11px; font-weight: 550; color: var(--faint); white-space: nowrap; }
+.step span { font-size: 11px; font-weight: 550; color: var(--muted); white-space: nowrap; }
 .step.done .pin { background: var(--brand); border-color: var(--brand); }
 .step.done .pin::after { content: "✓"; font-size: 8px; color: var(--brand-ink); font-weight: 800; }
 .step.done span { color: var(--muted); }
@@ -342,6 +383,11 @@ input::placeholder { color: var(--faint); }
 .step.human.now .pin::after { content: ""; width: 6px; height: 6px; border-radius: 1px; background: var(--amber); }
 .step.human.now span { color: var(--amber); font-weight: 650; }
 .step.human.done .pin { background: var(--brand); border-color: var(--brand); }
+/* Porteira humana que FALHA: vermelho vence o âmbar (senão a cascata mostra
+   "sua vez" numa etapa que falhou). Especificidade 0-4-1 > .step.human.now. */
+.step.human.now.fail .pin { border-color: var(--danger); box-shadow: 0 0 0 4px var(--danger-soft); }
+.step.human.now.fail .pin::after { background: var(--danger); }
+.step.human.now.fail span { color: var(--danger); }
 .step.fail .pin { border-color: var(--danger); box-shadow: 0 0 0 4px var(--danger-soft); }
 .step.fail .pin::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--danger); animation: none; }
 .step.fail span { color: var(--danger); font-weight: 650; }
@@ -360,7 +406,7 @@ input::placeholder { color: var(--faint); }
   background: var(--chrome);
 }
 .topbar .status { flex: 1; text-align: center; font-size: 12px; color: var(--muted); min-width: 0; }
-.repo-pick { font-weight: 600; font-size: 14px; padding: 7px 12px; max-width: 280px; }
+.repo-pick { font-weight: 600; font-size: 14px; padding: 7px 32px 7px 12px; max-width: 280px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
 .live-dot { color: var(--brand); }
 .fail-msg { color: var(--danger); font-weight: 550; }
 
@@ -571,9 +617,13 @@ input::placeholder { color: var(--faint); }
   font-size: 12px;
   color: var(--muted);
 }
-.flow-strip .flow-wrap { flex: 1; max-width: 640px; }
-.flow-strip .flow { min-width: 480px; }
-.flow-strip .flow .step { min-width: 56px; }
+/* Faixa compacta do editor = só pinos (rótulos e duração escondidos); o passo
+   atual vive no prefixo "Onde essa tarefa está: <b>…</b>". Sem rótulos, os
+   passos não colidem e as porteiras (losangos) viram o ritmo visual. */
+.flow-strip .flow-wrap { flex: 1; }
+.flow-strip .flow { min-width: 0; }
+.flow-strip .flow .step { min-width: 0; flex: none; }
+.flow-strip .step span, .flow-strip .step .step-dur { display: none; }
 
 .editor-body { flex: 1; display: flex; min-height: 0; }
 .chat {

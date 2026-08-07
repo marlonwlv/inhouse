@@ -19,6 +19,22 @@ const STEP_LABELS = {
 };
 const HUMAN_STEPS = ["aprovacao", "aprovacao_prototipo", "teste", "publicar"];
 
+// Tooltip do stepper: o que cada etapa faz + skills que dispara. As skills espelham
+// o inhouse.config.json do app-starter; `q` = condição (ex.: só grande / só com UI).
+const STEP_INFO = {
+  espec: { desc: "O Claude lê seu pedido e decide o tamanho da tarefa e se ela tem tela/design.", skills: [] },
+  plano: { desc: "Monta o plano de produto — o QUÊ, em linguagem de gente.", skills: [{ n: "office-hours", q: "tarefas grandes" }] },
+  aprovacao: { desc: "Você aprova o plano ou pede mudanças antes de investir no técnico.", skills: [], human: true },
+  detalhamento: { desc: "Plano técnico e de design — o COMO da mudança.", skills: [{ n: "plan-eng-review" }, { n: "plan-design-review", q: "quando tem UI" }] },
+  prototipo: { desc: "Gera mockups HTML/CSS descartáveis só pra decidir o visual.", skills: [] },
+  aprovacao_prototipo: { desc: "Você aprova o visual do protótipo antes da execução.", skills: [], human: true },
+  execucao: { desc: "Implementa a mudança de verdade no código.", skills: [] },
+  verificacoes: { desc: "Roda as verificações automáticas antes de você testar.", skills: [{ n: "review" }, { n: "qa", q: "quando tem UI" }] },
+  teste: { desc: "Você abre o preview, testa e aprova o resultado.", skills: [], human: true },
+  publicar: { desc: "Abre um Pull Request pro time revisar — nada vai direto pro ar.", skills: [], human: true },
+  concluida: { desc: "Tudo pronto — mudança publicada no projeto.", skills: [] },
+};
+
 // Espelha shared/types.ts: steps que ESTA task percorre (fluxo adaptativo).
 function rodaDesign(t) {
   return t.design === "sim" || (t.design !== "nao" && Boolean(t.precisaDesign));
@@ -553,7 +569,7 @@ function renderExperiencia() {
 
   const temFontes = (state.evalFontes ?? []).length > 0;
   const fonteSelect = temFontes
-    ? `<select id="eval-fonte" class="repo-pick" aria-label="Filtrar por origem dos dados">
+    ? `<select id="eval-fonte" class="repo-pick" aria-label="Filtrar por origem dos dados" title="${esc(state.evalFonte === "todos" ? "Todas as origens" : state.evalFonte === "meus" ? "Só os meus" : (state.evalFonte || ""))}">
         ${["todos", "meus", ...state.evalFontes].map((f) =>
           `<option value="${esc(f)}" ${state.evalFonte === f ? "selected" : ""}>${f === "todos" ? "Todas as origens" : f === "meus" ? "Só os meus" : esc(f)}</option>`).join("")}
       </select>`
@@ -754,7 +770,7 @@ function flowHtml(t) {
     ].filter(Boolean).join(" ");
     const dur = fmtDur(stepDurMs(t, s));
     const durHtml = dur ? `<span class="step-dur">${now ? "⏱ " : ""}${dur}</span>` : "";
-    parts.push(`<div class="${cls}"><i class="pin"></i><span>${esc(STEP_LABELS[s])}</span>${durHtml}</div>`);
+    parts.push(`<div class="${cls}" data-step="${s}"><i class="pin"></i><span>${esc(STEP_LABELS[s])}</span>${durHtml}</div>`);
   });
   return `<div class="flow-wrap"><div class="flow">${parts.join("")}</div></div>`;
 }
@@ -913,7 +929,7 @@ function renderBoard() {
   renderPage(`
   <div class="view view-board">
     <div class="topbar">
-      <select id="project-select" class="repo-pick" aria-label="Escolher projeto">
+      <select id="project-select" class="repo-pick" aria-label="Escolher projeto" title="${esc(proj?.name || "")}">
         ${state.projects.map((p) => `<option value="${esc(p.id)}" ${p.id === pid ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
       </select>
       <div class="status">${statusLine}</div>
@@ -964,7 +980,7 @@ function taskCardHtml(t) {
       <b>${esc(t.title)}</b>
       ${statusChip(t)}
       <div class="meta"><span class="chip">espaço ${t.espaco}</span>
-      <button class="btn sm ${t.autoAprovar ? "primary" : "ghost"}" data-act="auto-toggle" data-task="${esc(t.id)}" title="Com o modo auto ligado, ações sensíveis não pedem permissão">${t.autoAprovar ? "🟢 Auto ligado" : "Auto: desligado"}</button> ${timeAgo(t.updatedAt)}</div>
+      <button class="btn sm ${t.autoAprovar ? "primary" : "ghost"}" data-act="auto-toggle" data-task="${esc(t.id)}" title="Com o modo auto ligado, ações sensíveis não pedem permissão">${t.autoAprovar ? `<span class="dot"></span> Auto ligado` : "Auto: desligado"}</button> ${timeAgo(t.updatedAt)}</div>
     </div>
     ${t.status === "concluida" || t.status === "cancelada" ? "" : flowHtml(t)}
     ${taskFootHtml(t, perm)}
@@ -1086,7 +1102,7 @@ function renderEditor(id) {
       : "",
   ].join("");
   $("#ed-flowstrip", root).innerHTML =
-    `<span>Onde essa tarefa está:</span>${flowHtml(t)}${nextGateChip(t)}`;
+    `<span>Onde essa tarefa está: <b>${esc(STEP_LABELS[t.step] ?? t.step)}</b></span>${flowHtml(t)}${nextGateChip(t)}`;
   renderChat(id);
   updatePreview(root, t);
   updateComposer(root, t);
@@ -1774,6 +1790,57 @@ document.addEventListener("keydown", (e) => {
     navegarPreview(e.target);
   }
 });
+
+// ---------- Tooltip do stepper (nome + o que faz + skills que dispara) ----------
+// Presa ao <body> pra não ser clipada pelo overflow do .flow-wrap; posicionada por
+// getBoundingClientRect. Delegada no document, então sobrevive aos re-renders do SSE.
+let _stepTipEl = null;
+function stepTipEl() {
+  if (!_stepTipEl) {
+    _stepTipEl = document.createElement("div");
+    _stepTipEl.className = "steptip";
+    _stepTipEl.hidden = true;
+    document.body.appendChild(_stepTipEl);
+  }
+  return _stepTipEl;
+}
+function showStepTip(stepEl) {
+  const key = stepEl.dataset.step;
+  const info = STEP_INFO[key];
+  if (!info) return;
+  const tip = stepTipEl();
+  const skills = info.skills.length
+    ? `<div class="steptip-skills"><span class="steptip-k">dispara</span> ${info.skills
+        .map((s) => `<code>/${esc(s.n)}</code>${s.q ? `<span class="steptip-when">${esc(s.q)}</span>` : ""}`)
+        .join("")}</div>`
+    : info.human
+      ? `<div class="steptip-skills"><span class="steptip-k">porteira humana — espera você</span></div>`
+      : "";
+  tip.innerHTML = `<div class="steptip-name">${esc(STEP_LABELS[key] ?? key)}</div>
+    <div class="steptip-desc">${esc(info.desc)}</div>${skills}`;
+  tip.hidden = false;
+  const r = stepEl.getBoundingClientRect();
+  const tr = tip.getBoundingClientRect();
+  const gap = 8;
+  let left = r.left + r.width / 2 - tr.width / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - tr.width - 8));
+  let top = r.bottom + gap;
+  if (top + tr.height > window.innerHeight - 8) top = r.top - tr.height - gap; // vira pra cima se não couber
+  tip.style.left = `${Math.round(left)}px`;
+  tip.style.top = `${Math.round(top)}px`;
+}
+function hideStepTip() { if (_stepTipEl) _stepTipEl.hidden = true; }
+document.addEventListener("pointerover", (e) => {
+  const step = e.target.closest?.(".step[data-step]");
+  if (step) showStepTip(step);
+});
+document.addEventListener("pointerout", (e) => {
+  const step = e.target.closest?.(".step[data-step]");
+  if (step && !step.contains(e.relatedTarget)) hideStepTip();
+});
+document.addEventListener("pointerdown", hideStepTip);
+document.addEventListener("scroll", hideStepTip, true);
+window.addEventListener("hashchange", hideStepTip);
 
 // ---------- Inicialização ----------
 window.addEventListener("hashchange", render);

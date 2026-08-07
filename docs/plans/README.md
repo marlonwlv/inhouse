@@ -25,3 +25,4 @@ Cada plano abre com um cabeçalho: **título · categoria · data (YYYY-MM-DD) �
 
 ### design
 - [Redesign visual](design/redesign-visual.md) — moderno light & clean → accent monocromático → audit impeccable (UI v0.4.2). **Status: Concluído** (2026-08-06).
+- [Polimento de UI (detalhes)](design/polimento-ui-detalhes.md) — chevron colado, losango cortado, etapas encavaladas + porteira-que-falha (bug de cor) + emojis; diagnóstico → design review (7 dim + voz independente) → implementação. **Status: Concluído** (2026-08-06).
