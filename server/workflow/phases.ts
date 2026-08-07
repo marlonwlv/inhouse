@@ -261,6 +261,61 @@ export function prototipoPrompt(slug: string): string {
   ].join("\n");
 }
 
+/**
+ * Fase de preview — PREPARO (antes do teste do usuário): o agente deixa o AMBIENTE
+ * do espaço pronto (env, docker, migrations) e descreve a receita — mas NÃO sobe o
+ * servidor (quem sobe é o Inhouse). Roda em acceptEdits com o gate de setup seguro.
+ */
+export function previewSetupPrompt(): string {
+  return [
+    "Antes de a pessoa testar, prepare o AMBIENTE deste projeto para o preview subir de verdade.",
+    CONTEXTO_NAO_TECNICO,
+    PREVIEW_GERENCIADO,
+    "Faça só o necessário para o app conseguir rodar e servir as telas:",
+    "- Preencha as variáveis de ambiente que faltam NESTE espaço: use .env.example/.env.sample e a",
+    "  documentação. Para segredos que você não tem, use um valor de desenvolvimento plausível e diga",
+    "  no resumo. Crie/edite .env / .env.local conforme o projeto espera.",
+    "- Suba dependências de runtime CURTAS e idempotentes que o app precisa (ex.: `docker compose up -d`,",
+    "  migrations/seed do banco). Não reinstale o que já está instalado.",
+    "- NÃO rode o servidor de desenvolvimento — quem sobe é o Inhouse.",
+    "",
+    "Ao final, descreva como o Inhouse deve subir o preview e termine com um bloco JSON (nada depois dele):",
+    "```json",
+    '{ "cmd": "comando do dev server (ex.: pnpm --filter web dev) — omita p/ auto-detecção", "cwd": "subpasta ou .", "setup": ["comandos curtos idempotentes rodados ANTES do server, ex.: docker compose up -d"], "envFiles": ["arquivos .env não versionados a copiar pro espaço"], "healthPaths": ["/","/rota-que-esta-tarefa-toca"], "readyRegex": "opcional", "timeoutMs": 120000 }',
+    "```",
+    'Regras: todos os campos são opcionais; em "healthPaths" liste as ROTAS que esta tarefa toca e as',
+    'telas de entrada (começando com "/"); em "setup" só comandos que TERMINAM (nunca o servidor de dev).',
+  ].join("\n");
+}
+
+/**
+ * Fase de preview — EXERCÍCIO: o preview já está no ar (subido pelo Inhouse). O
+ * agente navega as rotas via curl, encontra erros de runtime (500 por rota, env
+ * faltando) e CORRIGE — é aqui que o erro que só aparece ao trocar de rota é pego.
+ */
+export function previewExercisePrompt(url: string, rotas: string[]): string {
+  const alvos =
+    rotas.length > 0
+      ? `- Rotas prioritárias: ${rotas.join(", ")}`
+      : "- A página inicial e as telas que ESTA tarefa mexeu.";
+  return [
+    `O preview já está NO AR em ${url} — quem o subiu foi o Inhouse. NÃO suba outro servidor.`,
+    CONTEXTO_NAO_TECNICO,
+    "Sua tarefa: EXERCITAR as telas como um usuário e garantir que funcionam ANTES de a pessoa testar.",
+    `Use curl no próprio preview (${url}) para abrir as rotas que importam:`,
+    alvos,
+    "- Siga também as rotas de entrada/login e as telas tocadas pela sua mudança.",
+    "Para cada rota, confira o status HTTP e o corpo. Se der erro de runtime (500, exceção, variável de",
+    "ambiente faltando, conexão de banco recusada), DESCUBRA a causa e CORRIJA (complete o .env, suba o",
+    "serviço que falta, ajuste a config) — e refaça o curl até a rota responder sem erro de servidor.",
+    PREVIEW_GERENCIADO,
+    "Se você mudar variáveis de ambiente, o servidor de dev costuma recarregar sozinho: espere alguns",
+    "segundos e refaça o curl. Não pare enquanto uma rota que importa ainda devolver erro 500.",
+    "Ao final, explique em português simples o que conferiu e o que corrigiu. Se algo AINDA estiver",
+    "quebrado e você não conseguiu resolver, diga claramente o quê e por quê.",
+  ].join("\n");
+}
+
 /** Remove as linhas de julgamento (PORTE:/UI:) do fim do plano exibido ao usuário. */
 export function limparJulgamento(plano: string): string {
   return plano.replace(/\n\s*(PORTE|UI|DESIGN):[^\n]*$/gim, "").trim();

@@ -56,6 +56,20 @@ export function sanitizePreview(raw: unknown): PreviewConfig | undefined {
     );
     if (files.length) out.envFiles = files.slice(0, 20);
   }
+  if (Array.isArray(o.setup)) {
+    // Comandos de setup: mesma confiança do cmd (rodam via /bin/sh). Só trim + cap.
+    const cmds = o.setup
+      .filter((c): c is string => typeof c === "string" && c.trim().length > 0)
+      .map((c) => c.trim().slice(0, 400));
+    if (cmds.length) out.setup = cmds.slice(0, 20);
+  }
+  if (Array.isArray(o.healthPaths)) {
+    // Rotas do health-check: têm que ser caminhos absolutos do app (começam com "/").
+    const rotas = o.healthPaths
+      .filter((p): p is string => typeof p === "string" && p.trim().startsWith("/"))
+      .map((p) => p.trim().replace(/\s+/g, "").slice(0, 300));
+    if (rotas.length) out.healthPaths = rotas.slice(0, 20);
+  }
   if (typeof o.readyRegex === "string" && o.readyRegex.trim()) {
     // Só aceita se compilar — evita quebrar a subida do preview com um regex inválido.
     try {

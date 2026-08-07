@@ -3,7 +3,7 @@
  * env sem segredos da Anthropic no dev server e kill da árvore de processos.
  * Sobe um "dev server" de verdade via npm run num fixture temporário.
  */
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -11,19 +11,22 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Project, Task } from "../shared/types.js";
 
-// Sem SSE nem store real: o preview só precisa de getTask/updateTask.
+// Sem SSE nem store real: o preview só precisa de getTask/updateTask/transcriptAppend.
 vi.mock("../server/events.js", () => ({ broadcast: vi.fn(), addClient: vi.fn() }));
 vi.mock("../server/store.js", () => ({
   getTask: vi.fn(() => undefined),
   updateTask: vi.fn((id: string, patch: Record<string, unknown>) => ({ id, ...patch })),
+  transcriptAppend: vi.fn(),
 }));
 
 import {
+  PreviewQuebradoError,
   autoDetectar,
   parsePreviewRecipe,
   portaLivre,
   startPreview,
   stopPreview,
+  verificarSaude,
 } from "../server/services/preview.js";
 import { sanitizePreview } from "../server/workflow/config.js";
 
@@ -48,20 +51,41 @@ function tarefa(worktreePath: string): Task {
 const projeto = { id: "p1" } as Project;
 
 /**
- * Fixture com um "dev server": grava pid + segredos vistos em info.txt e só
- * depois imprime a URL (montada por concatenação — assim o eco do comando pelo
- * npm não contém uma URL literal que resolveria o start cedo demais).
+ * Escreve um server.js que grava pid + segredos vistos em info.txt, ESCUTA de
+ * verdade numa porta fixa (o health-check precisa de um socket vivo) e serve
+ * `corpo`. Lê um marcador no boot (`had`) para provar a ordem setup→cmd. A URL é
+ * impressa concatenando a porta (não fica literal no eco do comando).
  */
-function fixtureDevServer(): string {
+function escreverServidor(dir: string, porta: number, corpo: string): void {
+  writeFileSync(
+    join(dir, "server.js"),
+    [
+      "const http=require('http');const fs=require('fs');",
+      "fs.appendFileSync('info.txt',process.pid+'|'+(process.env.ANTHROPIC_API_KEY||'')+'|'+(process.env.ANTHROPIC_AUTH_TOKEN||'')+'\\n');",
+      "const had=fs.existsSync('marcador');",
+      `http.createServer((req,res)=>{ ${corpo} }).listen(${porta},'127.0.0.1',()=>console.log('http://127.0.0.1:'+${porta}+'/'));`,
+      "setInterval(()=>{},1000);",
+    ].join("\n"),
+  );
+}
+
+/** Fixture com dev server auto-detectável (scripts.dev) — responde `corpo` (default 200). */
+function fixtureDevServer(porta = 65432, corpo = "res.writeHead(200);res.end('ok')"): string {
   const dir = mkdtempSync(join(tmpdir(), "inhouse-preview-"));
-  const devScript =
-    `node -e "const fs=require('fs');` +
-    `fs.appendFileSync('info.txt',process.pid+'|'+(process.env.ANTHROPIC_API_KEY||'')+'|'+(process.env.ANTHROPIC_AUTH_TOKEN||'')+'\\n');` +
-    `console.log('http://127.0.0.1:'+65432+'/');setInterval(function(){},1000)"`;
+  escreverServidor(dir, porta, corpo);
   writeFileSync(
     join(dir, "package.json"),
-    JSON.stringify({ name: "fixture-preview", version: "1.0.0", scripts: { dev: devScript } }),
+    JSON.stringify({ name: "fixture-preview", version: "1.0.0", scripts: { dev: "node server.js" } }),
   );
+  return dir;
+}
+
+/** Fixture com bloco `preview` commitado (inhouse.config.json) — cmd/setup/healthPaths. */
+function fixtureComPreview(porta: number, corpo: string, preview: Record<string, unknown>): string {
+  const dir = mkdtempSync(join(tmpdir(), "inhouse-preview-"));
+  escreverServidor(dir, porta, corpo);
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "fixture-preview", version: "1.0.0" }));
+  writeFileSync(join(dir, "inhouse.config.json"), JSON.stringify({ preview }));
   return dir;
 }
 
@@ -126,6 +150,61 @@ describe("startPreview/stopPreview", () => {
   });
 });
 
+describe("health-check no start", () => {
+  it("app que dá 500 na raiz não sobe: lança PreviewQuebradoError", async () => {
+    const dir = fixtureDevServer(65433, "res.writeHead(500);res.end('boom')");
+    const task = tarefa(dir);
+    await expect(startPreview(task, projeto)).rejects.toBeInstanceOf(PreviewQuebradoError);
+    await stopPreview(task.id);
+  });
+
+  it("roda o `setup` da receita ANTES do `cmd` (o server só dá 200 com o marcador)", async () => {
+    // O server responde 200 só se `marcador` existir no boot; o setup o cria.
+    // Um start bem-sucedido prova que o setup rodou antes do cmd.
+    const dir = fixtureComPreview(65435, "res.writeHead(had?200:500);res.end(had?'ok':'no-setup')", {
+      cmd: "node server.js",
+      setup: ["touch marcador"],
+      healthPaths: ["/"],
+    });
+    const task = tarefa(dir);
+    const url = await startPreview(task, projeto);
+    expect(url).toBe("http://127.0.0.1:65435/");
+    expect(existsSync(join(dir, "marcador"))).toBe(true);
+    await stopPreview(task.id);
+  });
+});
+
+describe("verificarSaude", () => {
+  it("200/302 = saudável; 500 = quebrado com status; respeita healthPaths", async () => {
+    const { createServer: createHttp } = await import("node:http");
+    const srv = createHttp((req, res) => {
+      if (req.url === "/bad") {
+        res.writeHead(500);
+        res.end("boom");
+      } else if (req.url === "/red") {
+        res.writeHead(302, { location: "/login" });
+        res.end();
+      } else {
+        res.writeHead(200);
+        res.end("ok");
+      }
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const port = (srv.address() as AddressInfo).port;
+    const base = `http://127.0.0.1:${port}/`;
+    try {
+      expect((await verificarSaude(base, null)).ok).toBe(true); // raiz 200
+      expect((await verificarSaude(base, { healthPaths: ["/red"] })).ok).toBe(true); // 302 = ok
+      const ruim = await verificarSaude(base, { healthPaths: ["/bad"] });
+      expect(ruim.ok).toBe(false);
+      expect(ruim.status).toBe(500);
+      expect(ruim.rota).toBe("/bad");
+    } finally {
+      await new Promise((r) => srv.close(r));
+    }
+  });
+});
+
 describe("sanitizePreview", () => {
   it("aceita um bloco válido e descarta caminhos perigosos", () => {
     const cfg = sanitizePreview({
@@ -140,6 +219,16 @@ describe("sanitizePreview", () => {
     expect(cfg?.port).toBe(3000);
     expect(cfg?.envFiles).toEqual([".env.local"]); // ../secret é rejeitado
     expect(cfg?.timeoutMs).toBe(60000);
+  });
+
+  it("sanitiza setup (comandos, descarta vazios/não-string) e healthPaths (só rotas com /)", () => {
+    const cfg = sanitizePreview({
+      cmd: "x",
+      setup: ["docker compose up -d", "   ", 123, "migrate"],
+      healthPaths: ["/", "/backoffice", "sem-barra", 5],
+    });
+    expect(cfg?.setup).toEqual(["docker compose up -d", "migrate"]);
+    expect(cfg?.healthPaths).toEqual(["/", "/backoffice"]); // "sem-barra" e 5 rejeitados
   });
 
   it("rejeita cwd que escapa da pasta e porta inválida", () => {

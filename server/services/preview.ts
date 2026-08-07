@@ -9,10 +9,12 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import type { PreviewConfig, Project, Task } from "../../shared/types.js";
 import { DATA_DIR, PREVIEW_PORT_BASE, claudeEnv } from "../config.js";
+import { createPreviewSetupGate } from "../claude/permissions.js";
 import { runPhase } from "../claude/runner.js";
 import { broadcast } from "../events.js";
 import * as store from "../store.js";
 import { loadConfigCascata, sanitizePreview } from "../workflow/config.js";
+import { previewSetupPrompt } from "../workflow/phases.js";
 import { lastLines } from "./proc.js";
 import { copiarEnvFiles } from "./worktrees.js";
 
@@ -44,6 +46,23 @@ interface PkgJson {
  * "Pedir ao Claude para configurar o preview".
  */
 export class PreviewIndisponivelError extends Error {}
+
+/**
+ * O preview subiu (uma URL apareceu) mas o app não está SAUDÁVEL: uma rota
+ * devolveu >=500 ou a conexão foi recusada. Diferente de PreviewIndisponivelError
+ * (não há tela) — aqui há tela, mas ela está quebrada (ex.: .env mal configurada
+ * numa rota). A UI trata como "subiu com erro" e oferece pedir correção ao Claude.
+ */
+export class PreviewQuebradoError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+    readonly rota?: string,
+    readonly detalhe?: string,
+  ) {
+    super(message);
+  }
+}
 
 function sistema(taskId: string, text: string): void {
   const item = { kind: "system" as const, text, at: new Date().toISOString() };
@@ -174,6 +193,110 @@ export async function portaLivre(inicio: number): Promise<number> {
   throw new Error("Não achamos uma porta livre para o preview. Feche outros apps e tente de novo.");
 }
 
+/** Espera curta (backoff do health-check), sem segurar o event loop no shutdown. */
+function espera(ms: number): Promise<void> {
+  return new Promise((r) => {
+    const t = setTimeout(r, ms);
+    t.unref();
+  });
+}
+
+/** Veredito do health-check de uma rota. */
+interface Saude {
+  ok: boolean;
+  status?: number;
+  rota?: string;
+  detalhe?: string;
+}
+
+/**
+ * Confere que o app realmente SERVE cada rota de healthPaths (default ["/"]):
+ * fetch local (127.0.0.1, sem CORS), redirect manual (302 pra /login = saudável).
+ * >=500 = quebrado; conexão recusada após retries = quebrado. <500 (inclui 3xx,
+ * 401, 404) = saudável. Não lança — devolve o veredito.
+ */
+export async function verificarSaude(baseUrl: string, cfg?: PreviewConfig | null): Promise<Saude> {
+  const rotas = cfg?.healthPaths?.length ? cfg.healthPaths : ["/"];
+  for (const rota of rotas) {
+    let alvo: string;
+    try {
+      alvo = new URL(rota, baseUrl).href;
+    } catch {
+      continue; // rota malformada: ignora
+    }
+    let conexao = 0; // falhas de conexão (server ainda subindo/compilando)
+    let quinhentos = 0; // respostas 5xx (erro real, poucas tentativas)
+    let ultimoStatus: number | undefined;
+    let ultimoDetalhe: string | undefined;
+    let ok = false;
+    for (let i = 0; i < 30 && conexao < 15 && quinhentos < 3; i++) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 12_000);
+      timer.unref();
+      try {
+        const res = await fetch(alvo, {
+          redirect: "manual",
+          signal: ctrl.signal,
+          headers: { accept: "text/html,*/*" },
+        });
+        clearTimeout(timer);
+        if (res.status >= 500) {
+          quinhentos++;
+          ultimoStatus = res.status;
+          ultimoDetalhe = (await res.text().catch(() => "")).replace(ANSI_RE, "").slice(0, 500);
+          await espera(1000);
+          continue;
+        }
+        ok = true; // <500 (200/3xx/401/404…) = a rota serve
+        break;
+      } catch (err) {
+        clearTimeout(timer);
+        conexao++;
+        ultimoDetalhe = err instanceof Error ? err.message : String(err);
+        await espera(1000);
+      }
+    }
+    if (!ok) return { ok: false, rota, status: ultimoStatus, detalhe: ultimoDetalhe };
+  }
+  return { ok: true };
+}
+
+/** Mensagem amigável (pt-BR) para um preview que subiu mas está quebrado. */
+function mensagemQuebrado(s: Saude): string {
+  const onde = s.rota && s.rota !== "/" ? ` na tela "${s.rota}"` : "";
+  if (s.status && s.status >= 500) {
+    return `O app subiu, mas deu erro ${s.status}${onde}. Provavelmente falta configurar algo (ex.: uma variável de ambiente).`;
+  }
+  return `O app subiu, mas não respondeu${onde}. Pode ser que ele não tenha terminado de iniciar.`;
+}
+
+/** Roda um comando de setup (curto, que TERMINA) antes do server. Devolve o exit code (124=timeout). */
+function execSetup(cmd: string, cwd: string, env: NodeJS.ProcessEnv): Promise<number> {
+  return new Promise((resolve) => {
+    const ch = spawn("/bin/sh", ["-c", cmd], {
+      cwd,
+      env,
+      detached: true, // grupo próprio: matar() derruba a árvore (docker/child procs)
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    todos.add(ch);
+    const timer = setTimeout(() => {
+      matar(ch);
+      resolve(124);
+    }, 180_000);
+    timer.unref();
+    ch.on("exit", (code) => {
+      todos.delete(ch);
+      clearTimeout(timer);
+      resolve(code ?? 0);
+    });
+    ch.on("error", () => {
+      clearTimeout(timer);
+      resolve(1);
+    });
+  });
+}
+
 export function startPreview(task: Task, project: Project): Promise<string> {
   // Já tem um start em andamento para esta tarefa? Reusa a mesma promise —
   // senão o segundo clique subiria um segundo dev server que ninguém mata.
@@ -186,14 +309,25 @@ export function startPreview(task: Task, project: Project): Promise<string> {
     if (salvo) return Promise.resolve(salvo);
   }
 
-  const p = doStartPreview(task, project).finally(() => {
+  const p = attemptStart(task, project).finally(() => {
     emAndamento.delete(task.id);
   });
   emAndamento.set(task.id, p);
   return p;
 }
 
-async function doStartPreview(task: Task, project: Project): Promise<string> {
+/**
+ * Sobe o preview de fato. Chamado pelo startPreview (com dedupe) e diretamente
+ * pela esteira no runPreviewCheck — por isso fica FORA do emAndamento (a esteira
+ * dá stop/start várias vezes; cair no auto-await do dedupe travaria).
+ * Com `opts.verificarSaude` (default true) faz um health-check por rota antes de
+ * marcar pronto e lança PreviewQuebradoError se o app subiu mas está quebrado.
+ */
+export async function attemptStart(
+  task: Task,
+  project: Project,
+  opts: { verificarSaude?: boolean } = {},
+): Promise<string> {
   const cfg = resolvePreview(project, task.worktreePath);
   const cwd = cfg?.cwd ? join(task.worktreePath, cfg.cwd) : task.worktreePath;
 
@@ -204,13 +338,24 @@ async function doStartPreview(task: Task, project: Project): Promise<string> {
   }
 
   const porta = await portaLivre(cfg?.port ?? PREVIEW_PORT_BASE + task.espaco);
+  // claudeEnv(): o dev server roda código arbitrário do projeto (vite.config,
+  // plugins, etc.) — não pode ver ANTHROPIC_API_KEY/AUTH_TOKEN (decisão 1 da arquitetura).
+  const baseEnv = { ...claudeEnv(), PORT: String(porta) };
+
+  // Setup da receita: comandos curtos/idempotentes ANTES do server (docker, migrations…).
+  // Mesmo nível de confiança do `cmd` (ambos via /bin/sh); best-effort (só avisa se falhar).
+  if (cfg?.setup?.length) {
+    for (const c of cfg.setup) {
+      sistema(task.id, `Preparando o ambiente do preview: \`${c}\``);
+      const code = await execSetup(c, cwd, baseEnv);
+      if (code !== 0) sistema(task.id, `Aviso: \`${c}\` terminou com código ${code} — seguindo mesmo assim.`);
+    }
+  }
 
   // Comando: bloco/receita `cmd` (roda via shell) OU auto-detecção pelo lockfile.
   let spawnCmd: string;
   let spawnArgs: string[];
   if (cfg?.cmd) {
-    // O `cmd` sai de um config commitado no repo ou da receita do próprio Claude
-    // do usuário — mesmo nível de confiança de `scripts.dev`, que já rodamos.
     spawnCmd = "/bin/sh";
     spawnArgs = ["-c", cfg.cmd];
   } else {
@@ -228,11 +373,9 @@ async function doStartPreview(task: Task, project: Project): Promise<string> {
     spawnCmd = det.cmd;
   }
 
-  // claudeEnv(): o dev server roda código arbitrário do projeto (vite.config,
-  // plugins, etc.) — não pode ver ANTHROPIC_API_KEY/AUTH_TOKEN (decisão 1 da arquitetura).
   const child = spawn(spawnCmd, spawnArgs, {
     cwd,
-    env: { ...claudeEnv(), PORT: String(porta) },
+    env: baseEnv,
     detached: true, // grupo de processo próprio: dá para matar a árvore toda
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -285,6 +428,16 @@ async function doStartPreview(task: Task, project: Project): Promise<string> {
     });
   });
 
+  // Health-check por rota (backstop determinístico): protege o start mecânico —
+  // um app que subiu mas dá 500 numa rota não chega ao usuário como "pronto".
+  if (opts.verificarSaude !== false) {
+    const saude = await verificarSaude(url, cfg);
+    if (!saude.ok) {
+      matar(child);
+      throw new PreviewQuebradoError(mensagemQuebrado(saude), saude.status, saude.rota, saude.detalhe);
+    }
+  }
+
   registry.set(task.id, child);
   // Se o dev server morrer sozinho depois, limpa o estado para a UI não mostrar preview morto.
   child.on("exit", () => {
@@ -336,31 +489,12 @@ export function temPreviewConfigCommitada(project: Project, worktreePath: string
   return Boolean(loadConfigCascata(worktreePath, project.path)?.preview);
 }
 
-/** Prompt da fase de descoberta: o agente DESCOBRE o comando, o Inhouse é quem roda. */
-function previewDiscoveryPrompt(porta: number): string {
-  return [
-    "Preciso subir o preview (o servidor de desenvolvimento) deste projeto para uma",
-    "pessoa não-técnica ver a tela no navegador, mas a detecção automática não achou como.",
-    "NÃO rode o servidor nem nenhum comando — apenas DESCUBRA como subi-lo LENDO os",
-    "arquivos (package.json da raiz e de subpastas, lockfiles, config de monorepo, .env de exemplo).",
-    `Quem roda o comando sou eu (o Inhouse), numa porta livre que já reservei: ${porta}.`,
-    "Faça o comando usar ESSA porta.",
-    "",
-    "Termine a resposta com um bloco JSON (e nada depois dele) exatamente neste formato:",
-    "```json",
-    `{ "cmd": "comando completo do dev server", "cwd": "subpasta relativa à raiz ou .", "port": ${porta}, "envFiles": ["arquivos .env necessários e não versionados"], "readyRegex": "opcional: um texto que aparece quando o servidor sobe", "timeoutMs": 120000 }`,
-    "```",
-    'Regras: "cmd" é obrigatório (ex.: "pnpm --filter web dev"); use "." em "cwd" se for na raiz;',
-    'em "envFiles" liste só arquivos que existem mas são gitignored (ex.: ".env.local");',
-    '"readyRegex" e "timeoutMs" são opcionais — omita se não souber.',
-  ].join("\n");
-}
-
 /**
- * Extrai a receita de preview do texto final do agente (bloco ```json ou o
- * último {…}). Sanitiza e força a porta reservada. Sem "cmd" válido → null.
+ * Extrai+sanitiza a receita do texto final do agente (bloco ```json ou o último
+ * {…}). Se `portaReservada` vier, sobrescreve a porta. Aceita receitas SEM cmd
+ * (o auto-detect preenche o comando; o valor está em setup/healthPaths/envFiles).
  */
-export function parsePreviewRecipe(texto: string, portaReservada: number): PreviewConfig | null {
+export function extrairReceita(texto: string, portaReservada?: number): PreviewConfig | null {
   if (!texto) return null;
   let bruto: string | null = null;
   const fences = [...texto.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
@@ -379,39 +513,72 @@ export function parsePreviewRecipe(texto: string, portaReservada: number): Previ
     return null;
   }
   const cfg = sanitizePreview(obj);
-  if (!cfg?.cmd) return null; // auto-detecção já falhou: sem comando não há o que subir
-  return { ...cfg, port: portaReservada };
+  if (!cfg) return null;
+  return portaReservada !== undefined ? { ...cfg, port: portaReservada } : cfg;
 }
 
 /**
- * Camada 2.5: pede ao Claude (na mesma sessão da tarefa) para DESCOBRIR a receita
- * de preview, guarda-a por projeto (2ª vez vira zero-config) e sobe o preview.
+ * Como acima, mas para a camada 2.5 (descoberta): exige "cmd" (sem comando não há
+ * o que subir) e força a porta reservada.
+ */
+export function parsePreviewRecipe(texto: string, portaReservada: number): PreviewConfig | null {
+  const cfg = extrairReceita(texto, portaReservada);
+  return cfg?.cmd ? cfg : null;
+}
+
+/**
+ * Aprende a receita descrita pelo agente e guarda por projeto (2ª vez vira rápido).
+ * Só persiste se trouxer algo útil (cmd/setup/healthPaths/envFiles/cwd). Devolve a
+ * receita aprendida (ou null).
+ */
+export function aprenderReceita(projectId: string, texto: string): PreviewConfig | null {
+  const cfg = extrairReceita(texto);
+  if (!cfg) return null;
+  const util = cfg.cmd || cfg.setup || cfg.healthPaths || cfg.envFiles || cfg.cwd;
+  if (!util) return null;
+  salvarReceita(projectId, cfg);
+  return cfg;
+}
+
+/** Config efetiva de preview (config commitada vence receita) — p/ o health-check. */
+export function resolvePreviewConfig(project: Project, worktreePath: string): PreviewConfig | null {
+  return resolvePreview(project, worktreePath);
+}
+
+/**
+ * Camada 2.5: pede ao Claude (na mesma sessão da tarefa) para PREPARAR o ambiente
+ * e descrever a receita de preview, guarda-a por projeto (2ª vez vira zero-config)
+ * e sobe o preview. Setup-capaz: acceptEdits + gate seguro (env/docker liberados,
+ * servidor de dev negado). É o caminho manual quando o preview não subiu sozinho.
  */
 export async function configurarPreviewComAgente(task: Task, project: Project): Promise<string> {
-  const porta = await portaLivre(PREVIEW_PORT_BASE + task.espaco);
-  sistema(task.id, "Pedindo ao Claude para descobrir como abrir o preview deste projeto…");
+  sistema(task.id, "Pedindo ao Claude para preparar e descobrir como abrir o preview deste projeto…");
 
   const r = await runPhase({
     taskId: task.id,
     cwd: task.worktreePath,
-    prompt: previewDiscoveryPrompt(porta),
-    permissionMode: "plan", // só leitura: descobrir, não rodar
+    prompt: previewSetupPrompt(),
+    permissionMode: "acceptEdits", // pode preparar o ambiente (env, docker) — Bash no gate seguro
     resume: task.claudeSessionId,
-    disallowedTools: ["Bash"], // reforça a regra de ouro: o agente não sobe o servidor
-    maxTurns: 30,
+    canUseTool: createPreviewSetupGate(task.id),
+    maxTurns: 40,
   });
   if (r.sessionId) store.updateTask(task.id, { claudeSessionId: r.sessionId });
 
-  const receita = parsePreviewRecipe(r.finalText, porta);
+  const receita = aprenderReceita(project.id, r.finalText);
   if (!receita) {
-    sistema(task.id, "O Claude não conseguiu descobrir um comando de preview para este projeto.");
+    sistema(task.id, "O Claude não conseguiu descobrir como abrir o preview deste projeto.");
     throw new PreviewIndisponivelError(
       "Não deu para configurar o preview automaticamente. Este projeto pode não ter uma tela para visualizar.",
     );
   }
-  salvarReceita(project.id, receita);
   const ondeCwd = receita.cwd && receita.cwd !== "." ? ` (em ${receita.cwd})` : "";
-  sistema(task.id, `Preview configurado — vou subir com \`${receita.cmd}\`${ondeCwd}.`);
+  sistema(
+    task.id,
+    receita.cmd
+      ? `Preview configurado — vou subir com \`${receita.cmd}\`${ondeCwd}.`
+      : "Preview configurado — vou subir com a detecção automática.",
+  );
 
   const atual = store.getTask(task.id) ?? task;
   return startPreview(atual, project);

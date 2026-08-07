@@ -51,7 +51,7 @@ function stepsAtivos(t) {
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.13.0";
+const UI_VERSION = "0.14.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -1040,7 +1040,7 @@ function taskFootHtml(t, perm) {
   } else if (t.step === "aprovacao_prototipo" && t.status === "aguardando") {
     rows.push(`<div class="task-foot"><span class="plan-sum">Protótipo pronto — aprove o visual</span>
       <span class="gap"></span>
-      <a class="btn sm" href="/api/tasks/${id}/mockup" target="_blank" rel="noreferrer">Ver protótipo</a>
+      <a class="btn sm" href="/api/tasks/${id}/mockup/" target="_blank" rel="noreferrer">Ver protótipo</a>
       <button class="btn sm ghost" data-act="request-changes" data-task="${id}">Pedir mudanças</button>
       <button class="btn sm primary" data-act="approve-prototype" data-task="${id}">Aprovar</button></div>`);
   } else if (t.step === "teste" && t.status === "aguardando") {
@@ -1270,7 +1270,7 @@ function prototipoCardHtml(t) {
     <div class="head"><span class="pulse"></span> Protótipo pronto — sua aprovação</div>
     <p>Veja o mockup e aprove o visual — ou peça mudanças. Ao aprovar, o Claude implementa de verdade.</p>
     <div class="acts">
-      <a class="btn sm" href="/api/tasks/${esc(t.id)}/mockup" target="_blank" rel="noreferrer">Ver protótipo</a>
+      <a class="btn sm" href="/api/tasks/${esc(t.id)}/mockup/" target="_blank" rel="noreferrer">Ver protótipo</a>
       <button class="btn sm primary" data-act="approve-prototype" data-task="${esc(t.id)}">Aprovar protótipo</button>
       <button class="btn sm ghost" data-act="request-changes" data-task="${esc(t.id)}">Pedir mudanças</button>
     </div>
@@ -1348,10 +1348,14 @@ function updatePreview(root, t) {
   const busy = !!state.busy[`preview:${t.id}`];
   const config = !!state.busy[`preview-config:${t.id}`];
   const erro = state.previewErro[t.id];
-  const key = `${url}|${busy}|${config}|${erro ? erro.msg + erro.podeConfigurar : ""}`;
+  // O preview só aparece quando a task chega no "Seu teste" (ou Publicar): o
+  // agente já subiu e conferiu o app. Antes disso, não mostramos preview cru.
+  const naEtapaDeTeste = t.step === "teste" || t.step === "publicar";
+  const mostra = url && naEtapaDeTeste;
+  const key = `${url}|${naEtapaDeTeste}|${busy}|${config}|${erro ? erro.msg + erro.podeConfigurar : ""}`;
   if (pane.dataset.key === key) return; // não recarregar o iframe à toa
   pane.dataset.key = key;
-  if (url) {
+  if (mostra) {
     pane.innerHTML = `
       <div class="preview-bar">
         <div class="url"><span class="dot"></span><input class="url-input" id="preview-url" data-task="${esc(t.id)}" value="${esc(url)}" spellcheck="false" autocomplete="off" aria-label="Endereço do preview (digite e Enter para navegar)"></div>
@@ -1361,25 +1365,34 @@ function updatePreview(root, t) {
       <iframe id="preview-frame" src="${esc(url)}" title="Preview do app"></iframe>
       <div class="preview-foot"><span class="dot"></span> Preview gerenciado pelo Inhouse · espaço ${t.espaco} · digite um endereço e Enter para navegar</div>`;
   } else if (config) {
-    // Agente descobrindo a receita — o progresso aparece no chat da tarefa.
+    // Agente preparando o preview — o progresso aparece no chat da tarefa.
     pane.innerHTML = `
-      <div class="preview-bar"><div class="url muted">configurando…</div></div>
+      <div class="preview-bar"><div class="url muted">preparando…</div></div>
       <div class="preview-empty">
-        <p><span class="spinner"></span> O Claude está descobrindo como abrir o preview deste projeto. Acompanhe no chat ao lado.</p>
+        <p><span class="spinner"></span> O Claude está preparando o preview deste projeto. Acompanhe no chat ao lado.</p>
+      </div>`;
+  } else if (!naEtapaDeTeste) {
+    // Antes do "Seu teste": o agente ainda vai subir e conferir o app.
+    pane.innerHTML = `
+      <div class="preview-bar"><div class="url muted">preview em breve</div></div>
+      <div class="preview-empty">
+        <p>O preview fica pronto na etapa <b>Seu teste</b>.</p>
+        <p class="preview-hint">O Claude sobe o app e confere as telas antes de você abrir — assim você testa algo que já funciona.</p>
       </div>`;
   } else if (erro) {
-    // Camada 3 — degradação graciosa: sem susto, com uma saída.
+    // No teste, uma tentativa manual não subiu: sem susto, com uma saída.
     pane.innerHTML = `
       <div class="preview-bar"><div class="url muted">sem preview</div></div>
       <div class="preview-empty">
         <p>${esc(erro.msg)}</p>
         ${erro.podeConfigurar
-          ? `<p class="preview-hint">Posso pedir ao Claude para descobrir como abrir o preview deste projeto.</p>
+          ? `<p class="preview-hint">Posso pedir ao Claude para preparar e abrir o preview deste projeto.</p>
              <button class="btn primary" data-act="configure-preview" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>Pedir ao Claude para configurar o preview</button>
              <button class="btn ghost sm" data-act="start-preview" data-task="${esc(t.id)}">Tentar de novo</button>`
           : `<button class="btn primary" data-act="start-preview" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>${busy ? `<span class="spinner"></span> Iniciando…` : "Tentar de novo"}</button>`}
       </div>`;
   } else {
+    // No teste, mas sem preview no ar (ex.: server reiniciou): fallback manual.
     pane.innerHTML = `
       <div class="preview-bar"><div class="url muted">preview parado</div></div>
       <div class="preview-empty">

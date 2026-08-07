@@ -10,12 +10,24 @@
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import type { Step, Task, TaskAction, TranscriptItem } from "../../shared/types.js";
 import { STEP_LABELS, isHumanStep, proximoStep, rodaDesign } from "../../shared/types.js";
-import { createPermissionGate, finishAllForTask, resolvePermission } from "../claude/permissions.js";
+import {
+  createPermissionGate,
+  createPreviewSetupGate,
+  finishAllForTask,
+  resolvePermission,
+} from "../claude/permissions.js";
 import { abortPhase, runPhase } from "../claude/runner.js";
 import { MAX_GATE_FIX_ROUNDS } from "../config.js";
 import { broadcast } from "../events.js";
 import { runGates } from "../services/gates.js";
-import { startPreview, stopPreview } from "../services/preview.js";
+import {
+  aprenderReceita,
+  attemptStart,
+  resolvePreviewConfig,
+  startPreview,
+  stopPreview,
+  verificarSaude,
+} from "../services/preview.js";
 import { publishTask } from "../services/publish.js";
 import { createEspaco, removeEspaco, slugify } from "../services/worktrees.js";
 import * as store from "../store.js";
@@ -38,6 +50,8 @@ import {
   planoFeedbackPrompt,
   planoPrompt,
   preparacaoPrompt,
+  previewExercisePrompt,
+  previewSetupPrompt,
   prototipoPrompt,
   skillGatePrompt,
   skillPlanoPrompt,
@@ -602,9 +616,9 @@ async function runVerificacoes(taskId: string): Promise<boolean> {
   const todos = store.getTask(taskId)?.gates ?? results;
   const falhas = todos.filter((g) => !g.ok);
   if (falhas.length === 0) {
-    patch(taskId, { step: "teste", status: "aguardando" });
-    sistema(taskId, "Tudo verificado — pronto pro seu teste.");
-    return true;
+    // Verificações passaram: o agente prepara e valida o preview (tasks com UI)
+    // antes de a task chegar ao "Seu teste" — o usuário só vê preview funcionando.
+    return runPreviewCheck(taskId);
   }
 
   const atual = store.getTask(taskId);
@@ -623,6 +637,122 @@ async function runVerificacoes(taskId: string): Promise<boolean> {
   fail(
     taskId,
     "As verificações continuaram falhando mesmo depois das correções automáticas. Você pode tentar de novo ou pedir mudanças.",
+  );
+  return false;
+}
+
+/**
+ * Preview confiável (tasks com UI): o AGENTE prepara o ambiente do espaço (env,
+ * docker, migrations), o Inhouse sobe o preview gerenciado e o agente EXERCITA as
+ * rotas via curl e corrige os erros de runtime — o usuário só vê o preview no
+ * "Seu teste", já funcionando. Roda no fim das verificações (gates já passaram).
+ */
+async function runPreviewCheck(taskId: string): Promise<boolean> {
+  const task = store.getTask(taskId);
+  if (!task) return false;
+  const project = store.getProject(task.projectId);
+
+  // Sem UI (ou sem projeto): não há tela para preparar — direto pro teste.
+  if (!project || !temUi(task.worktreePath)) {
+    patch(taskId, { step: "teste", status: "aguardando" });
+    sistema(taskId, "Tudo verificado — pronto pro seu teste.");
+    return true;
+  }
+
+  sistema(taskId, "Preparando o preview e conferindo as telas antes do seu teste…");
+  // Começa do zero: um skill-gate com {previewUrl} pode ter subido um preview
+  // antes; sem isto, o attemptStart abaixo deixaria aquele processo órfão.
+  await stopPreview(taskId);
+  const gate = createPreviewSetupGate(taskId);
+
+  // Sobe o preview p/ dar um servidor vivo ao agente, SEM matar em 5xx (o próprio
+  // agente vai exercitar e corrigir). Devolve a URL ou null (não lança).
+  const subir = async (): Promise<string | null> => {
+    const atual = store.getTask(taskId);
+    if (!atual || cancelada(taskId)) return null;
+    try {
+      const url = await attemptStart(atual, project, { verificarSaude: false });
+      // Cancelou durante a subida (janela antes de o child entrar no registry): não
+      // deixa o preview órfão — derruba o que acabou de subir.
+      if (cancelada(taskId)) {
+        await stopPreview(taskId);
+        return null;
+      }
+      return url;
+    } catch (err) {
+      sistema(taskId, `O preview ainda não subiu: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  };
+
+  // Uma fase do agente (setup ou exercício), aprendendo a receita que ele descrever.
+  const faseAgente = async (prompt: string): Promise<boolean> => {
+    const atual = store.getTask(taskId);
+    if (!atual || cancelada(taskId)) return false;
+    const r = await runPhase({
+      taskId,
+      cwd: atual.worktreePath,
+      prompt,
+      permissionMode: "acceptEdits",
+      resume: atual.claudeSessionId,
+      canUseTool: gate,
+      maxTurns: 40,
+    });
+    if (cancelada(taskId)) return false;
+    if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
+    aprenderReceita(project.id, r.finalText);
+    return r.success;
+  };
+
+  // 1) Setup: o agente prepara o ambiente (env, docker) sem rodar o server.
+  await faseAgente(previewSetupPrompt());
+  if (cancelada(taskId)) return false;
+
+  // 2) Inhouse sobe o preview gerenciado (fonte única da verdade).
+  let url = await subir();
+  if (!url) {
+    await stopPreview(taskId);
+    if (!cancelada(taskId)) {
+      fail(
+        taskId,
+        "Não consegui subir o preview deste app para o teste, mesmo depois de preparar o ambiente. Você pode tentar de novo ou pedir mudanças.",
+      );
+    }
+    return false;
+  }
+
+  // 3) O agente exercita as rotas com o server no ar e corrige os erros de runtime.
+  const cfg = resolvePreviewConfig(project, task.worktreePath);
+  await faseAgente(previewExercisePrompt(url, cfg?.healthPaths ?? []));
+  if (cancelada(taskId)) return false;
+
+  // 4) Confirmação determinística; tolera 1 reinício (frameworks que não recarregam .env).
+  for (let tentativa = 0; tentativa < 2; tentativa++) {
+    const atualUrl = store.getTask(taskId)?.previewUrl ?? url;
+    const saude = await verificarSaude(atualUrl, cfg);
+    if (cancelada(taskId)) return false;
+    if (saude.ok) {
+      patch(taskId, { step: "teste", status: "aguardando" });
+      sistema(taskId, "Preview no ar e conferido nas telas principais — pode abrir e testar.");
+      return true;
+    }
+    if (tentativa === 0) {
+      sistema(taskId, "Aplicando os ajustes e reconferindo o preview…");
+      await stopPreview(taskId);
+      url = (await subir()) ?? url;
+      if (cancelada(taskId)) return false;
+    }
+  }
+
+  // Não ficou saudável: não mostramos um preview quebrado — falha com a explicação.
+  const saudeFinal = await verificarSaude(store.getTask(taskId)?.previewUrl ?? url, cfg);
+  await stopPreview(taskId);
+  if (cancelada(taskId)) return false;
+  const onde = saudeFinal.rota && saudeFinal.rota !== "/" ? ` na tela "${saudeFinal.rota}"` : "";
+  const erro = saudeFinal.status ? ` (erro ${saudeFinal.status})` : "";
+  fail(
+    taskId,
+    `O app subiu, mas ainda apresenta um problema${onde}${erro}. O Claude tentou corrigir mas não conseguiu — veja a explicação acima. Você pode tentar de novo ou pedir mudanças.`,
   );
   return false;
 }

@@ -291,6 +291,17 @@ export interface PreviewConfig {
   port?: number;
   /** Arquivos de ambiente (ex.: [".env.local"]) copiados da pasta principal para o espaço. */
   envFiles?: string[];
+  /**
+   * Comandos CURTOS e idempotentes (que TERMINAM) rodados pelo Inhouse ANTES do
+   * `cmd` a cada start — ex.: ["docker compose up -d"]. Mesmo nível de confiança do
+   * `cmd` (ambos via /bin/sh). NÃO coloque o servidor de dev aqui (esse é o `cmd`).
+   */
+  setup?: string[];
+  /**
+   * Rotas conferidas no health-check antes de marcar o preview pronto (default: ["/"]).
+   * Ex.: ["/", "/backoffice"] — >=500 ou conexão recusada em qualquer uma = quebrado.
+   */
+  healthPaths?: string[];
   /** Regex custom p/ detectar que subiu (default: procura uma URL http://localhost:porta). */
   readyRegex?: string;
   /** Timeout de subida em ms (default: 120000). */
