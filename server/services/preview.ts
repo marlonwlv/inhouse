@@ -11,6 +11,8 @@ import type { PreviewConfig, Project, Task } from "../../shared/types.js";
 import { DATA_DIR, PREVIEW_PORT_BASE, claudeEnv } from "../config.js";
 import { createPreviewSetupGate } from "../claude/permissions.js";
 import { runPhase } from "../claude/runner.js";
+import { startFakePreview, stopAllFakePreviews, stopFakePreview } from "../debug/fakePreview.js";
+import { isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
 import * as store from "../store.js";
 import { loadConfigCascata, sanitizePreview } from "../workflow/config.js";
@@ -298,6 +300,10 @@ function execSetup(cmd: string, cwd: string, env: NodeJS.ProcessEnv): Promise<nu
 }
 
 export function startPreview(task: Task, project: Project): Promise<string> {
+  // Modo debug: sobe um preview fake (multi-rota, em memória) em vez do dev
+  // server real — as skill-gates de UI (/qa) e a barra de URL funcionam sem `vite`.
+  if (isFakeModelActive()) return startFakePreview(task);
+
   // Já tem um start em andamento para esta tarefa? Reusa a mesma promise —
   // senão o segundo clique subiria um segundo dev server que ninguém mata.
   const pendente = emAndamento.get(task.id);
@@ -328,6 +334,10 @@ export async function attemptStart(
   project: Project,
   opts: { verificarSaude?: boolean } = {},
 ): Promise<string> {
+  // Modo debug: preview fake multi-rota (mesmo atalho do startPreview). Cobre o
+  // runPreviewCheck, que chama attemptStart direto — sem `vite`, sempre saudável.
+  if (isFakeModelActive()) return startFakePreview(task);
+
   const cfg = resolvePreview(project, task.worktreePath);
   const cwd = cfg?.cwd ? join(task.worktreePath, cfg.cwd) : task.worktreePath;
 
@@ -454,6 +464,12 @@ export async function attemptStart(
 }
 
 export async function stopPreview(taskId: string): Promise<void> {
+  // Modo debug: só há o preview fake em memória.
+  if (isFakeModelActive()) {
+    stopFakePreview(taskId);
+    return;
+  }
+
   // Um start ainda em andamento? Quando terminar, derruba o que tiver subido —
   // sem isso, "parar" durante a subida deixaria o dev server rodando órfão.
   const pendente = emAndamento.get(taskId);
@@ -477,6 +493,7 @@ export async function stopPreview(taskId: string): Promise<void> {
 
 /** Para todos os previews (shutdown do servidor) — inclusive starts em andamento. */
 export function stopAllPreviews(): void {
+  if (isFakeModelActive()) stopAllFakePreviews();
   for (const child of todos) matar(child);
   todos.clear();
   registry.clear();

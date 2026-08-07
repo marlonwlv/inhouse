@@ -17,6 +17,8 @@ import { readJsonl, RELATORIOS_INDEX } from "../eval/coleta.js";
 import { RELATORIOS_DIR } from "../config.js";
 import { resolvePermission } from "../claude/permissions.js";
 import { claudeStatus } from "../claude/runner.js";
+import { isFakeModelActive } from "../debug/flag.js";
+import { registerDebugRoutes } from "../debug/routes.js";
 import { addClient, broadcast } from "../events.js";
 import {
   PreviewIndisponivelError,
@@ -106,6 +108,9 @@ export function buildRouter(): Router {
 
   router.use(express.json({ limit: "1mb" }));
 
+  // Painel de Debug: só existe quando o modo fake está ligado (INHOUSE_FAKE_MODEL).
+  if (isFakeModelActive()) registerDebugRoutes(router);
+
   // ---------- Estado e eventos ----------
 
   router.get(
@@ -117,6 +122,7 @@ export function buildRouter(): Router {
         permissions: store.listPermissions(),
         claude: await cachedClaudeStatus(),
         update: ultimoUpdate(),
+        fake: isFakeModelActive(),
       });
     }),
   );

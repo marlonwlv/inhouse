@@ -94,6 +94,9 @@ const state = {
   evalRelatorio: null, // conteúdo do relatório aberto
   evalFonte: "todos", // filtro de origem: "todos" | "meus" | <rótulo importado>
   evalFontes: [], // rótulos de origens importadas
+  fake: false, // modo debug (INHOUSE_FAKE_MODEL) ligado no server
+  debugScenarios: null, // catálogo de cenários de debug (carregado sob demanda)
+  debugAutoDrive: true, // auto-piloto: aprova as porteiras sozinho
 };
 
 // ---------- Utilidades ----------
@@ -220,7 +223,16 @@ async function fetchState() {
   state.permissions = s.permissions ?? [];
   state.claude = s.claude ?? { ok: false };
   if (s.update) state.update = s.update;
+  state.fake = !!s.fake;
   state.loaded = true;
+  if (state.fake && state.debugScenarios === null) carregarDebugScenarios();
+  render();
+}
+
+/* Modo debug: busca o catálogo de cenários uma vez e re-renderiza. */
+async function carregarDebugScenarios() {
+  const r = await api("/api/debug/scenarios");
+  state.debugScenarios = (r && r.scenarios) || [];
   render();
 }
 
@@ -830,6 +842,8 @@ function renderHome() {
       <div class="sect"><h3>Meus projetos</h3><span>${projects.length ? "cada tarefa roda num espaço isolado, sem conflito" : ""}</span></div>
       ${projectsHtml}
 
+      ${state.fake ? debugPanelHtml() : ""}
+
       <div class="sect"><h3>Adicionar projeto</h3><span>do GitHub ou um app novo do zero</span></div>
       <div class="add-grid">
         <form class="repo-card" data-form="clone">
@@ -855,6 +869,52 @@ function renderHome() {
       <div class="home-foot">${claudeFootHtml()}</div>
     </div>
   </div>`);
+}
+
+// Painel de Debug (só no modo fake): dispara um cenário da matriz e abre a
+// tarefa para você assistir a jornada estado por estado, sem gastar Claude.
+function debugPanelHtml() {
+  const scs = state.debugScenarios;
+  const semProjeto = state.projects.length === 0;
+  const projectOptions = state.projects
+    .map((p) => `<option value="${esc(p.id)}"${p.id === selectedProjectId() ? " selected" : ""}>${esc(p.name)}</option>`)
+    .join("");
+  const selId = state.debugSel || (scs && scs[0] && scs[0].id) || "";
+  const scOptions = (scs || [])
+    .map((s) => `<option value="${esc(s.id)}"${s.id === selId ? " selected" : ""}>${esc(s.label)}</option>`)
+    .join("");
+  const sel = (scs || []).find((s) => s.id === selId);
+
+  return `
+  <div class="sect"><h3>🐛 Debug da esteira</h3><span>modo fake ligado — testa as jornadas sem gastar Claude</span></div>
+  <div class="repo-card debug-card">
+    ${scs === null
+      ? `<p><span class="spinner"></span> Carregando cenários…</p>`
+      : `<div class="field-row">
+      <select id="debug-project" ${semProjeto ? "disabled" : ""}>${projectOptions || `<option>— crie um app abaixo —</option>`}</select>
+      <select id="debug-scenario">${scOptions}</select>
+    </div>
+    <p class="debug-resumo">${sel ? debugScenarioResumo(sel) : ""}</p>
+    <div class="field-row debug-run-row">
+      <label class="debug-auto"><input type="checkbox" id="debug-autodrive" ${state.debugAutoDrive ? "checked" : ""}> Auto-piloto (aprova as porteiras sozinho)</label>
+      <button class="btn sm primary" data-act="debug-run" ${semProjeto ? "disabled" : ""}>Rodar cenário</button>
+    </div>
+    ${semProjeto ? `<p class="debug-hint">Crie um app novo abaixo para ter onde rodar os cenários.</p>` : ""}`}
+  </div>`;
+}
+
+function debugScenarioResumo(s) {
+  const tags = [
+    `porte: <b>${esc(s.porte)}</b>`,
+    `UI: ${s.ui ? "sim" : "não"}`,
+    `design: ${s.design ? "sim" : "não"}`,
+    `gates: ${esc(s.gates)}`,
+  ];
+  if (s.bypass) tags.push(`bypass: ${esc(s.bypass)}`);
+  if (s.setDesign) tags.push(`set_design: ${esc(s.setDesign)}`);
+  if (s.preparacao) tags.push("preparação");
+  if (s.requerRealGates) tags.push("⚠ precisa --real-gates");
+  return `${tags.join(" · ")}<br><span class="debug-steps">${esc((s.expectSteps || []).join(" → "))} · fim: ${esc(s.expectFinal)}</span>`;
 }
 
 function projectCardHtml(p) {
@@ -1679,6 +1739,19 @@ const actions = {
   },
   "perm-allow": (btn) => decidePermission(btn.dataset.perm, true),
   "perm-deny": (btn) => decidePermission(btn.dataset.perm, false),
+  "debug-run": async () => {
+    const projectId = document.querySelector("#debug-project")?.value || selectedProjectId();
+    const scenarioId = document.querySelector("#debug-scenario")?.value || state.debugSel;
+    const autoDrive = document.querySelector("#debug-autodrive")?.checked !== false;
+    if (!projectId) { toast("Crie ou selecione um app primeiro."); return; }
+    if (!scenarioId) return;
+    const r = await api("/api/debug/run", { projectId, scenarioId, autoDrive });
+    if (r && r.task && r.task.id) {
+      upsert(state.tasks, r.task);
+      localStorage.setItem("inhouse.projectId", projectId);
+      location.hash = `#/tarefa/${r.task.id}`;
+    }
+  },
 };
 
 document.addEventListener("click", (e) => {
@@ -1708,6 +1781,13 @@ document.addEventListener("change", (e) => {
     state.evalFonte = el.value;
     state.eval = null; // força recarregar o resumo com o novo filtro
     carregarEval();
+  } else if (el.id === "debug-scenario") {
+    state.debugSel = el.value; // re-renderiza para atualizar o resumo do cenário
+    render();
+  } else if (el.id === "debug-autodrive") {
+    state.debugAutoDrive = el.checked;
+  } else if (el.id === "debug-project") {
+    localStorage.setItem("inhouse.projectId", el.value);
   }
 });
 
