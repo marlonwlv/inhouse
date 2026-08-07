@@ -77,6 +77,19 @@ export const CONTEXTO_NAO_TECNICO = [
   "declare a sua suposição em uma linha simples — não pare para perguntar coisa técnica.",
 ].join("\n");
 
+/**
+ * Fonte única da verdade do preview: quem sobe o dev server é o Inhouse, numa
+ * porta própria. O agente rodar o servidor trava a execução (processo que não
+ * termina) e cria uma segunda porta que confunde o usuário.
+ */
+export const PREVIEW_GERENCIADO = [
+  "IMPORTANTE: NÃO rode o servidor de desenvolvimento (npm run dev, pnpm dev, next dev,",
+  "vite, astro dev, etc.) nem deixe qualquer processo servindo. Quem gerencia o preview",
+  "é o Inhouse, numa porta própria — é a ÚNICA fonte da verdade. Rodar o servidor você",
+  "mesmo trava a sua execução e abre uma segunda porta que confunde a pessoa. Se quiser",
+  "conferir o resultado visual, é o botão de preview do Inhouse que faz isso.",
+].join("\n");
+
 export function especPrompt(task: Task): string {
   return [
     "Você é o assistente de desenvolvimento do Inhouse, trabalhando em um app desta organização.",
@@ -162,6 +175,7 @@ export function execucaoPrompt(task: Task): string {
   return [
     "O usuário aprovou o plano. Execute-o agora, passo a passo, no código deste projeto.",
     CONTEXTO_NAO_TECNICO,
+    PREVIEW_GERENCIADO,
     "Siga o plano; se algo imprevisto exigir um desvio pequeno, faça e explique.",
     "Ao final, explique em português simples, para uma pessoa não-técnica, o que foi feito.",
     ...plano,
@@ -177,6 +191,7 @@ export function fixGatesPrompt(_task: Task, gates: GateResult[]): string {
   return [
     "As verificações automáticas do projeto falharam. Corrija os problemas apontados abaixo.",
     "NÃO mude mais nada além do necessário para as verificações passarem.",
+    PREVIEW_GERENCIADO,
     "",
     blocos,
   ].join("\n");
@@ -190,6 +205,7 @@ export function changesPrompt(msg: string): string {
     msg,
     "",
     "Faça os ajustes de acordo com o pedido, sem desfazer o restante do trabalho.",
+    PREVIEW_GERENCIADO,
     "Ao final, explique em português simples o que mudou.",
   ].join("\n");
 }

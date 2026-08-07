@@ -794,6 +794,12 @@ input::placeholder { color: var(--faint); }
   min-width: 0;
 }
 .url .url-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.url .url-input {
+  flex: 1; min-width: 0;
+  border: 0; background: transparent; outline: none;
+  font-family: var(--mono); font-size: 12px; color: var(--ink);
+}
+.url .url-input:focus { color: var(--ink); }
 .url.muted { color: var(--faint); }
 #preview-frame { flex: 1; width: 100%; border: 0; background: #fff; }
 .preview-empty {

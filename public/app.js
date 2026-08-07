@@ -35,7 +35,7 @@ function stepsAtivos(t) {
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.12.0";
+const UI_VERSION = "0.13.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -1338,12 +1338,12 @@ function updatePreview(root, t) {
   if (url) {
     pane.innerHTML = `
       <div class="preview-bar">
-        <div class="url"><span class="dot"></span><span class="url-text">${esc(url)}</span></div>
+        <div class="url"><span class="dot"></span><input class="url-input" id="preview-url" data-task="${esc(t.id)}" value="${esc(url)}" spellcheck="false" autocomplete="off" aria-label="Endereço do preview (digite e Enter para navegar)"></div>
         <button class="btn sm ghost" data-act="reload-preview">Recarregar</button>
-        <a class="btn sm" href="${esc(url)}" target="_blank" rel="noreferrer">Abrir no navegador</a>
+        <a class="btn sm" id="preview-open" href="${esc(url)}" target="_blank" rel="noreferrer">Abrir no navegador</a>
       </div>
       <iframe id="preview-frame" src="${esc(url)}" title="Preview do app"></iframe>
-      <div class="preview-foot"><span class="dot"></span> Preview local do espaço ${t.espaco} · as outras tarefas não são afetadas</div>`;
+      <div class="preview-foot"><span class="dot"></span> Preview gerenciado pelo Inhouse · espaço ${t.espaco} · digite um endereço e Enter para navegar</div>`;
   } else if (config) {
     // Agente descobrindo a receita — o progresso aparece no chat da tarefa.
     pane.innerHTML = `
@@ -1752,6 +1752,26 @@ document.addEventListener("submit", async (e) => {
       pushLocalUser(t.id, text);
       api(`/api/tasks/${encodeURIComponent(t.id)}/message`, { text });
     }
+  }
+});
+
+// Navegação na barra do preview: Enter carrega o endereço digitado no iframe,
+// resolvido contra a URL gerenciada (aceita "/rota", "sub/pagina" ou URL completa).
+function navegarPreview(input) {
+  const t = getTask(input.dataset.task);
+  if (!t || !t.previewUrl) return;
+  let target;
+  try { target = new URL(input.value.trim(), t.previewUrl).href; } catch { return; }
+  const f = $("#preview-frame");
+  if (f) f.src = target;
+  const open = $("#preview-open");
+  if (open) open.href = target;
+  input.value = target;
+}
+document.addEventListener("keydown", (e) => {
+  if (e.target && e.target.id === "preview-url" && e.key === "Enter") {
+    e.preventDefault();
+    navegarPreview(e.target);
   }
 });
 
