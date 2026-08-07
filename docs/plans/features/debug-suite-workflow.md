@@ -178,8 +178,21 @@ Para exercitar de verdade a navegação:
   do preview e a barra de URL navegável funcionam sem subir `vite`. Acionável pelo botão
   "Iniciar preview" no editor (e auto-iniciado na skill-gate `/qa` das jornadas de UI).
 
+## Adendo (2026-08-07): merge com a "preview confiável"
+
+A feature `preview-confiavel` adicionou `runPreviewCheck` no fim das Verificações
+(pras tasks de UI), que chama `attemptStart` **direto** (não o `startPreview`). Por
+isso o seam do preview fake foi estendido também para `attemptStart` — senão as
+jornadas de UI tentariam subir o `vite` real e falhariam. Um 6º seam, mesmo padrão.
+
+Nota: `runPreviewCheck` decide "tem UI?" por `temUi(worktreePath)` (heurística do
+**projeto**, lê o package.json), não pelo flag `ui` do cenário. Como o
+`templates/app-starter` declara React, o caminho do preview fake é exercitado em
+TODOS os cenários da matriz (inclusive os `ui:false`) — bom para cobertura, mas é
+por isso que "ui: nao" no cenário não pula o preview-check.
+
 ## Impacto / risco
 
 - Flag desligada = comportamento idêntico ao atual (early-returns não são atingidos).
-- 5 seams pequenos e isolados; a máquina de estados roda de verdade.
+- 6 seams pequenos e isolados; a máquina de estados roda de verdade.
 - Rotas de debug nunca montadas fora do modo fake.
