@@ -16,6 +16,8 @@ import type { TranscriptItem } from "../../shared/types.js";
 import { acumularFase } from "../eval/coleta.js";
 import type { FaseMetricas } from "../eval/coleta.js";
 import { claudeEnv, claudePath } from "../config.js";
+import { fakeRunPhase } from "../debug/fakeModel.js";
+import { isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
 import { transcriptAppend } from "../store.js";
 
@@ -136,6 +138,9 @@ function toolItem(name: string, input: Record<string, unknown>, cwd: string): Tr
 
 /** Roda uma fase (espec/plano/execução/correção) numa sessão do Claude Code. */
 export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
+  // Modo debug: responde instantâneo com as linhas-marcador (ver server/debug).
+  if (isFakeModelActive()) return fakeRunPhase(opts);
+
   const exe = claudePath();
   if (!exe) {
     return {

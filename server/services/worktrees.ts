@@ -8,6 +8,7 @@ import { cp, mkdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { Project } from "../../shared/types.js";
 import { ESPACOS_DIR, claudeEnv } from "../config.js";
+import { fakeRealGates, isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
 import { loadConfigCascata } from "../workflow/config.js";
 import { withProjectLock } from "./locks.js";
@@ -155,6 +156,9 @@ export async function removeEspaco(
  * preview não funcionam — instala aqui, avisando o usuário pelo SSE.
  */
 export async function ensureDeps(worktreePath: string, projectName: string): Promise<void> {
+  // Modo debug: manter as jornadas leves — não instala deps por espaço, exceto
+  // quando explicitamente pedido (--real-gates), pois aí o tsc precisa rodar.
+  if (isFakeModelActive() && !fakeRealGates()) return;
   if (!existsSync(join(worktreePath, "package.json"))) return;
   if (existsSync(join(worktreePath, "node_modules"))) return;
 

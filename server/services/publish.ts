@@ -3,6 +3,7 @@
  * PR opcional via gh, e limpeza (preview + espaço).
  */
 import type { Project, Task } from "../../shared/types.js";
+import { isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
 import { transcriptAppend } from "../store.js";
 import { withProjectLock } from "./locks.js";
@@ -21,6 +22,13 @@ export function publishTask(
   project: Project,
   createPr: boolean,
 ): Promise<{ prUrl?: string }> {
+  // Modo debug: não mexe em git de verdade — o projeto descartável não tem
+  // origin e a execução fake não commitou nada publicável. Espelha o real
+  // encerrando o preview antes (senão o server fake de preview vaza, já que
+  // doPublish — que faria o stopPreview — é pulado aqui).
+  if (isFakeModelActive()) {
+    return stopPreview(task.id).then(() => (createPr ? { prUrl: "https://github.com/fake/app/pull/1" } : {}));
+  }
   // Uma operação git de cada vez por projeto (publish concorrente com outro
   // publish/createEspaco no mesmo repo colide em index.lock/checkout).
   return withProjectLock(project.id, () => doPublish(task, project, createPr));

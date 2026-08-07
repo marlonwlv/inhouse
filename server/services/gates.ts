@@ -7,6 +7,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GateResult } from "../../shared/types.js";
 import { claudeEnv } from "../config.js";
+import { fakeGateResults } from "../debug/fakeModel.js";
+import { isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
 import { transcriptAppend } from "../store.js";
 import { lastLines } from "./proc.js";
@@ -41,20 +43,32 @@ export function detectGates(worktreePath: string): { name: string; command: stri
   return gates;
 }
 
+/** Anuncia um resultado de gate (SSE + transcript), como a UI espera. */
+function reportarGate(taskId: string, result: GateResult): void {
+  broadcast({ type: "gate_result", taskId, gate: result });
+  const item = {
+    kind: "system" as const,
+    text: `Verificação ${result.name}: ${result.ok ? "passou" : "falhou"}`,
+    at: new Date().toISOString(),
+  };
+  transcriptAppend(taskId, item);
+  broadcast({ type: "transcript", taskId, item });
+}
+
 /** Roda todos os gates em sequência (não para no primeiro que falhar). */
 export async function runGates(taskId: string, worktreePath: string): Promise<GateResult[]> {
+  // Modo debug: resultados canned por cenário (null = o cenário pede gates reais).
+  const canned = isFakeModelActive() ? fakeGateResults(taskId) : null;
+  if (canned) {
+    for (const result of canned) reportarGate(taskId, result);
+    return canned;
+  }
+
   const results: GateResult[] = [];
   for (const gate of detectGates(worktreePath)) {
     const result = await runGate(gate, worktreePath);
     results.push(result);
-    broadcast({ type: "gate_result", taskId, gate: result });
-    const item = {
-      kind: "system" as const,
-      text: `Verificação ${result.name}: ${result.ok ? "passou" : "falhou"}`,
-      at: new Date().toISOString(),
-    };
-    transcriptAppend(taskId, item);
-    broadcast({ type: "transcript", taskId, item });
+    reportarGate(taskId, result);
   }
   return results;
 }
