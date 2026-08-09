@@ -51,7 +51,7 @@ function stepsAtivos(t) {
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.21.0";
+const UI_VERSION = "0.22.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -1456,7 +1456,12 @@ function projectCardHtml(p) {
   ).length;
   const tarefas = n === 0 ? "Sem tarefas ativas" : n === 1 ? "1 tarefa ativa" : `${n} tarefas ativas`;
   const arq = !!p.arquivadoEm;
-  return `<div class="repo-card ${arq ? "arquivado" : ""}">
+  // O card inteiro é clicável: abre o projeto (ou restaura, se arquivado). O menu ⋯
+  // e seus itens não disparam isso (são <button>, tratados antes no handler de clique).
+  const abrir = arq
+    ? `data-restore-project="${esc(p.id)}" title="Clique para restaurar “${esc(p.name)}”"`
+    : `data-open-project="${esc(p.id)}" title="Abrir “${esc(p.name)}”"`;
+  return `<div class="repo-card clickable ${arq ? "arquivado" : ""}" ${abrir} role="button" tabindex="0">
     <div class="rh">
       <span class="app-ico" style="background:${icoColor(p.name)}">${esc((p.name[0] || "?").toUpperCase())}</span>
       <b>${esc(p.name)}</b>
@@ -1471,10 +1476,7 @@ function projectCardHtml(p) {
         </div>
       </div>
     </div>
-    <p>${arq ? `Arquivado ${timeAgo(p.arquivadoEm)}` : `${tarefas} · criado ${timeAgo(p.createdAt)}`}</p>
-    ${arq
-      ? `<button class="btn sm" data-act="desarquivar-projeto" data-project="${esc(p.id)}">Desarquivar</button>`
-      : `<button class="btn sm primary" data-act="open-project" data-project="${esc(p.id)}">Abrir</button>`}
+    <p>${arq ? `Arquivado ${timeAgo(p.arquivadoEm)} · clique para restaurar` : `${tarefas} · criado ${timeAgo(p.createdAt)}`}</p>
   </div>`;
 }
 
@@ -2131,10 +2133,6 @@ function decidePermission(id, allow) {
 }
 
 const actions = {
-  "open-project": (btn) => {
-    localStorage.setItem("inhouse.projectId", btn.dataset.project);
-    location.hash = "#/tarefas";
-  },
   "proj-menu": (btn) => {
     const pop = document.getElementById(`proj-menu-${btn.dataset.project}`);
     if (!pop) return;
@@ -2494,14 +2492,35 @@ document.addEventListener("click", (e) => {
     actions[btn.dataset.act]?.(btn, e);
     return;
   }
-  // Card inteiro clicável abre o editor — desde que o clique não tenha sido em
-  // botão/link/campo (esses já trataram acima ou têm comportamento próprio) e
-  // que não seja seleção de texto.
-  const card = e.target.closest("[data-open-task]");
-  if (!card) return;
+  // Card inteiro clicável — desde que o clique não tenha sido em botão/link/campo
+  // (esses já trataram acima ou têm comportamento próprio) e não seja seleção de texto.
   if (e.target.closest("button, a, input, select, textarea, label")) return;
   if (String(window.getSelection() ?? "").length > 0) return;
-  location.hash = `#/tarefa/${card.dataset.openTask}`;
+  const taskCard = e.target.closest("[data-open-task]");
+  if (taskCard) { location.hash = `#/tarefa/${taskCard.dataset.openTask}`; return; }
+  const projOpen = e.target.closest("[data-open-project]");
+  if (projOpen) {
+    localStorage.setItem("inhouse.projectId", projOpen.dataset.openProject);
+    location.hash = "#/tarefas";
+    return;
+  }
+  const projRestore = e.target.closest("[data-restore-project]");
+  if (projRestore) {
+    const id = projRestore.dataset.restoreProject;
+    const p = state.projects.find((x) => x.id === id);
+    api(`/api/projects/${encodeURIComponent(id)}/desarquivar`, {}).then((r) => {
+      if (r) toast(`“${p?.name || "Projeto"}” restaurado.`);
+    });
+  }
+});
+// Card clicável acessível pelo teclado (Enter/Espaço quando ele está focado).
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const el = document.activeElement;
+  if (el && (el.hasAttribute?.("data-open-project") || el.hasAttribute?.("data-restore-project"))) {
+    e.preventDefault();
+    el.click();
+  }
 });
 
 document.addEventListener("change", (e) => {

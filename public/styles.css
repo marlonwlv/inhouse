@@ -523,6 +523,13 @@ input::placeholder { color: var(--faint); }
 .repo-card p { margin: 0; font-size: 12px; color: var(--muted); }
 .repo-card .btn { justify-self: start; margin-top: 4px; }
 
+/* Card inteiro clicável (abrir / restaurar) */
+.repo-card.clickable { cursor: pointer; transition: border-color .13s ease, box-shadow .13s ease, transform .06s ease; }
+.repo-card.clickable:hover { border-color: var(--line-2); box-shadow: var(--shadow); }
+.repo-card.clickable:active { transform: translateY(.5px); }
+.repo-card.clickable:focus-visible { outline: none; border-color: var(--brand); box-shadow: var(--ring); }
+.repo-card.arquivado.clickable:hover { opacity: 1; } /* clareia ao passar o mouse — sinaliza que dá pra restaurar */
+
 /* Menu de ações do projeto (kebab + popover) */
 .repo-card .rh .proj-menu-wrap { position: relative; flex: none; }
 .proj-kebab { width: 26px; height: 26px; border: 1px solid transparent; background: transparent; border-radius: 7px; cursor: pointer; color: var(--faint); font-size: 16px; line-height: 1; display: grid; place-items: center; padding: 0; }
