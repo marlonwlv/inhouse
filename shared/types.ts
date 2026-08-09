@@ -362,6 +362,13 @@ export interface InhouseConfig {
 // cada projeto escolhe um (com um padrão global). O `preview` continua vindo do
 // inhouse.config.json do repo (não faz parte do workflow).
 
+/**
+ * Porteiras humanas que um workflow pode DESLIGAR (o Claude auto-avança em vez de
+ * esperar). `false` = desligada (auto). Ausente/`true` = pede a pessoa (padrão).
+ * "publicar" fica SEMPRE humano (nada é mesclado/publicado sem um clique).
+ */
+export type GateConfig = Partial<Record<"aprovacao" | "aprovacao_prototipo" | "teste", boolean>>;
+
 export interface WorkflowDef {
   id: string;
   name: string;
@@ -370,6 +377,8 @@ export interface WorkflowDef {
   origem?: "padrao" | "manual" | "ia";
   /** Config de skills por fase (mesma forma do inhouse.config.json). */
   skills: NonNullable<InhouseConfig["skills"]>;
+  /** Porteiras humanas ligadas/desligadas (ausente = todas ligadas). */
+  gates?: GateConfig;
   /** Não editável/removível (os presets embutidos). */
   builtin?: boolean;
 }

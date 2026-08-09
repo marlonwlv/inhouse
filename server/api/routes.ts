@@ -607,6 +607,7 @@ export function buildRouter(): Router {
           descricao: typeof body.descricao === "string" ? body.descricao : undefined,
           origem: body.origem === "ia" ? "ia" : "manual",
           skills: body.skills,
+          gates: body.gates,
         });
         res.json(w);
       } catch (err) {

@@ -34,9 +34,12 @@ const h = vi.hoisted(() => {
     execHang: false,
     abortReturns: false,
     releaseExec: undefined as undefined | (() => void),
+    // Porteiras do workflow ativo (todas ligadas por padrão; um teste desliga uma).
+    gates: { aprovacao: true, aprovacao_prototipo: true, teste: true },
   };
   return {
     state,
+    activeGates: () => state.gates,
     async runPhase(opts: { permissionMode: string; prompt: string; resume?: string }) {
       state.calls.push({
         permissionMode: opts.permissionMode,
@@ -144,7 +147,7 @@ vi.mock("../server/services/publish.js", () => ({ publishTask: h.publishTask }))
 vi.mock("../server/events.js", () => ({ broadcast: () => {}, addClient: () => {} }));
 // A máquina resolve as skills pelo workflow ativo; aqui testamos as transições, não
 // as skills — então o workflow ativo é vazio (comportamento "sem config" original).
-vi.mock("../server/workflow/library.js", () => ({ activeConfig: () => ({ skills: {} }) }));
+vi.mock("../server/workflow/library.js", () => ({ activeConfig: () => ({ skills: {} }), activeGates: h.activeGates }));
 
 // DATA_DIR temporário ANTES de importar store/máquina (o config lê o env no import).
 const TMP = mkdtempSync(join(tmpdir(), "inhouse-machine-"));
@@ -191,6 +194,7 @@ beforeEach(() => {
   h.state.execHang = false;
   h.state.abortReturns = false;
   h.state.releaseExec = undefined;
+  h.state.gates = { aprovacao: true, aprovacao_prototipo: true, teste: true };
 });
 
 async function esperaStep(taskId: string, step: Task["step"]): Promise<Task> {
@@ -638,6 +642,35 @@ describe("machine: esteira de plano em fases", () => {
     h.state.espPorte = "simples";
     const t = await criaTaskEmAprovacao("Trocar um texto");
     await applyAction(t.id, { action: "approve_plan" });
+    await esperaStep(t.id, "teste");
+  });
+});
+
+describe("machine: porteiras do workflow (ligar/desligar)", () => {
+  it("aprovacao desligada: após o plano, segue sozinho sem parar na aprovação", async () => {
+    h.state.gates.aprovacao = false;
+    const t = await startTask("p1", "Sem me pedir aprovação", "Descrição da tarefa de teste");
+    // Sem nenhum applyAction, chega no teste humano (a aprovação do plano foi automática).
+    const emTeste = await esperaStep(t.id, "teste");
+    expect(emTeste.status).toBe("aguardando");
+  });
+
+  it("teste desligado: após as verificações, vai direto para publicar (sempre humano)", async () => {
+    h.state.gates.teste = false;
+    const t = await criaTaskEmAprovacao("Sem me pedir teste");
+    await applyAction(t.id, { action: "approve_plan" });
+    // execução → verificações → (teste automático) → publicar
+    const pub = await esperaStep(t.id, "publicar");
+    expect(pub.status).toBe("aguardando");
+  });
+
+  it("aprovacao_prototipo desligada: task com design pula a porteira do protótipo", async () => {
+    h.state.espPorte = "grande";
+    h.state.espDesign = true;
+    h.state.gates.aprovacao_prototipo = false;
+    const t = await criaTaskEmAprovacao("Design sem aprovar protótipo");
+    await applyAction(t.id, { action: "approve_plan" });
+    // detalhamento → protótipo → (aprovação automática) → execução → teste
     await esperaStep(t.id, "teste");
   });
 });

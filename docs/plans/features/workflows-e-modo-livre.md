@@ -2,7 +2,7 @@
 
 - **Categoria:** features
 - **Data:** 2026-08-08
-- **Status:** Concluído (Modo Livre) · Em andamento (Workflows: incremento 1 feito; IA = incr. 2)
+- **Status:** Concluído (Modo Livre + Workflows incr. 1–3) · porteiras ligáveis/desligáveis entregues
 
 ## Progresso
 
@@ -21,7 +21,15 @@
   de Configurações (propõe → você ajusta → refaz → "Usar este workflow" salva como custom `origem:"ia"`
   e ativa no projeto). Testes: `test/gerar.test.ts`. Smoke real: "sem reviews, mas segurança+QA antes de
   publicar" → gerou `verificacoes:[security-review, qa]`.
-- **Depois (incr. 3)** — ligar/desligar porteiras no workflow (auto-avançar as desligadas na máquina).
+- **Workflows incremento 3** — ✅ **porteiras ligáveis/desligáveis**. O workflow agora carrega `gates`
+  (`aprovacao`, `aprovacao_prototipo`, `teste`; só grava as DESLIGADAS — `false`). `publicar` é sempre
+  humana. A máquina lê `activeGates(projectId)` e, na porteira desligada, **auto-avança** em vez de
+  parar (helpers `pousarAprovacao`/`pousarPrototipoGate`/`pousarTeste` + `avancarApos*`). A IA
+  (`gerar.ts`) desliga porteiras quando a pessoa pede ("não me peça aprovação"); o parse só aceita
+  `false` e nunca toca `publicar`. UI: toggles no drawer avançado + resumo em "workflow em uso"
+  ("sem te parar em: …") + card da proposta refletindo o que ficou automático. Testes:
+  3 novos em `test/machine.test.ts` (aprovacao/teste/aprovacao_prototipo off → auto-avança).
+  Smoke real: gerar "não me peça aprovação do plano" → `gates:{aprovacao:false}`.
 
 Dois pedidos relacionados, prototipados e aprovados pelo Marlon (artifacts):
 - 4 opções → barra enxuta → **tela de Workflows** (AI-first + drawer avançado) → **jornada completa** (edição por IA como conversa iterativa).

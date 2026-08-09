@@ -51,7 +51,7 @@ function stepsAtivos(t) {
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.19.0";
+const UI_VERSION = "0.20.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -642,18 +642,38 @@ function flattenSkills(w) {
   return { plano_produto: flat(w.skills?.plano_produto), detalhamento: flat(w.skills?.detalhamento), verificacoes: flat(w.skills?.verificacoes) };
 }
 
+/* Porteiras humanas desligadas num workflow → rótulos amigáveis (publicar nunca entra). */
+const GATE_ROTULOS = { aprovacao: "aprovação do plano", aprovacao_prototipo: "aprovação do protótipo", teste: "seu teste" };
+function gatesDesligadas(g) {
+  if (!g) return [];
+  return Object.keys(GATE_ROTULOS).filter((k) => g[k] === false).map((k) => GATE_ROTULOS[k]);
+}
+
 function wuPlainHtml(w) {
-  const passos = ["Entende o pedido", "Monta o plano", "◆Você aprova", "Implementa", "Confere", "◆Você testa", "◆Publica"];
-  const flow = passos.map((s, i) => {
-    const gate = s.startsWith("◆");
-    return `${i ? `<span class="wu-arw">›</span>` : ""}<span class="wu-st ${gate ? "gate" : ""}">${esc(gate ? s.slice(1) : s)}</span>`;
+  const g = w?.gates || {};
+  const passos = [
+    { t: "Entende o pedido" },
+    { t: "Monta o plano" },
+    { t: "Você aprova", gate: "aprovacao" },
+    { t: "Implementa" },
+    { t: "Confere" },
+    { t: "Você testa", gate: "teste" },
+    { t: "Publica", gate: "publicar" },
+  ];
+  const flow = passos.map((p, i) => {
+    const off = p.gate && p.gate !== "publicar" && g[p.gate] === false;
+    const cls = off ? "wu-st auto" : p.gate ? "wu-st gate" : "wu-st";
+    const label = off ? `${p.t} (auto)` : p.t;
+    return `${i ? `<span class="wu-arw">›</span>` : ""}<span class="${cls}">${esc(label)}</span>`;
   }).join("");
   const revs = reviewsDoWorkflow(w);
+  const off = gatesDesligadas(g);
   return `<div class="wu-card">
     <div class="wu-flow">${flow}</div>
     <div class="wu-reviews">${revs.length
       ? `<span class="wu-rlbl">Reviews que rodam:</span> ${revs.map((r) => `<span class="wf-rchip">${esc(r)}</span>`).join("")}`
       : `<span class="wu-none">Sem reviews — vai direto ao ponto.</span>`}</div>
+    ${off.length ? `<p class="wu-gates-off">Sem te parar em: ${off.map((x) => `<b>${esc(x)}</b>`).join(", ")} — o Claude segue sozinho. <span class="wu-pub">Publicar é sempre você.</span></p>` : ""}
     <p class="wu-foot">Adapta ao tamanho da tarefa: pedidos pequenos e óbvios pulam o plano e os reviews.</p>
   </div>`;
 }
@@ -691,6 +711,14 @@ function wfDrawerHtml() {
       <div class="chips">${chips || `<span class="wf-empty">nenhuma</span>`}</div>
       <details class="wf-add"><summary>+ adicionar skill</summary><div class="sk-list">${opts}</div></details></div>`;
   };
+  const gateRow = (key, titulo, desc) => {
+    const on = d.gates?.[key] !== false;
+    return `<label class="wf-gate ${on ? "" : "off"}">
+      <input type="checkbox" data-gate="${key}" ${on ? "checked" : ""}>
+      <span class="wf-gate-box" aria-hidden="true"></span>
+      <span class="wf-gate-txt"><b>${esc(titulo)}</b><small>${esc(desc)}</small></span>
+    </label>`;
+  };
   return `<div class="scrim open" data-act="wf-drawer-close"></div>
     <aside class="drawer wf-drawer">
       <div class="dr-h"><div class="t">Edição avançada <small>· ${esc(d.name || "")}</small></div><button class="dc" data-act="wf-drawer-close" aria-label="Fechar">✕</button></div>
@@ -701,6 +729,12 @@ function wfDrawerHtml() {
         ${bloco("plano_produto", "Plano", "reviews de produto (ex.: office-hours)")}
         ${bloco("detalhamento", "Detalhamento", "reviews técnicos e de design")}
         ${bloco("verificacoes", "Verificações", "checks antes do seu teste")}
+        <div class="wf-phase wf-gates-block"><div class="wf-ph-h"><b>Porteiras</b><span>onde a esteira para e espera você</span></div>
+          ${gateRow("aprovacao", "Aprovar o plano", "revisa o plano antes de implementar")}
+          ${gateRow("aprovacao_prototipo", "Aprovar o protótipo", "confere a tela antes de construir de verdade")}
+          ${gateRow("teste", "Seu teste", "testa o resultado antes de publicar")}
+          <p class="wf-gate-note">Desmarque para o Claude seguir sozinho. <b>Publicar</b> é sempre você — nada vai pro projeto sem seu clique.</p>
+        </div>
       </div>
       <div class="dr-f"><button class="btn ghost sm" data-act="wf-drawer-close">Cancelar</button><span class="gap" style="flex:1"></span><button class="btn primary sm" data-act="wf-save">Salvar</button></div>
     </aside>`;
@@ -708,10 +742,12 @@ function wfDrawerHtml() {
 
 function propostaCardHtml(p, isLast) {
   const revs = reviewsDoWorkflow(p);
+  const off = gatesDesligadas(p.gates);
   return `<div class="wf-prop">
     <div class="wf-prop-h"><b>${esc(p.name)}</b><span class="wf-tag ia">IA</span></div>
     ${p.descricao ? `<p class="wf-prop-d">${esc(p.descricao)}</p>` : ""}
     <div class="wf-prop-revs">${revs.length ? `<span class="wu-rlbl">Reviews:</span> ${revs.map((r) => `<span class="wf-rchip">${esc(r)}</span>`).join("")}` : `<span class="wf-rchip none">sem reviews — vai direto</span>`}</div>
+    ${off.length ? `<p class="wf-prop-gates">Sem te parar em: ${off.map((x) => `<b>${esc(x)}</b>`).join(", ")} — segue sozinho (publicar continua com você).</p>` : ""}
     ${isLast ? `<div class="wf-prop-acts"><button class="btn primary sm" data-act="wf-ia-usar">Usar este workflow</button><button class="btn ghost sm" data-act="wf-ia-descartar">Descartar</button></div>` : ""}
   </div>`;
 }
@@ -1949,12 +1985,12 @@ const actions = {
   },
   "wf-duplicar": async (btn) => {
     const base = wfById(btn.dataset.wf); if (!base) return;
-    const r = await api("/api/workflows", { name: `${base.name} (cópia)`, descricao: base.descricao || "", skills: flattenSkills(base) });
-    if (r && r.id) { await carregarWorkflows(); state.wfDrawer = r.id; state.wfDraft = { name: r.name, descricao: r.descricao || "", skills: flattenSkills(r) }; render(); }
+    const r = await api("/api/workflows", { name: `${base.name} (cópia)`, descricao: base.descricao || "", skills: flattenSkills(base), gates: base.gates || {} });
+    if (r && r.id) { await carregarWorkflows(); state.wfDrawer = r.id; state.wfDraft = { name: r.name, descricao: r.descricao || "", skills: flattenSkills(r), gates: { ...(r.gates || {}) } }; render(); }
   },
   "wf-editar": (btn) => {
     const wkf = wfById(btn.dataset.wf); if (!wkf) return;
-    state.wfDrawer = wkf.id; state.wfDraft = { name: wkf.name, descricao: wkf.descricao || "", skills: flattenSkills(wkf) }; render();
+    state.wfDrawer = wkf.id; state.wfDraft = { name: wkf.name, descricao: wkf.descricao || "", skills: flattenSkills(wkf), gates: { ...(wkf.gates || {}) } }; render();
   },
   "wf-excluir": async (btn) => {
     const wkf = wfById(btn.dataset.wf); if (!wkf) return;
@@ -1982,7 +2018,7 @@ const actions = {
     const d = state.wfDraft; if (!d || !state.wfDrawer) return;
     const name = document.getElementById("wf-name")?.value?.trim() || d.name;
     const descricao = document.getElementById("wf-desc")?.value?.trim() || "";
-    const r = await api("/api/workflows", { id: state.wfDrawer, name, descricao, skills: d.skills });
+    const r = await api("/api/workflows", { id: state.wfDrawer, name, descricao, skills: d.skills, gates: d.gates || {} });
     if (r) { state.wfDrawer = null; state.wfDraft = null; await carregarWorkflows(); toast("Workflow salvo."); }
   },
   "wf-drawer-close": () => { state.wfDrawer = null; state.wfDraft = null; render(); },
@@ -1992,7 +2028,7 @@ const actions = {
   },
   "wf-ia-usar": async () => {
     const p = state.wfIA.proposta; if (!p) return;
-    const r = await api("/api/workflows", { name: p.name, descricao: p.descricao || "", skills: p.skills, origem: "ia" });
+    const r = await api("/api/workflows", { name: p.name, descricao: p.descricao || "", skills: p.skills, gates: p.gates || {}, origem: "ia" });
     if (r && r.id) {
       const pid = selectedProjectId();
       if (pid) await api(`/api/workflows/${encodeURIComponent(r.id)}/ativar`, { projectId: pid });
@@ -2289,6 +2325,13 @@ document.addEventListener("change", (e) => {
     state.debugAutoDrive = el.checked;
   } else if (el.id === "debug-project") {
     localStorage.setItem("inhouse.projectId", el.value);
+  } else if (el.dataset && el.dataset.gate && state.wfDraft) {
+    const key = el.dataset.gate;
+    state.wfDraft.gates = { ...(state.wfDraft.gates || {}) };
+    if (el.checked) delete state.wfDraft.gates[key];
+    else state.wfDraft.gates[key] = false;
+    const row = el.closest(".wf-gate");
+    if (row) row.classList.toggle("off", !el.checked);
   }
 });
 

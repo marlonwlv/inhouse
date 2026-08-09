@@ -6,7 +6,7 @@
  * proposta para a pessoa revisar/ajustar/aplicar. Roda como fase sem transcript,
  * sem ferramentas (raciocínio puro), no padrão do juiz do eval.
  */
-import type { SkillCatalogItem, WorkflowDef } from "../../shared/types.js";
+import type { GateConfig, SkillCatalogItem, WorkflowDef } from "../../shared/types.js";
 import { runPhase } from "../claude/runner.js";
 import { DATA_DIR } from "../config.js";
 import { sanitizeSkillsBlock } from "./config.js";
@@ -16,6 +16,7 @@ export interface PropostaWorkflow {
   name: string;
   descricao?: string;
   skills: WorkflowDef["skills"];
+  gates?: GateConfig;
 }
 
 const FASES = ["plano_produto", "detalhamento", "verificacoes"] as const;
@@ -27,23 +28,34 @@ function promptGerar(instrucao: string, atual: PropostaWorkflow | undefined, cat
     .join("\n");
   const linhas = [
     "Você configura WORKFLOWS da esteira do Inhouse para uma pessoa NÃO técnica.",
-    "Um workflow só escolhe quais REVIEWS/CHECKS (skills) rodam em 3 fases. As etapas e as",
-    "porteiras humanas (aprovação do plano, seu teste, publicar) são FIXAS — você NÃO mexe nelas,",
-    "só nas skills. Fases:",
+    "Um workflow escolhe (a) quais REVIEWS/CHECKS (skills) rodam em 3 fases e (b) quais",
+    "PORTEIRAS humanas ficam ligadas. As ETAPAS em si são fixas; você só mexe em skills e porteiras.",
+    "Fases de skills:",
     "- plano_produto: reviews de produto (antes de montar o plano)",
     "- detalhamento: reviews técnicos e de design",
     "- verificacoes: checks automáticos antes do teste da pessoa",
     "",
+    "Porteiras humanas (a esteira PARA e espera a pessoa). Você pode DESLIGAR quando o pedido pedir",
+    'algo como "não precisa me pedir aprovação" / "pode seguir sozinho" / "sem me interromper":',
+    "- aprovacao: a pessoa aprova o PLANO antes de implementar",
+    "- aprovacao_prototipo: a pessoa aprova o PROTÓTIPO visual",
+    "- teste: a pessoa TESTA o resultado antes de publicar",
+    'A porteira "publicar" é SEMPRE humana — nunca a desligue. Por padrão todas ficam LIGADAS;',
+    "só liste no bloco gates as que a pessoa quer DESLIGAR (com valor false).",
+    "",
     "Skills DISPONÍVEIS (use SOMENTE estas, pelo nome exato):",
     disponiveis || "(nenhuma skill instalada)",
     "",
-    atual ? `Workflow atual (ajuste-o conforme o pedido):\n${JSON.stringify({ name: atual.name, skills: atual.skills })}` : "",
+    atual
+      ? `Workflow atual (ajuste-o conforme o pedido):\n${JSON.stringify({ name: atual.name, skills: atual.skills, gates: atual.gates ?? {} })}`
+      : "",
     `Pedido da pessoa: "${instrucao}"`,
     "",
     "Devolva SOMENTE um bloco ```json (nada de texto fora dele), neste formato:",
-    '{"name":"nome curto","descricao":"uma linha em português simples","skills":{"plano_produto":[{"skill":"..."}],"detalhamento":[{"skill":"..."}],"verificacoes":[{"skill":"..."}]}}',
-    "Regras: use só skills da lista acima; qualquer fase pode ficar vazia []; escolha um nome e uma",
-    "descrição que reflitam o pedido; não invente skills nem etapas.",
+    '{"name":"nome curto","descricao":"uma linha em português simples","skills":{"plano_produto":[{"skill":"..."}],"detalhamento":[{"skill":"..."}],"verificacoes":[{"skill":"..."}]},"gates":{"aprovacao":false}}',
+    "Regras: use só skills da lista acima; qualquer fase pode ficar vazia []; em gates só inclua",
+    "porteiras a DESLIGAR (false) — omita o bloco gates se a pessoa não pediu para pular nenhuma;",
+    "nunca desligue publicar; escolha nome e descrição que reflitam o pedido; não invente skills nem etapas.",
   ];
   return linhas.filter(Boolean).join("\n");
 }
@@ -74,7 +86,16 @@ function parseProposta(texto: string, cat: SkillCatalogItem[]): PropostaWorkflow
       delete skills[fase];
     }
   }
-  return { name, ...(descricao ? { descricao } : {}), skills };
+  // Só aceita porteiras DESLIGADAS (false); "publicar" nunca é tocada.
+  const gates: GateConfig = {};
+  if (obj.gates && typeof obj.gates === "object") {
+    const g = obj.gates as Record<string, unknown>;
+    for (const k of ["aprovacao", "aprovacao_prototipo", "teste"] as const) {
+      if (g[k] === false) gates[k] = false;
+    }
+  }
+  const temGates = Object.keys(gates).length > 0;
+  return { name, ...(descricao ? { descricao } : {}), skills, ...(temGates ? { gates } : {}) };
 }
 
 export interface GerarResultado {

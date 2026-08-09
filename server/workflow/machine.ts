@@ -34,7 +34,7 @@ import * as store from "../store.js";
 import { registrarFalha, registrarTarefaFinalizada } from "../eval/coleta.js";
 import { verificarGatilhoAuto } from "../eval/juiz.js";
 import { skillsDetalhamento, skillsProduto, temUi } from "./config.js";
-import { activeConfig } from "./library.js";
+import { activeConfig, activeGates } from "./library.js";
 import {
   anexosBloco,
   changesPrompt,
@@ -435,8 +435,8 @@ async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
       fail(taskId, "O plano veio vazio. Tente de novo.");
       return false;
     }
-    patch(taskId, { plan, step: "aprovacao", status: "aguardando" });
-    sistema(taskId, "Plano de produto pronto — revise e aprove.");
+    patch(taskId, { plan });
+    pousarAprovacao(taskId); // espera a pessoa, ou auto-aprova se o workflow desligou a porteira
     return true;
   } finally {
     planoDireto.delete(taskId);
@@ -506,8 +506,7 @@ async function runPrototipo(taskId: string, feedback?: string): Promise<boolean>
     failOuPausa(taskId, r, "O protótipo falhou. Tente de novo.");
     return false;
   }
-  patch(taskId, { step: "aprovacao_prototipo", status: "aguardando", temPrototipo: true });
-  sistema(taskId, "Protótipo pronto — veja o mockup e aprove (ou peça mudanças).");
+  pousarPrototipoGate(taskId);
   return true;
 }
 
@@ -554,7 +553,7 @@ async function runExecucao(
   // não re-roda as verificações à toa — volta pro teste com a resposta do agente visível.
   if (opts?.pularVerificacaoSemEdicao && !r.filesTouched) {
     sistema(taskId, "Nenhuma mudança de código — pulando as verificações.");
-    patch(taskId, { step: "teste", status: "aguardando" });
+    pousarTeste(taskId);
     return true;
   }
   return runVerificacoes(taskId);
@@ -679,8 +678,8 @@ async function runPreviewCheck(taskId: string): Promise<boolean> {
 
   // Sem UI (ou sem projeto): não há tela para preparar — direto pro teste.
   if (!project || !temUi(task.worktreePath)) {
-    patch(taskId, { step: "teste", status: "aguardando" });
-    sistema(taskId, "Tudo verificado — pronto pro seu teste.");
+    sistema(taskId, "Tudo verificado.");
+    pousarTeste(taskId);
     return true;
   }
 
@@ -759,8 +758,8 @@ async function runPreviewCheck(taskId: string): Promise<boolean> {
     const saude = await verificarSaude(atualUrl, cfg);
     if (cancelada(taskId)) return false;
     if (saude.ok) {
-      patch(taskId, { step: "teste", status: "aguardando" });
-      sistema(taskId, "Preview no ar e conferido nas telas principais — pode abrir e testar.");
+      sistema(taskId, "Preview no ar e conferido nas telas principais.");
+      pousarTeste(taskId);
       return true;
     }
     if (tentativa === 0) {
@@ -836,6 +835,78 @@ async function runLivre(taskId: string, prompt: string): Promise<boolean> {
   }
   patch(taskId, { status: "aguardando" });
   return true;
+}
+
+// ---------- Porteiras humanas (com auto-avanço quando o workflow as desliga) ----------
+
+/** Avança após a aprovação do plano: detalhamento (fluxo normal) ou execução. */
+function avancarAposAprovacao(taskId: string, direto = false): void {
+  const t = store.getTask(taskId);
+  if (!t) return;
+  const proximo = direto ? "execucao" : proximoStep(t, "aprovacao");
+  if (proximo === "detalhamento") {
+    patch(taskId, { step: "detalhamento", status: "rodando", error: undefined });
+    sistema(taskId, "Detalhando o como…");
+    fireAndForget(taskId, () => runDetalhamento(taskId));
+  } else {
+    patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
+    sistema(taskId, "Começando a execução.");
+    fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(t)));
+  }
+}
+
+/** Avança após a aprovação do protótipo: execução de verdade. */
+function avancarAposPrototipo(taskId: string): void {
+  const t = store.getTask(taskId);
+  if (!t) return;
+  patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
+  sistema(taskId, "Implementando de verdade.");
+  fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(t)));
+}
+
+/** Avança após o teste: fica em "publicar" (SEMPRE humano — nada é publicado sozinho). */
+function avancarAposTeste(taskId: string): void {
+  patch(taskId, { step: "publicar", status: "aguardando" });
+  sistema(taskId, "Pronto para publicar — clique em Publicar para levar as mudanças ao projeto.");
+}
+
+/** Chega na aprovação do plano: espera a pessoa, ou auto-aprova se o workflow desligou a porteira. */
+function pousarAprovacao(taskId: string): void {
+  const t = store.getTask(taskId);
+  if (!t) return;
+  if (activeGates(t.projectId).aprovacao) {
+    patch(taskId, { step: "aprovacao", status: "aguardando" });
+    sistema(taskId, "Plano de produto pronto — revise e aprove.");
+  } else {
+    sistema(taskId, "Plano pronto — aprovação automática (este workflow não pede a sua revisão aqui).");
+    avancarAposAprovacao(taskId);
+  }
+}
+
+/** Chega na aprovação do protótipo: espera a pessoa, ou auto-aprova se desligada. */
+function pousarPrototipoGate(taskId: string): void {
+  const t = store.getTask(taskId);
+  if (!t) return;
+  if (activeGates(t.projectId).aprovacao_prototipo) {
+    patch(taskId, { step: "aprovacao_prototipo", status: "aguardando", temPrototipo: true });
+    sistema(taskId, "Protótipo pronto — veja o mockup e aprove (ou peça mudanças).");
+  } else {
+    patch(taskId, { temPrototipo: true });
+    sistema(taskId, "Protótipo pronto — aprovação automática; implementando.");
+    avancarAposPrototipo(taskId);
+  }
+}
+
+/** Chega no "Seu teste": espera a pessoa, ou auto-avança para publicar se desligada. */
+function pousarTeste(taskId: string): void {
+  const t = store.getTask(taskId);
+  if (!t) return;
+  if (activeGates(t.projectId).teste) {
+    patch(taskId, { step: "teste", status: "aguardando" });
+  } else {
+    sistema(taskId, "Verificações concluídas — teste automático (este workflow não pede o seu teste).");
+    avancarAposTeste(taskId);
+  }
 }
 
 // ---------- API pública da máquina ----------
@@ -978,17 +1049,8 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       if (!(task.step === "aprovacao" && task.status === "aguardando")) {
         throw new Error("Esta tarefa não está aguardando a aprovação do plano.");
       }
-      // direto = pular detalhamento/protótipo. Senão, vai pro próximo step ativo.
-      const proximo = action.direto ? "execucao" : proximoStep(task, "aprovacao");
-      if (proximo === "detalhamento") {
-        patch(taskId, { step: "detalhamento", status: "rodando", error: undefined });
-        sistema(taskId, "Plano aprovado — detalhando o como.");
-        fireAndForget(taskId, () => runDetalhamento(taskId));
-      } else {
-        patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
-        sistema(taskId, action.direto ? "Plano aprovado — indo direto pra execução." : "Plano aprovado — começando a execução.");
-        fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(task)));
-      }
+      sistema(taskId, action.direto ? "Plano aprovado — indo direto pra execução." : "Plano aprovado.");
+      avancarAposAprovacao(taskId, action.direto);
       break;
     }
 
@@ -996,9 +1058,8 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       if (!(task.step === "aprovacao_prototipo" && task.status === "aguardando")) {
         throw new Error("Esta tarefa não está aguardando a aprovação do protótipo.");
       }
-      patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
-      sistema(taskId, "Protótipo aprovado — implementando de verdade.");
-      fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(store.getTask(taskId) ?? task)));
+      sistema(taskId, "Protótipo aprovado.");
+      avancarAposPrototipo(taskId);
       break;
     }
 
@@ -1054,8 +1115,8 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       if (!(task.step === "teste" && task.status === "aguardando")) {
         throw new Error("Esta tarefa não está aguardando o seu teste.");
       }
-      patch(taskId, { step: "publicar", status: "aguardando" });
-      sistema(taskId, "Teste aprovado — clique em Publicar para levar as mudanças ao projeto.");
+      sistema(taskId, "Teste aprovado.");
+      avancarAposTeste(taskId);
       break;
     }
 

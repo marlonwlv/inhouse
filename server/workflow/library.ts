@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { InhouseConfig, SkillCatalogItem, WorkflowDef, WorkflowsState } from "../../shared/types.js";
+import type { GateConfig, InhouseConfig, SkillCatalogItem, WorkflowDef, WorkflowsState } from "../../shared/types.js";
 import { DATA_DIR, ensureDirs } from "../config.js";
 import { sanitizeSkillsBlock } from "./config.js";
 
@@ -66,6 +66,17 @@ function presets(): WorkflowDef[] {
 
 let cache: WorkflowsState | null = null;
 
+/** Só registra as porteiras DESLIGADAS (false); o padrão é ligada. */
+function sanitizeGates(raw: unknown): GateConfig | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const out: GateConfig = {};
+  for (const k of ["aprovacao", "aprovacao_prototipo", "teste"] as const) {
+    if (r[k] === false) out[k] = false;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** Junta os presets (sempre atualizados) com os workflows customizados salvos. */
 function normalize(raw: unknown): WorkflowsState {
   const base = presets();
@@ -74,13 +85,17 @@ function normalize(raw: unknown): WorkflowsState {
     ? (r.workflows as Record<string, unknown>[])
         .filter((w) => w && !w.builtin && typeof w.id === "string" && typeof w.name === "string")
         .filter((w) => !base.some((b) => b.id === w.id)) // um custom não pode ocupar id de preset
-        .map((w) => ({
-          id: String(w.id),
-          name: String(w.name).slice(0, 60),
-          ...(typeof w.descricao === "string" ? { descricao: w.descricao.slice(0, 200) } : {}),
-          origem: w.origem === "ia" ? "ia" : "manual",
-          skills: sanitizeSkillsBlock(w.skills),
-        }))
+        .map((w) => {
+          const gates = sanitizeGates(w.gates);
+          return {
+            id: String(w.id),
+            name: String(w.name).slice(0, 60),
+            ...(typeof w.descricao === "string" ? { descricao: w.descricao.slice(0, 200) } : {}),
+            origem: w.origem === "ia" ? "ia" : ("manual" as const),
+            skills: sanitizeSkillsBlock(w.skills),
+            ...(gates ? { gates } : {}),
+          };
+        })
     : [];
   const workflows = [...base, ...custom];
   const globalAtivo = workflows.some((w) => w.id === r.globalAtivo) ? (r.globalAtivo as string) : "padrao";
@@ -146,11 +161,13 @@ export function upsertWorkflow(input: {
   descricao?: string;
   origem?: "manual" | "ia";
   skills: unknown;
+  gates?: unknown;
 }): WorkflowDef {
   const s = load();
   const nome = String(input.name ?? "").trim().slice(0, 60);
   if (!nome) throw new Error("Dê um nome ao workflow.");
   const skills = sanitizeSkillsBlock(input.skills);
+  const gates = sanitizeGates(input.gates);
   if (input.id) {
     const alvo = s.workflows.find((w) => w.id === input.id);
     if (!alvo) throw new Error("Workflow não encontrado.");
@@ -158,6 +175,8 @@ export function upsertWorkflow(input: {
     alvo.name = nome;
     alvo.descricao = input.descricao?.slice(0, 200);
     alvo.skills = skills;
+    if (gates) alvo.gates = gates;
+    else delete alvo.gates;
     persist();
     return alvo;
   }
@@ -167,10 +186,22 @@ export function upsertWorkflow(input: {
     ...(input.descricao ? { descricao: input.descricao.slice(0, 200) } : {}),
     origem: input.origem === "ia" ? "ia" : "manual",
     skills,
+    ...(gates ? { gates } : {}),
   };
   s.workflows.push(novo);
   persist();
   return novo;
+}
+
+/** Porteiras exigidas pelo workflow ativo (true = pede a pessoa). "publicar" é sempre humana. */
+export function activeGates(projectId?: string): { aprovacao: boolean; aprovacao_prototipo: boolean; teste: boolean } {
+  const s = load();
+  const g = s.workflows.find((x) => x.id === activeWorkflowId(projectId))?.gates ?? {};
+  return {
+    aprovacao: g.aprovacao !== false,
+    aprovacao_prototipo: g.aprovacao_prototipo !== false,
+    teste: g.teste !== false,
+  };
 }
 
 export function deleteWorkflow(id: string): void {
