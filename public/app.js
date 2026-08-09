@@ -51,7 +51,7 @@ function stepsAtivos(t) {
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.18.0";
+const UI_VERSION = "0.19.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -97,6 +97,7 @@ const state = {
   workflows: null, // { workflows, globalAtivo, porProjeto, catalogo } — carregado em #/configuracoes
   wfDrawer: null, // id do workflow aberto na edição avançada (drawer), ou null
   wfDraft: null, // rascunho editável { name, descricao, skills: {plano_produto:[],detalhamento:[],verificacoes:[]} }
+  wfIA: { mensagens: [], proposta: null, gerando: false }, // conversa "Ajustar com IA"
   evalRelatorio: null, // conteúdo do relatório aberto
   evalFonte: "todos", // filtro de origem: "todos" | "meus" | <rótulo importado>
   evalFontes: [], // rótulos de origens importadas
@@ -705,6 +706,43 @@ function wfDrawerHtml() {
     </aside>`;
 }
 
+function propostaCardHtml(p, isLast) {
+  const revs = reviewsDoWorkflow(p);
+  return `<div class="wf-prop">
+    <div class="wf-prop-h"><b>${esc(p.name)}</b><span class="wf-tag ia">IA</span></div>
+    ${p.descricao ? `<p class="wf-prop-d">${esc(p.descricao)}</p>` : ""}
+    <div class="wf-prop-revs">${revs.length ? `<span class="wu-rlbl">Reviews:</span> ${revs.map((r) => `<span class="wf-rchip">${esc(r)}</span>`).join("")}` : `<span class="wf-rchip none">sem reviews — vai direto</span>`}</div>
+    ${isLast ? `<div class="wf-prop-acts"><button class="btn primary sm" data-act="wf-ia-usar">Usar este workflow</button><button class="btn ghost sm" data-act="wf-ia-descartar">Descartar</button></div>` : ""}
+  </div>`;
+}
+
+function wfIAHtml() {
+  const ia = state.wfIA;
+  const iniciou = ia.mensagens.length > 0;
+  const SUGS = [
+    "Sem reviews para tarefas pequenas — vai direto.",
+    "Sempre um review de segurança antes de publicar.",
+    "Só review de código e QA nas verificações.",
+    "Adicione review de design no detalhamento.",
+  ];
+  const chat = iniciou
+    ? `<div class="wf-ia-chat">${ia.mensagens.map((m, i) => m.de === "user"
+        ? `<div class="msg-user">${mdLite(m.texto)}</div>`
+        : `<div class="wf-ia-ai"><div class="who"><span class="sp">✦</span> Claude</div>${propostaCardHtml(m.proposta, i === ia.mensagens.length - 1 && !ia.gerando)}</div>`).join("")}
+      ${ia.gerando ? `<div class="wf-ia-typing"><span class="spinner"></span> montando o workflow…</div>` : ""}</div>`
+    : `<p class="wf-ia-sub">Descreva como você quer que o Claude trabalhe nas tarefas. Ele monta o workflow e você revisa antes de aplicar — pode pedir quantos ajustes quiser.</p>`;
+  return `<div class="wf-ia">
+    <div class="wf-ia-h"><span class="wf-ia-spark">✦</span><b>Ajustar com IA</b></div>
+    ${chat}
+    ${!iniciou ? `<div class="wf-ia-sugs">${SUGS.map((s) => `<button type="button" class="sug" data-act="wf-ia-sug" data-txt="${esc(s)}">${esc(s)}</button>`).join("")}</div>` : ""}
+    <form class="wf-ia-form" data-form="wf-ia">
+      <textarea id="wf-ia-input" class="grow-area" rows="1" data-enter-submit placeholder="${iniciou ? "Peça um ajuste… ex.: “tire o QA e adicione segurança”" : "Ex.: sem reviews para ajustes pequenos, mas sempre testes e segurança antes de publicar."}" ${ia.gerando ? "disabled" : ""}></textarea>
+      <button class="btn primary sm" type="submit" ${ia.gerando ? "disabled" : ""}>${ia.gerando ? "…" : iniciou ? "Enviar" : "✦ Gerar"}</button>
+    </form>
+    <p class="wf-ia-foot">O Claude só usa as skills instaladas — nunca inventa uma que não existe. Nada é aplicado até você clicar em “Usar”.</p>
+  </div>`;
+}
+
 function renderConfiguracoes() {
   if (!state.workflows) { carregarWorkflows(); renderPage(`<div class="view view-page cfg-wrap"><p><span class="spinner"></span> Carregando workflows…</p></div>`); return; }
   const w = state.workflows;
@@ -736,7 +774,8 @@ function renderConfiguracoes() {
 
     <div class="cfg-global">Padrão global (projetos sem escolha própria): <b>${esc(globalNome)}</b>${ativoId !== w.globalAtivo ? ` · <button class="btn xs ghost" data-act="wf-global" data-wf="${esc(ativoId)}">Tornar “${esc(ativo?.name || "")}” o padrão global</button>` : ""}</div>
 
-    <div class="ai-soon">✦ <b>Criar/ajustar workflow com IA</b> — chega no próximo incremento. Por ora, duplique um preset e edite as skills na mão.</div>
+    <div class="sect"><h3>Criar ou ajustar com IA</h3><span>descreva em português; o Claude monta</span></div>
+    ${wfIAHtml()}
   </div>
   ${state.wfDrawer ? wfDrawerHtml() : ""}`);
 }
@@ -1947,6 +1986,22 @@ const actions = {
     if (r) { state.wfDrawer = null; state.wfDraft = null; await carregarWorkflows(); toast("Workflow salvo."); }
   },
   "wf-drawer-close": () => { state.wfDrawer = null; state.wfDraft = null; render(); },
+  "wf-ia-sug": (btn) => {
+    const ta = document.getElementById("wf-ia-input");
+    if (ta) { ta.value = ta.value.trim() ? `${ta.value.trim()} ${btn.dataset.txt}` : btn.dataset.txt; ta.focus(); autoGrow(ta); }
+  },
+  "wf-ia-usar": async () => {
+    const p = state.wfIA.proposta; if (!p) return;
+    const r = await api("/api/workflows", { name: p.name, descricao: p.descricao || "", skills: p.skills, origem: "ia" });
+    if (r && r.id) {
+      const pid = selectedProjectId();
+      if (pid) await api(`/api/workflows/${encodeURIComponent(r.id)}/ativar`, { projectId: pid });
+      state.wfIA = { mensagens: [], proposta: null, gerando: false };
+      await carregarWorkflows();
+      toast(`Workflow “${r.name}” criado e em uso.`);
+    }
+  },
+  "wf-ia-descartar": () => { state.wfIA = { mensagens: [], proposta: null, gerando: false }; render(); },
   "attach": (btn) => { if (!btn.disabled) escolherAnexos(btn.dataset.target); },
   "anexo-remove": (btn) => {
     const target = btn.dataset.target;
@@ -2317,6 +2372,22 @@ document.addEventListener("submit", async (e) => {
       api(`/api/tasks/${encodeURIComponent(t.id)}/message`, { text, ...(anexos.length ? { anexos } : {}) });
     }
     limparAnexos("composer");
+  } else if (kind === "wf-ia") {
+    const input = $("#wf-ia-input");
+    const text = input?.value?.trim();
+    if (!text || state.wfIA.gerando) return;
+    input.value = "";
+    autoGrow(input);
+    state.wfIA.mensagens.push({ de: "user", texto: text });
+    state.wfIA.gerando = true;
+    render();
+    const r = await api("/api/workflows/gerar", {
+      instrucao: text,
+      ...(state.wfIA.proposta ? { atual: { name: state.wfIA.proposta.name, skills: state.wfIA.proposta.skills } } : {}),
+    });
+    state.wfIA.gerando = false;
+    if (r && r.proposta) { state.wfIA.proposta = r.proposta; state.wfIA.mensagens.push({ de: "ai", proposta: r.proposta }); }
+    render();
   }
 });
 

@@ -14,8 +14,13 @@
   máquina (`activeConfig` no lugar do `loadConfigCascata` para as skills), e a tela **Configurações →
   Workflows** (principal limpa com "workflow em uso" em linguagem simples + biblioteca com troca por
   projeto + **drawer de edição manual** com picker da lista fixa). Testes: `test/library.test.ts`.
-- **Workflows incremento 2 (próximo)** — a conversa **Ajustar com IA** (endpoint de geração/refino
-  restrito ao catálogo + UI de conversa iterativa). Hoje há um placeholder "chega no próximo incremento".
+- **Workflows incremento 2** — ✅ **Ajustar com IA**. Endpoint `POST /api/workflows/gerar`
+  (`server/workflow/gerar.ts`): recebe instrução (+ proposta atual p/ refinar), roda o Claude sem
+  transcript/sem ferramentas, e devolve uma PROPOSTA **sempre validada e filtrada pelo catálogo**
+  (skill inventada é descartada — nunca chama skill inexistente). UI de **conversa iterativa** na tela
+  de Configurações (propõe → você ajusta → refaz → "Usar este workflow" salva como custom `origem:"ia"`
+  e ativa no projeto). Testes: `test/gerar.test.ts`. Smoke real: "sem reviews, mas segurança+QA antes de
+  publicar" → gerou `verificacoes:[security-review, qa]`.
 - **Depois (incr. 3)** — ligar/desligar porteiras no workflow (auto-avançar as desligadas na máquina).
 
 Dois pedidos relacionados, prototipados e aprovados pelo Marlon (artifacts):

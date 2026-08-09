@@ -38,6 +38,7 @@ import {
   skillCatalog,
   upsertWorkflow,
 } from "../workflow/library.js";
+import { gerarWorkflow } from "../workflow/gerar.js";
 import { cloneProject, createFromTemplate, openProject } from "../services/projects.js";
 import * as store from "../store.js";
 import { applyAction, startPreparacao, startTask, steer } from "../workflow/machine.js";
@@ -638,6 +639,21 @@ export function buildRouter(): Router {
       } catch (err) {
         throw new HttpError(400, err instanceof Error ? err.message : "Não foi possível ativar o workflow.");
       }
+    }),
+  );
+
+  // Geração/refino por IA: devolve uma PROPOSTA (não salva) restrita ao catálogo.
+  router.post(
+    "/api/workflows/gerar",
+    h(async (req, res) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const instrucao = typeof body.instrucao === "string" ? body.instrucao : "";
+      if (!instrucao.trim()) throw new HttpError(400, "Diga o que você quer no workflow.");
+      const atual =
+        body.atual && typeof body.atual === "object" ? (body.atual as { name: string; skills: unknown }) : undefined;
+      const r = await gerarWorkflow(instrucao, atual as never);
+      if (r.erro) throw new HttpError(422, r.erro);
+      res.json({ proposta: r.proposta });
     }),
   );
 
