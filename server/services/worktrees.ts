@@ -4,7 +4,7 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, rm } from "node:fs/promises";
+import { cp, mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { Project } from "../../shared/types.js";
 import { ESPACOS_DIR, claudeEnv } from "../config.js";
@@ -46,24 +46,57 @@ async function doCreateEspaco(
   const worktreePath = join(ESPACOS_DIR, project.name, `espaco-${espaco}`);
   await mkdir(join(ESPACOS_DIR, project.name), { recursive: true });
 
-  // Sobra de uma tarefa anterior no mesmo número de espaço: limpa antes.
+  // Sobra de uma tarefa anterior no mesmo número de espaço: limpa antes — mas
+  // NUNCA destruindo trabalho que não tenha sido preservado com segurança.
   if (existsSync(worktreePath)) {
-    // Trabalho não commitado (ex.: tarefa cancelada no meio da execução) é
-    // preservado no branch antigo antes do remove — senão seria destruído.
+    // Sem pendências → não há nada a perder. Com pendências (ex.: tarefa
+    // cancelada no meio da execução): commita no branch antigo para preservar,
+    // e só considera preservado se a árvore REALMENTE ficar limpa depois — o
+    // commit pode falhar (hook, estado estranho) e não podemos confiar nele cego.
     const pendente = await tryGit(worktreePath, "status", "--porcelain");
-    if (pendente !== null && pendente.length > 0) {
+    let preservado = pendente === null || pendente.length === 0;
+    if (!preservado) {
       await tryGit(worktreePath, "add", "-A");
       try {
         await gitCommit(worktreePath, "Trabalho preservado automaticamente pelo Inhouse");
       } catch {
-        // Melhor esforço: um commit impossível não pode impedir a criação do espaço.
+        // Tratado abaixo: se não commitou, `preservado` continua falso.
       }
+      const aindaPendente = await tryGit(worktreePath, "status", "--porcelain");
+      preservado = aindaPendente !== null && aindaPendente.length === 0;
     }
-    try {
-      await git(project.path, "worktree", "remove", "--force", worktreePath);
-    } catch {
-      await rm(worktreePath, { recursive: true, force: true });
-      await tryGit(project.path, "worktree", "prune");
+
+    if (preservado) {
+      try {
+        await git(project.path, "worktree", "remove", "--force", worktreePath);
+      } catch {
+        await rm(worktreePath, { recursive: true, force: true });
+        await tryGit(project.path, "worktree", "prune");
+      }
+    } else {
+      // Preservação NÃO confirmada: em vez de apagar, move a pasta para o lado
+      // (recuperável manualmente) e avisa. Só um `rm` cego perderia o trabalho.
+      const abrigo = `${worktreePath}.recuperar-${Date.now()}`;
+      try {
+        // Sem --force: com a árvore suja o git recusa remover (o que queremos).
+        await tryGit(project.path, "worktree", "remove", worktreePath);
+        await rename(worktreePath, abrigo);
+        await tryGit(project.path, "worktree", "prune");
+        broadcast({
+          type: "project_progress",
+          name: project.name,
+          message:
+            "Havia trabalho não salvo no espaço anterior que não pôde ser guardado automaticamente. " +
+            `Nada foi apagado — a pasta foi preservada em ${abrigo}. Se precisar, o time técnico recupera a partir dela.`,
+        });
+      } catch (err) {
+        // Se nem mover foi possível, ABORTA a criação do espaço em vez de destruir.
+        throw new Error(
+          "Havia trabalho não salvo no espaço anterior e não foi possível preservá-lo com segurança. " +
+            "Nada foi apagado. Fale com o time técnico.",
+          { cause: err },
+        );
+      }
     }
   }
 

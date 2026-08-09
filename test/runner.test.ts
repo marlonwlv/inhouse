@@ -187,4 +187,53 @@ describe("runPhase", () => {
     expect(r.errorMessage).toContain("1 hora");
     expect(r.timedOut).toBe(true);
   });
+
+  it("re-tenta o spawn quando o binário nativo falha ao lançar (corrida de auto-update) e conclui", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    setQuery(async function* () {
+      calls++;
+      if (calls === 1) {
+        throw new Error(
+          "Claude Code native binary at /fake/claude exists but failed to launch. This usually means…",
+        );
+      }
+      yield initMsg;
+      yield resultMsg("ok");
+    });
+
+    const promessa = runPhase({ taskId: "t-respawn", cwd: "/tmp", prompt: "x", permissionMode: "default" });
+    // Deixa a 1ª tentativa falhar e o retry aguardar o respiro (600ms) do swap.
+    await vi.advanceTimersByTimeAsync(600);
+
+    const r = await promessa;
+    expect(calls).toBe(2); // re-spawnou exatamente uma vez
+    expect(r.success).toBe(true);
+    expect(r.finalText).toBe("ok");
+  });
+
+  it("NÃO re-tenta erros que não são de lançamento (ex.: rede) — falha na 1ª", async () => {
+    let calls = 0;
+    setQuery(async function* () {
+      calls++;
+      throw new Error("getaddrinfo ENOTFOUND api.anthropic.com");
+      // eslint-disable-next-line no-unreachable
+      yield initMsg;
+    });
+    const r = await runPhase({ taskId: "t-noretry", cwd: "/tmp", prompt: "x", permissionMode: "default" });
+    expect(calls).toBe(1);
+    expect(r.success).toBe(false);
+  });
+
+  it("não re-tenta se a sessão já começou — só spawn puro (nada feito ainda) é seguro", async () => {
+    let calls = 0;
+    setQuery(async function* () {
+      calls++;
+      yield initMsg; // sessão iniciou: re-rodar deixaria de ser idempotente
+      throw new Error("Claude Code native binary at /fake/claude exists but failed to launch.");
+    });
+    const r = await runPhase({ taskId: "t-started", cwd: "/tmp", prompt: "x", permissionMode: "default" });
+    expect(calls).toBe(1); // não re-tentou, apesar da mensagem de spawn
+    expect(r.success).toBe(false);
+  });
 });
