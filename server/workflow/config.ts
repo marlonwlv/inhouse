@@ -85,6 +85,21 @@ export function sanitizePreview(raw: unknown): PreviewConfig | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** Sanitiza um bloco `skills` inteiro (usado pela biblioteca de workflows). */
+export function sanitizeSkillsBlock(raw: unknown): NonNullable<InhouseConfig["skills"]> {
+  const s = (raw ?? {}) as Record<string, unknown>;
+  const out: NonNullable<InhouseConfig["skills"]> = {};
+  const plano = sanitizePlano(s.plano);
+  const plano_produto = sanitizePlano(s.plano_produto);
+  const detalhamento = sanitizePlano(s.detalhamento);
+  const verificacoes = sanitizeSteps(s.verificacoes);
+  if (plano) out.plano = plano;
+  if (plano_produto) out.plano_produto = plano_produto;
+  if (detalhamento) out.detalhamento = detalhamento;
+  if (verificacoes) out.verificacoes = verificacoes;
+  return out;
+}
+
 /** Lista OU objeto por porte → sanitizado na mesma forma de entrada. */
 function sanitizePlano(
   raw: unknown,

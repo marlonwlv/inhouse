@@ -51,7 +51,7 @@ function stepsAtivos(t) {
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.16.0";
+const UI_VERSION = "0.18.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -92,7 +92,11 @@ const state = {
   artefatos: {}, // taskId -> { at, temPrototipo, docs[], loading } (barra de artefatos do editor)
   showArquivadas: false, // mostrar as tarefas arquivadas no quadro
   ui: { createPr: true },
+  novaTarefaModo: "esteira", // "esteira" | "livre" — escolha na caixa de nova tarefa
   eval: null, // resumo carregado ao entrar em #/experiencia
+  workflows: null, // { workflows, globalAtivo, porProjeto, catalogo } — carregado em #/configuracoes
+  wfDrawer: null, // id do workflow aberto na edição avançada (drawer), ou null
+  wfDraft: null, // rascunho editável { name, descricao, skills: {plano_produto:[],detalhamento:[],verificacoes:[]} }
   evalRelatorio: null, // conteúdo do relatório aberto
   evalFonte: "todos", // filtro de origem: "todos" | "meus" | <rótulo importado>
   evalFontes: [], // rótulos de origens importadas
@@ -516,6 +520,7 @@ function route() {
   if (m) return { name: "editor", id: decodeURIComponent(m[1]) };
   if (h.startsWith("#/tarefas")) return { name: "board" };
   if (h.startsWith("#/experiencia")) return { name: "experiencia" };
+  if (h.startsWith("#/configuracoes")) return { name: "configuracoes" };
   return { name: "home" };
 }
 
@@ -605,6 +610,137 @@ function renderExperiencia() {
   </div>`);
 }
 
+// ---------- CONFIGURAÇÕES · Workflows ----------
+async function carregarWorkflows() {
+  const w = await api("/api/workflows");
+  if (w) state.workflows = w;
+  render();
+}
+function wfById(id) { return (state.workflows?.workflows || []).find((x) => x.id === id); }
+function coletarSkills(bloco) {
+  if (!bloco) return [];
+  const arrs = Array.isArray(bloco) ? [bloco] : Object.values(bloco);
+  return arrs.flat().filter(Boolean).map((s) => s.skill);
+}
+function reviewsDoWorkflow(w) {
+  const cat = state.workflows?.catalogo || [];
+  const rot = (skill) => cat.find((c) => c.skill === skill)?.rotulo || `/${skill}`;
+  const s = w?.skills || {};
+  const todas = [...coletarSkills(s.plano_produto), ...coletarSkills(s.plano), ...coletarSkills(s.detalhamento), ...coletarSkills(s.verificacoes)];
+  return [...new Set(todas)].map(rot);
+}
+/* Achata a config (formato por-porte dos presets vira lista simples pra editar). */
+function flattenSkills(w) {
+  const flat = (bloco) => {
+    if (!bloco) return [];
+    const arrs = Array.isArray(bloco) ? [bloco] : Object.values(bloco);
+    const out = [];
+    for (const s of arrs.flat().filter(Boolean)) if (!out.some((x) => x.skill === s.skill)) out.push({ skill: s.skill, ...(s.quando ? { quando: s.quando } : {}), ...(s.gate ? { gate: s.gate } : {}) });
+    return out;
+  };
+  return { plano_produto: flat(w.skills?.plano_produto), detalhamento: flat(w.skills?.detalhamento), verificacoes: flat(w.skills?.verificacoes) };
+}
+
+function wuPlainHtml(w) {
+  const passos = ["Entende o pedido", "Monta o plano", "◆Você aprova", "Implementa", "Confere", "◆Você testa", "◆Publica"];
+  const flow = passos.map((s, i) => {
+    const gate = s.startsWith("◆");
+    return `${i ? `<span class="wu-arw">›</span>` : ""}<span class="wu-st ${gate ? "gate" : ""}">${esc(gate ? s.slice(1) : s)}</span>`;
+  }).join("");
+  const revs = reviewsDoWorkflow(w);
+  return `<div class="wu-card">
+    <div class="wu-flow">${flow}</div>
+    <div class="wu-reviews">${revs.length
+      ? `<span class="wu-rlbl">Reviews que rodam:</span> ${revs.map((r) => `<span class="wf-rchip">${esc(r)}</span>`).join("")}`
+      : `<span class="wu-none">Sem reviews — vai direto ao ponto.</span>`}</div>
+    <p class="wu-foot">Adapta ao tamanho da tarefa: pedidos pequenos e óbvios pulam o plano e os reviews.</p>
+  </div>`;
+}
+
+function wfItemHtml(x, ativoId, globalId) {
+  const on = x.id === ativoId;
+  const revs = reviewsDoWorkflow(x);
+  const tag = x.builtin ? `<span class="wf-tag">preset</span>` : x.origem === "ia" ? `<span class="wf-tag ia">IA</span>` : `<span class="wf-tag">seu</span>`;
+  return `<div class="wf-item ${on ? "active" : ""}">
+    <div class="wf-item-h"><b>${esc(x.name)}</b>${on ? `<span class="wf-badge">em uso</span>` : ""}${x.id === globalId ? `<span class="wf-tag">padrão global</span>` : ""}${tag}</div>
+    <p class="wf-item-d">${esc(x.descricao || "")}</p>
+    <div class="wf-reviews">${revs.length ? revs.map((r) => `<span class="wf-rchip">${esc(r)}</span>`).join("") : `<span class="wf-rchip none">sem reviews</span>`}</div>
+    <div class="wf-item-acts">
+      ${on ? `<span class="wf-inuse">✓ em uso aqui</span>` : `<button class="btn xs primary" data-act="wf-ativar" data-wf="${esc(x.id)}">Usar aqui</button>`}
+      <span class="gap" style="flex:1"></span>
+      ${x.builtin
+        ? `<button class="btn xs ghost" data-act="wf-duplicar" data-wf="${esc(x.id)}">Duplicar</button>`
+        : `<button class="btn xs ghost" data-act="wf-editar" data-wf="${esc(x.id)}">Editar</button><button class="btn xs ghost" data-act="wf-excluir" data-wf="${esc(x.id)}">Excluir</button>`}
+    </div>
+  </div>`;
+}
+
+function wfDrawerHtml() {
+  const d = state.wfDraft;
+  if (!d) return "";
+  const cat = state.workflows?.catalogo || [];
+  const bloco = (fase, titulo, desc) => {
+    const items = d.skills[fase] || [];
+    const chips = items.map((s, i) => `<span class="sk"><code>/${esc(s.skill)}</code><button class="x" data-act="wf-skill-rm" data-fase="${fase}" data-i="${i}" title="Remover">×</button></span>`).join("");
+    const opts = cat.filter((c) => c.fase === fase).map((c) => {
+      const added = items.some((s) => s.skill === c.skill);
+      return `<button type="button" class="sk-opt ${added ? "added" : ""}" data-act="wf-skill-add" data-fase="${fase}" data-skill="${esc(c.skill)}" ${added ? "disabled" : ""}>${added ? "✓ " : ""}<span class="nm">${esc(c.rotulo)}</span><code>/${esc(c.skill)}</code>${c.instalada ? "" : `<span class="ninst">não instalada</span>`}</button>`;
+    }).join("");
+    return `<div class="wf-phase"><div class="wf-ph-h"><b>${titulo}</b><span>${desc}</span></div>
+      <div class="chips">${chips || `<span class="wf-empty">nenhuma</span>`}</div>
+      <details class="wf-add"><summary>+ adicionar skill</summary><div class="sk-list">${opts}</div></details></div>`;
+  };
+  return `<div class="scrim open" data-act="wf-drawer-close"></div>
+    <aside class="drawer wf-drawer">
+      <div class="dr-h"><div class="t">Edição avançada <small>· ${esc(d.name || "")}</small></div><button class="dc" data-act="wf-drawer-close" aria-label="Fechar">✕</button></div>
+      <div class="dr-b">
+        <label class="wf-field"><span>Nome</span><input id="wf-name" value="${esc(d.name)}" maxlength="60"></label>
+        <label class="wf-field"><span>Descrição (opcional)</span><input id="wf-desc" value="${esc(d.descricao || "")}" maxlength="200"></label>
+        <p class="dr-note">As skills vêm da <b>lista instalada</b> — você (e o Claude) só escolhem daqui, nunca uma que não existe.</p>
+        ${bloco("plano_produto", "Plano", "reviews de produto (ex.: office-hours)")}
+        ${bloco("detalhamento", "Detalhamento", "reviews técnicos e de design")}
+        ${bloco("verificacoes", "Verificações", "checks antes do seu teste")}
+      </div>
+      <div class="dr-f"><button class="btn ghost sm" data-act="wf-drawer-close">Cancelar</button><span class="gap" style="flex:1"></span><button class="btn primary sm" data-act="wf-save">Salvar</button></div>
+    </aside>`;
+}
+
+function renderConfiguracoes() {
+  if (!state.workflows) { carregarWorkflows(); renderPage(`<div class="view view-page cfg-wrap"><p><span class="spinner"></span> Carregando workflows…</p></div>`); return; }
+  const w = state.workflows;
+  const pid = selectedProjectId();
+  const ativoId = (pid && w.porProjeto[pid]) || w.globalAtivo;
+  const ativo = wfById(ativoId) || w.workflows[0];
+  const globalNome = wfById(w.globalAtivo)?.name || "Padrão";
+  const semProjeto = state.projects.length === 0;
+
+  const lib = w.workflows.map((x) => wfItemHtml(x, ativoId, w.globalAtivo)).join("");
+
+  renderPage(`<div class="view view-page cfg-wrap">
+    <h2>Workflows</h2>
+    <p class="hello-sub">É o jeito que o Claude trabalha nas suas tarefas. Escolha qual vale para cada projeto — ou personalize um. ${semProjeto ? "" : ""}</p>
+
+    <div class="cfg-context">
+      <span class="cfg-lbl">Projeto</span>
+      <select id="cfg-project" class="repo-pick" ${semProjeto ? "disabled" : ""} aria-label="Projeto">
+        ${semProjeto ? `<option>— nenhum projeto —</option>` : state.projects.map((p) => `<option value="${esc(p.id)}" ${p.id === pid ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
+      </select>
+      <span class="gap" style="flex:1"></span>
+      <span class="cfg-active">Em uso: <b>${esc(ativo?.name || "—")}</b></span>
+    </div>
+
+    ${ativo ? wuPlainHtml(ativo) : ""}
+
+    <div class="sect"><h3>Seus workflows</h3><span>${semProjeto ? "" : "clique em “Usar aqui” para aplicar a este projeto"}</span></div>
+    <div class="wf-lib">${lib}</div>
+
+    <div class="cfg-global">Padrão global (projetos sem escolha própria): <b>${esc(globalNome)}</b>${ativoId !== w.globalAtivo ? ` · <button class="btn xs ghost" data-act="wf-global" data-wf="${esc(ativoId)}">Tornar “${esc(ativo?.name || "")}” o padrão global</button>` : ""}</div>
+
+    <div class="ai-soon">✦ <b>Criar/ajustar workflow com IA</b> — chega no próximo incremento. Por ora, duplique um preset e edite as skills na mão.</div>
+  </div>
+  ${state.wfDrawer ? wfDrawerHtml() : ""}`);
+}
+
 // ---------- Render raiz ----------
 function render() {
   renderClaudeChip();
@@ -617,6 +753,7 @@ function render() {
   if (r.name === "home") renderHome();
   else if (r.name === "board") renderBoard();
   else if (r.name === "experiencia") renderExperiencia();
+  else if (r.name === "configuracoes") renderConfiguracoes();
   else renderEditor(r.id);
 }
 
@@ -1156,13 +1293,18 @@ function renderBoard() {
     </div>
     <div class="board">
       <form class="new-task compose-form" data-form="new-task">
-        <textarea id="new-task-desc" class="grow-area" rows="1" data-enter-submit placeholder="Descreva uma tarefa… ex.: “corrigir o filtro de turmas por data no backoffice” — Shift+Enter quebra linha" aria-label="Descrição da nova tarefa" ${claudeOff ? "disabled" : ""}></textarea>
+        <textarea id="new-task-desc" class="grow-area" rows="1" data-enter-submit placeholder="${(state.novaTarefaModo === "livre") ? "Diga o que fazer — você conduz o Claude direto (pode pedir /review, /qa…). Shift+Enter quebra linha" : "Descreva uma tarefa… ex.: “corrigir o filtro de turmas por data no backoffice” — Shift+Enter quebra linha"}" aria-label="Descrição da nova tarefa" ${claudeOff ? "disabled" : ""}></textarea>
         <div class="compose-anexos" id="anexos-new-task">${anexoChipsHtml("new-task")}</div>
         <div class="compose-bar">
           <button type="button" class="attach-btn" data-act="attach" data-target="new-task" title="Anexar arquivos (imagem, PDF)" ${claudeOff ? "disabled" : ""}>📎 Anexar</button>
+          <span class="modo-seg" role="group" aria-label="Modo da tarefa">
+            <button type="button" class="${state.novaTarefaModo !== "livre" ? "on" : ""}" data-act="set-modo" data-modo="esteira" title="Passa pela esteira: plano, suas aprovações e verificações">Esteira</button>
+            <button type="button" class="${state.novaTarefaModo === "livre" ? "on" : ""}" data-act="set-modo" data-modo="livre" title="Sem esteira: você conduz o Claude direto e escolhe as skills no chat">Livre</button>
+          </span>
           <span class="gap"></span>
           <button class="btn sm primary" type="submit" ${claudeOff ? "disabled" : ""}>Começar</button>
         </div>
+        ${state.novaTarefaModo === "livre" ? `<p class="modo-hint">⚡ <b>Modo livre:</b> vai direto, sem plano nem porteiras — você conduz e pede <code>/review</code>, <code>/qa</code> etc. quando quiser. Publique quando estiver pronto.</p>` : ""}
       </form>
       ${claudeOff ? primeirosPassosHtml() : ""}
       ${mostrarPreparar && !claudeOff ? `
@@ -1202,11 +1344,12 @@ function taskCardHtml(t) {
   return `<div class="task ${cls}" data-open-task="${esc(t.id)}" title="Abrir a tarefa (chat, plano e preview)">
     <div class="task-head">
       <b>${esc(t.title)}</b>
+      ${t.modo === "livre" ? `<span class="chip modo-chip">⚡ livre</span>` : ""}
       ${statusChip(t)}
       <div class="meta"><span class="chip">espaço ${t.espaco}</span>
       <button class="btn sm ${t.autoAprovar ? "primary" : "ghost"}" data-act="auto-toggle" data-task="${esc(t.id)}" title="Com o modo auto ligado, ações sensíveis não pedem permissão">${t.autoAprovar ? `<span class="dot"></span> Auto ligado` : "Auto: desligado"}</button> ${timeAgo(t.updatedAt)}</div>
     </div>
-    ${t.status === "concluida" || t.status === "cancelada" ? "" : flowHtml(t)}
+    ${t.status === "concluida" || t.status === "cancelada" || t.modo === "livre" ? "" : flowHtml(t)}
     ${taskFootHtml(t, perm)}
   </div>`;
 }
@@ -1261,6 +1404,11 @@ function taskFootHtml(t, perm) {
       ${t.step === "plano" ? `<button class="btn sm ghost" data-act="plano-rapido" data-task="${id}" title="Pular os reviews e ir direto ao plano">É simples — ir direto ao plano</button>` : ""}
       ${t.step !== "publicar" ? `<button class="btn sm ghost" data-act="pause" data-task="${id}" title="Pausar este passo — dá para retomar depois">Pausar</button>` : ""}
       <a class="link" href="#/tarefa/${id}">Acompanhar no editor →</a></div>`);
+  } else if (t.modo === "livre" && t.status === "aguardando") {
+    rows.push(`<div class="task-foot"><span>Modo livre — sua vez de instruir ou publicar.</span>
+      <span class="gap"></span>
+      <button class="btn sm" data-act="go-task" data-task="${id}">Abrir chat</button>
+      <button class="btn sm primary" data-act="publish" data-task="${id}">Publicar</button></div>`);
   } else if (t.step === "aprovacao" && t.status === "aguardando") {
     rows.push(`<div class="task-foot"><span class="plan-sum">${esc(planSummary(t))}</span>
       <span class="gap"></span>
@@ -1325,7 +1473,7 @@ function renderEditor(id) {
   $("#ed-status", root).innerHTML = editorStatusHtml(t);
   const ativa = t.status !== "concluida" && t.status !== "cancelada";
   $("#ed-topactions", root).innerHTML = [
-    t.step === "publicar" && t.status === "aguardando"
+    (t.step === "publicar" && t.status === "aguardando") || (t.modo === "livre" && t.status === "aguardando")
       ? `<button class="btn sm primary" data-act="publish" data-task="${esc(t.id)}" ${state.busy[`publish:${t.id}`] ? "disabled" : ""}>Publicar</button>`
       : "",
     t.status === "rodando" && t.step !== "publicar"
@@ -1335,8 +1483,9 @@ function renderEditor(id) {
       ? `<button class="btn sm ghost" data-act="cancel" data-task="${esc(t.id)}">Cancelar tarefa</button>`
       : "",
   ].join("");
-  $("#ed-flowstrip", root).innerHTML =
-    `<span>Onde essa tarefa está: <b>${esc(STEP_LABELS[t.step] ?? t.step)}</b></span>${flowHtml(t)}${nextGateChip(t)}`;
+  $("#ed-flowstrip", root).innerHTML = t.modo === "livre"
+    ? `<span>⚡ <b>Modo livre</b> — você conduz o Claude direto: sem plano nem porteiras. Peça <code>/review</code>, <code>/qa</code> etc. no chat e publique quando quiser.</span>`
+    : `<span>Onde essa tarefa está: <b>${esc(STEP_LABELS[t.step] ?? t.step)}</b></span>${flowHtml(t)}${nextGateChip(t)}`;
   renderArtefatos(root, t);
   loadArtefatos(id);
   renderChat(id);
@@ -1379,6 +1528,14 @@ function editorShellHtml(t, p) {
 function editorStatusHtml(t) {
   const permPend = state.permissions.some((p) => p.taskId === t.id);
   if (permPend) return `<span style="color:var(--amber);font-weight:600">Aguardando sua permissão — veja o chat</span>`;
+  if (t.modo === "livre") {
+    if (t.status === "rodando") return `<b class="live-dot">●</b> Claude trabalhando…`;
+    if (t.status === "falhou" && t.pausadaManual) return `<span class="wait-msg">Pausada — retome quando quiser</span>`;
+    if (t.status === "falhou") return `<span class="fail-msg">Deu um erro — veja o chat</span>`;
+    if (t.status === "concluida") return `Publicada ✓`;
+    if (t.status === "cancelada") return `Cancelada`;
+    return `Sua vez — instrua ou publique`;
+  }
   if (t.status === "rodando") return `<b class="live-dot">●</b> Claude trabalhando · ${esc(STEP_LABELS[t.step] ?? t.step)}`;
   if (t.status === "falhou" && t.pausadaManual) return `<span class="wait-msg">Pausada — retome quando quiser</span>`;
   if (t.status === "falhou") return `<span class="fail-msg">Este passo falhou — veja o chat</span>`;
@@ -1601,7 +1758,8 @@ function updatePreview(root, t) {
   const erro = state.previewErro[t.id];
   // O preview só aparece quando a task chega no "Seu teste" (ou Publicar): o
   // agente já subiu e conferiu o app. Antes disso, não mostramos preview cru.
-  const naEtapaDeTeste = t.step === "teste" || t.step === "publicar";
+  // Modo livre pode subir/ver o preview a qualquer momento (o usuário conduz).
+  const naEtapaDeTeste = t.step === "teste" || t.step === "publicar" || t.modo === "livre";
   const mostra = url && naEtapaDeTeste;
   const key = `${url}|${naEtapaDeTeste}|${busy}|${config}|${erro ? erro.msg + erro.podeConfigurar : ""}`;
   if (pane.dataset.key === key) return; // não recarregar o iframe à toa
@@ -1660,7 +1818,20 @@ function updateComposer(root, t) {
   let enabled = false;
   let ph;
   const permPend = state.permissions.some((p) => p.taskId === t.id);
-  if (t.status === "aguardando" && t.step === "aprovacao") {
+  if (t.modo === "livre") {
+    if (t.status === "concluida") ph = "Publicada — nada mais a fazer aqui.";
+    else if (t.status === "cancelada") ph = "Tarefa cancelada.";
+    else {
+      enabled = true; // você conduz: sempre dá pra mandar instrução
+      ph = permPend
+        ? "Responda o pedido de permissão acima — ou mande uma instrução"
+        : t.status === "rodando"
+          ? "Mande outra instrução — entra assim que ele terminar…"
+          : t.status === "falhou" && t.pausadaManual
+            ? "Escreva um ajuste e envie (ou clique em Retomar acima)…"
+            : "Diga o que fazer… (pode pedir /review, /qa — ou Publicar acima)";
+    }
+  } else if (t.status === "aguardando" && t.step === "aprovacao") {
     enabled = true;
     ph = "Escreva o que mudar no plano — enviar pede mudanças ao Claude";
   } else if (t.status === "aguardando" && t.step === "teste") {
@@ -1727,6 +1898,55 @@ const actions = {
   "approve-test": (btn) => taskAction(btn.dataset.task, { action: "approve_test" }),
   "retry": (btn) => taskAction(btn.dataset.task, { action: "retry" }),
   "pause": (btn) => taskAction(btn.dataset.task, { action: "pause" }),
+  "set-modo": (btn) => { state.novaTarefaModo = btn.dataset.modo === "livre" ? "livre" : "esteira"; render(); },
+  "wf-ativar": async (btn) => {
+    const pid = selectedProjectId();
+    const r = await api(`/api/workflows/${encodeURIComponent(btn.dataset.wf)}/ativar`, pid ? { projectId: pid } : {});
+    if (r) { state.workflows = { ...r, catalogo: state.workflows?.catalogo || [] }; render(); }
+  },
+  "wf-global": async (btn) => {
+    const r = await api(`/api/workflows/${encodeURIComponent(btn.dataset.wf)}/ativar`, {});
+    if (r) { state.workflows = { ...r, catalogo: state.workflows?.catalogo || [] }; render(); }
+  },
+  "wf-duplicar": async (btn) => {
+    const base = wfById(btn.dataset.wf); if (!base) return;
+    const r = await api("/api/workflows", { name: `${base.name} (cópia)`, descricao: base.descricao || "", skills: flattenSkills(base) });
+    if (r && r.id) { await carregarWorkflows(); state.wfDrawer = r.id; state.wfDraft = { name: r.name, descricao: r.descricao || "", skills: flattenSkills(r) }; render(); }
+  },
+  "wf-editar": (btn) => {
+    const wkf = wfById(btn.dataset.wf); if (!wkf) return;
+    state.wfDrawer = wkf.id; state.wfDraft = { name: wkf.name, descricao: wkf.descricao || "", skills: flattenSkills(wkf) }; render();
+  },
+  "wf-excluir": async (btn) => {
+    const wkf = wfById(btn.dataset.wf); if (!wkf) return;
+    if (!(await confirmar({ titulo: `Excluir “${wkf.name}”?`, corpo: "Projetos que usavam este workflow voltam ao Padrão.", textoConfirmar: "Excluir", perigo: true }))) return;
+    try {
+      const res = await fetch(`/api/workflows/${encodeURIComponent(wkf.id)}`, { method: "DELETE" });
+      setOnline(true);
+      if (res.ok) await carregarWorkflows();
+      else { const j = await res.json().catch(() => ({})); toast(j.error || "Não deu para excluir."); }
+    } catch { setOnline(false); }
+  },
+  "wf-skill-add": (btn) => {
+    const { fase, skill } = btn.dataset;
+    if (!state.wfDraft) return;
+    const arr = (state.wfDraft.skills[fase] ??= []);
+    if (!arr.some((s) => s.skill === skill)) arr.push({ skill });
+    render();
+  },
+  "wf-skill-rm": (btn) => {
+    if (!state.wfDraft) return;
+    (state.wfDraft.skills[btn.dataset.fase] || []).splice(Number(btn.dataset.i), 1);
+    render();
+  },
+  "wf-save": async () => {
+    const d = state.wfDraft; if (!d || !state.wfDrawer) return;
+    const name = document.getElementById("wf-name")?.value?.trim() || d.name;
+    const descricao = document.getElementById("wf-desc")?.value?.trim() || "";
+    const r = await api("/api/workflows", { id: state.wfDrawer, name, descricao, skills: d.skills });
+    if (r) { state.wfDrawer = null; state.wfDraft = null; await carregarWorkflows(); toast("Workflow salvo."); }
+  },
+  "wf-drawer-close": () => { state.wfDrawer = null; state.wfDraft = null; render(); },
   "attach": (btn) => { if (!btn.disabled) escolherAnexos(btn.dataset.target); },
   "anexo-remove": (btn) => {
     const target = btn.dataset.target;
@@ -1998,7 +2218,7 @@ document.addEventListener("click", (e) => {
 
 document.addEventListener("change", (e) => {
   const el = e.target;
-  if (el.id === "project-select") {
+  if (el.id === "project-select" || el.id === "cfg-project") {
     localStorage.setItem("inhouse.projectId", el.value);
     render();
   } else if (el.id === "create-pr") {
@@ -2030,13 +2250,15 @@ document.addEventListener("submit", async (e) => {
     const projectId = selectedProjectId();
     if (!projectId) { toast("Escolha um projeto primeiro."); return; }
     const anexos = state.anexosPendentes["new-task"] || [];
-    const t = await api("/api/tasks", { projectId, title: titleFrom(description), description, ...(anexos.length ? { anexos } : {}) });
+    const modo = state.novaTarefaModo === "livre" ? "livre" : "esteira";
+    const t = await api("/api/tasks", { projectId, title: titleFrom(description), description, modo, ...(anexos.length ? { anexos } : {}) });
     if (t && t.id) {
       const el = $("#new-task-desc");
       if (el) { el.value = ""; autoGrow(el); }
       limparAnexos("new-task");
       upsert(state.tasks, t);
-      render();
+      if (t.modo === "livre") location.hash = `#/tarefa/${t.id}`; // livre é conversa: abre o editor
+      else render();
     }
   } else if (kind === "clone") {
     const input = $("#clone-url");

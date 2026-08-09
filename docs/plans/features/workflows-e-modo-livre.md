@@ -1,0 +1,58 @@
+# Workflows configuráveis + Modo Livre (tarefa sem esteira)
+
+- **Categoria:** features
+- **Data:** 2026-08-08
+- **Status:** Concluído (Modo Livre) · Em andamento (Workflows: incremento 1 feito; IA = incr. 2)
+
+## Progresso
+
+- **Modo Livre** — ✅ entregue e QA. Tarefa sem esteira: sessão direta resumível, publicar quando
+  quiser, skills no prompt. Seletor Esteira|Livre na nova tarefa; editor sem stepper/porteiras.
+- **Workflows incremento 1** — ✅ motor + tela. Catálogo de skills instaladas
+  (`server/workflow/library.ts` + `GET /api/workflows`), biblioteca de workflows (3 presets +
+  custom CRUD, ativo global/por-projeto, persistido em `~/.inhouse/workflows.json`), integração na
+  máquina (`activeConfig` no lugar do `loadConfigCascata` para as skills), e a tela **Configurações →
+  Workflows** (principal limpa com "workflow em uso" em linguagem simples + biblioteca com troca por
+  projeto + **drawer de edição manual** com picker da lista fixa). Testes: `test/library.test.ts`.
+- **Workflows incremento 2 (próximo)** — a conversa **Ajustar com IA** (endpoint de geração/refino
+  restrito ao catálogo + UI de conversa iterativa). Hoje há um placeholder "chega no próximo incremento".
+- **Depois (incr. 3)** — ligar/desligar porteiras no workflow (auto-avançar as desligadas na máquina).
+
+Dois pedidos relacionados, prototipados e aprovados pelo Marlon (artifacts):
+- 4 opções → barra enxuta → **tela de Workflows** (AI-first + drawer avançado) → **jornada completa** (edição por IA como conversa iterativa).
+
+## Parte A — Modo Livre (implementando agora)
+
+Uma tarefa pode rodar **sem a esteira**: o usuário conduz o Claude direto e escolhe as skills no
+próprio prompt. É o "clean/fast" — batizado **Livre** (não colide com o preset "Rápido").
+
+- **Modelo:** `Task.modo?: "esteira" | "livre"` (ausente = esteira). Livre nasce no passo `execucao`.
+- **Máquina:** `runLivre(taskId, prompt)` — sessão única resumível em `acceptEdits` + gate de permissão
+  + `settingSources:[user,project]` (pra `/skill` do usuário rodar). Sem espec/plano/verificações/porteiras.
+  Ao terminar um turno sem mensagens novas → `aguardando` (espera o usuário). `steer` numa tarefa livre
+  ociosa **dispara um novo turno** (em vez de só enfileirar). `publish` liberado a qualquer momento
+  (quando não está rodando). Pausar/retomar/cancelar/arquivar funcionam igual.
+- **API:** `POST /api/tasks` aceita `modo`.
+- **UI:** seletor **Esteira | Livre** na caixa de nova tarefa; card e editor de tarefa livre **sem
+  stepper e sem porteiras** — só chat (sempre aberto), preview sob demanda e um **Publicar** persistente.
+  Placeholder do compositor deixa claro que dá pra pedir `/review`, `/qa`, etc.
+- **Testes:** máquina (cria livre → roda sessão → steer dispara novo turno → publish conclui).
+
+## Parte B — Workflows configuráveis (próximo passo)
+
+Tela **Configurações → Workflows**, desenhada nos protótipos. Escopo combinado: **moldar as fases**
+(não reordenar/criar etapas livres — isso rearquiteta a máquina).
+
+- **Tela principal limpa, AI-first (leigo):** "workflow em uso" em linguagem simples + hero **Ajustar
+  com IA** (conversa **iterativa**: propõe → você pede ajuste → refaz mostrando o delta → aplica) +
+  biblioteca de workflows pra escolher. **Manter a edição manual** (pedido do Marlon).
+- **Edição avançada (técnico), num drawer:** pipeline por fase, condições ("só com tela"),
+  ligar/desligar porteiras, por porte. Skills vêm de uma **lista fixa das instaladas** — o picker e a
+  geração por IA só escolhem daí (nunca inventam skill inexistente).
+- **Backend:** (1) catálogo de skills instaladas (detecção real via gstack + built-ins); (2) biblioteca
+  de workflows nomeados salvos (global + override por projeto), evoluindo o `inhouse.config.json`/
+  `config.json` atual; (3) endpoint de **geração/refino por IA** que recebe prompt + workflow atual,
+  chama o Claude restrito ao catálogo e devolve o config validado pra preview; (4) integração na
+  máquina: usar o workflow ativo e **auto-avançar porteiras desligadas** (mudança sensível — cuidado).
+- **Sequência sugerida:** catálogo de skills → biblioteca/persistência → geração por IA → tela +
+  drawer → integração na máquina (porteiras) → testes + QA.

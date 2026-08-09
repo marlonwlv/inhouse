@@ -31,6 +31,13 @@ import {
 import { aplicarUpdate, ultimoUpdate } from "../services/update.js";
 import { slugify } from "../services/worktrees.js";
 import { tryGit } from "../services/proc.js";
+import {
+  deleteWorkflow,
+  getState as getWorkflows,
+  setActive as setActiveWorkflow,
+  skillCatalog,
+  upsertWorkflow,
+} from "../workflow/library.js";
 import { cloneProject, createFromTemplate, openProject } from "../services/projects.js";
 import * as store from "../store.js";
 import { applyAction, startPreparacao, startTask, steer } from "../workflow/machine.js";
@@ -270,7 +277,8 @@ export function buildRouter(): Router {
           ? tituloBody.trim()
           : `${description.split("\n")[0] ?? description}`.slice(0, 60);
       const anexos = validarAnexos((req.body as Record<string, unknown>)["anexos"]);
-      res.json(await startTask(projectId, title, description, anexos));
+      const modo = (req.body as Record<string, unknown>)["modo"] === "livre" ? "livre" : "esteira";
+      res.json(await startTask(projectId, title, description, anexos, modo));
     }),
   );
 
@@ -576,6 +584,60 @@ export function buildRouter(): Router {
       if (!store.getTask(id)) throw new HttpError(404, "Tarefa não encontrada.");
       await stopPreview(id);
       res.json({ ok: true });
+    }),
+  );
+
+  // ---------- Workflows (biblioteca configurável) ----------
+  router.get(
+    "/api/workflows",
+    h(async (_req, res) => {
+      res.json({ ...getWorkflows(), catalogo: skillCatalog() });
+    }),
+  );
+
+  router.post(
+    "/api/workflows",
+    h(async (req, res) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      try {
+        const w = upsertWorkflow({
+          id: typeof body.id === "string" ? body.id : undefined,
+          name: String(body.name ?? ""),
+          descricao: typeof body.descricao === "string" ? body.descricao : undefined,
+          origem: body.origem === "ia" ? "ia" : "manual",
+          skills: body.skills,
+        });
+        res.json(w);
+      } catch (err) {
+        throw new HttpError(400, err instanceof Error ? err.message : "Não foi possível salvar o workflow.");
+      }
+    }),
+  );
+
+  router.delete(
+    "/api/workflows/:id",
+    h(async (req, res) => {
+      try {
+        deleteWorkflow(req.params.id ?? "");
+        res.json({ ok: true });
+      } catch (err) {
+        throw new HttpError(400, err instanceof Error ? err.message : "Não foi possível remover o workflow.");
+      }
+    }),
+  );
+
+  router.post(
+    "/api/workflows/:id/ativar",
+    h(async (req, res) => {
+      const projectId = typeof (req.body as Record<string, unknown>)?.projectId === "string"
+        ? ((req.body as Record<string, unknown>).projectId as string)
+        : undefined;
+      if (projectId && !store.getProject(projectId)) throw new HttpError(404, "Projeto não encontrado.");
+      try {
+        res.json(setActiveWorkflow(req.params.id ?? "", projectId));
+      } catch (err) {
+        throw new HttpError(400, err instanceof Error ? err.message : "Não foi possível ativar o workflow.");
+      }
     }),
   );
 
