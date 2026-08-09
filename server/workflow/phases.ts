@@ -63,6 +63,21 @@ export function parseVeredito(finalText: string): { ok: boolean; motivo?: string
   return { ok: m[1]!.toUpperCase() === "APROVADO", motivo: m[2]?.trim() || undefined };
 }
 
+/**
+ * Bloco com os arquivos que o usuário anexou. O Claude Code lê imagens e PDFs por
+ * caminho absoluto com a ferramenta Read — então basta listar os caminhos e mandar ler.
+ */
+export function anexosBloco(task: Task): string {
+  const anexos = task.anexos ?? [];
+  if (anexos.length === 0) return "";
+  return [
+    "",
+    "O usuário ANEXOU os arquivos abaixo como contexto. LEIA cada um com a ferramenta Read",
+    "(ela abre imagens e PDFs, não só texto) ANTES de decidir — eles fazem parte do pedido:",
+    ...anexos.map((a) => `- ${a.nome} (${a.tipo || "arquivo"}): ${a.path}`),
+  ].join("\n");
+}
+
 /** Fase espec: estruturar o pedido em spec curta, sem tocar em nada. */
 /**
  * Instrução transversal: quem usa o Inhouse não é técnico. O agente NUNCA deve
@@ -99,6 +114,7 @@ export function especPrompt(task: Task): string {
     "",
     `Pedido do usuário (título: "${task.title}"):`,
     task.description,
+    anexosBloco(task),
     "",
     "Responda SOMENTE com a especificação em markdown, com exatamente estas seções:",
     "## Objetivo",
@@ -134,6 +150,7 @@ export function planoPrompt(task: Task): string {
     "",
     "Especificação:",
     spec,
+    anexosBloco(task),
   ].join("\n");
 }
 
@@ -178,6 +195,7 @@ export function execucaoPrompt(task: Task): string {
     PREVIEW_GERENCIADO,
     "Siga o plano; se algo imprevisto exigir um desvio pequeno, faça e explique.",
     "Ao final, explique em português simples, para uma pessoa não-técnica, o que foi feito.",
+    anexosBloco(task),
     ...plano,
   ].join("\n");
 }

@@ -24,6 +24,7 @@ Cada plano abre com um cabeçalho: **título · categoria · data (YYYY-MM-DD) �
 - [Próximas melhorias](features/proximas-melhorias.md) — aviso de versão nova, setup guiado do repo, arquivar tarefas e esteira de plano em fases (Plano→aprovação→Detalhamento→Protótipo). **Status: Concluído** (2026-08-06).
 - [Preview confiável](features/preview-confiavel.md) — o agente prepara e exercita o preview no fim das Verificações; o usuário só vê preview funcionando no "Seu teste" (health-check por rota + receita com setup/healthPaths). **Status: Concluído (Fase 1)** (2026-08-06).
 - [Debug Suite da Esteira](features/debug-suite-workflow.md) — modelo fake atrás de `INHOUSE_FAKE_MODEL` + catálogo de cenários + runner headless (`npm run debug`) + painel na UI (`npm run dev:fake`), para testar as jornadas de ponta a ponta sem gastar LLM. **Status: Concluído** (2026-08-06).
+- [Melhorias de usabilidade: relatório, caixa de texto, pausar, anexos e artefatos](features/melhorias-usabilidade-relatorio-anexos.md) — fix do "Gerar análise"; caixa de tarefa multilinha (Shift+Enter); botão Pausar; anexar arquivos (imagem/pdf) ao prompt; barra de artefatos (espec/plano/protótipo/docs) sempre acessível. **Status: Em andamento** (2026-08-07).
 
 ### design
 - [Redesign visual](design/redesign-visual.md) — moderno light & clean → accent monocromático → audit impeccable (UI v0.4.2). **Status: Concluído** (2026-08-06).

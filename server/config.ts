@@ -16,6 +16,8 @@ export const ESPACOS_DIR = join(PROJECTS_DIR, ".espacos");
 export const DATA_DIR =
   process.env.INHOUSE_DATA_DIR ?? join(homedir(), ".inhouse");
 export const TRANSCRIPTS_DIR = join(DATA_DIR, "transcripts");
+/** Arquivos anexados pelo usuário às tarefas (imagens, PDFs). Fora do worktree. */
+export const ANEXOS_DIR = join(DATA_DIR, "anexos");
 /** Dados do eval de experiência (registros JSONL + relatórios do juiz). */
 export const EVAL_DIR = join(DATA_DIR, "eval");
 export const RELATORIOS_DIR = join(EVAL_DIR, "relatorios");
@@ -32,7 +34,7 @@ export const PERMISSION_TIMEOUT_MS = 30 * 60 * 1000;
 export const MAX_GATE_FIX_ROUNDS = 2;
 
 export function ensureDirs(): void {
-  for (const d of [PROJECTS_DIR, ESPACOS_DIR, DATA_DIR, TRANSCRIPTS_DIR, EVAL_DIR, RELATORIOS_DIR]) {
+  for (const d of [PROJECTS_DIR, ESPACOS_DIR, DATA_DIR, TRANSCRIPTS_DIR, ANEXOS_DIR, EVAL_DIR, RELATORIOS_DIR]) {
     mkdirSync(d, { recursive: true });
   }
 }

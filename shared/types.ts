@@ -79,6 +79,16 @@ export interface GateResult {
 /** Porte da tarefa, julgado na espec (triagem): decide quais skills de plano rodam. */
 export type Porte = "simples" | "media" | "grande";
 
+/** Arquivo anexado pelo usuário a uma tarefa/mensagem (fica em ANEXOS_DIR, fora do worktree). */
+export interface TaskAnexo {
+  /** Nome original do arquivo (exibição). */
+  nome: string;
+  /** MIME informado pelo browser (ex.: "image/png", "application/pdf"). */
+  tipo: string;
+  /** Caminho absoluto no disco, SEMPRE dentro de ANEXOS_DIR (guarda no server). */
+  path: string;
+}
+
 export interface Task {
   id: string;
   projectId: string;
@@ -108,6 +118,12 @@ export interface Task {
   error?: string;
   /** O passo foi pausado pelo teto de 1h (não é erro): UI oferece "Continuar assim mesmo". */
   pausadaPorTempo?: boolean;
+  /** O usuário pausou o passo manualmente (não é erro): UI oferece "Retomar" e permite ajustar antes. */
+  pausadaManual?: boolean;
+  /** A tarefa gerou um protótipo (mockup em docs/plans/mockups/<slug>/) — fica acessível mesmo depois. */
+  temPrototipo?: boolean;
+  /** Arquivos anexados pelo usuário (contexto para o Claude ler via Read). */
+  anexos?: TaskAnexo[];
   /** Porte julgado na espec — controla a cadeia de skills do plano. */
   porte?: Porte;
   /** A TAREFA mexe em interface/jornada de usuário? (julgado na espec e re-julgado pós-plano) */
@@ -184,9 +200,12 @@ export type ServerEvent =
 // POST /api/projects/from-template     { name, template: "app-starter" } -> Project
 // POST /api/projects/open               { path } -> Project (registra pasta existente)
 // GET  /api/tasks/:id/transcript        -> TranscriptItem[]
-// POST /api/tasks                       { projectId, title?, description } -> Task
+// POST /api/anexos                      { files: [{nome,tipo,dataBase64}] } -> { anexos: TaskAnexo[] }
+// POST /api/tasks                       { projectId, title?, description, anexos? } -> Task
 // POST /api/tasks/:id/action            TaskAction -> Task
-// POST /api/tasks/:id/message           { text } -> 202 (steering durante execução)
+// POST /api/tasks/:id/message           { text, anexos? } -> 202 (steering durante execução)
+// GET  /api/tasks/:id/artefatos         -> { temPrototipo, docs: {nome,rel}[] }
+// GET  /api/tasks/:id/artefatos/doc?rel= -> { conteudo } (markdown de docs/plans)
 // POST /api/permissions/:id/decision    { allow, remember? } -> 200
 // POST /api/tasks/:id/preview/start     -> { url }
 // POST /api/tasks/:id/preview/stop      -> 200
@@ -211,6 +230,7 @@ export const TASK_ACTIONS = [
   "retry",
   "auto_mode",
   "plano_rapido",
+  "pause",
   "arquivar",
   "desarquivar",
   "cancel",
@@ -226,6 +246,7 @@ export type TaskAction =
   | { action: "retry" } // re-roda o passo que falhou
   | { action: "auto_mode"; on: boolean } // permissões automáticas para esta tarefa
   | { action: "plano_rapido" } // pular a cadeia de reviews e ir direto ao plano
+  | { action: "pause" } // interrompe o passo automático em andamento; retomável via retry
   | { action: "arquivar" } // some do quadro + libera o worktree (mantém a branch)
   | { action: "desarquivar" } // reexibe no quadro
   | { action: "cancel"; motivo?: string };
