@@ -141,6 +141,26 @@ describe("store: persistência", () => {
     const store = await freshStore();
     expect(() => store.updateTask("nao-existe", { status: "falhou" })).toThrow(/não encontrada/);
   });
+
+  it("removeProject tira o projeto E suas tarefas (e só as dele), devolvendo o que removeu", async () => {
+    const store = await freshStore();
+    store.addProject(projeto({ id: "p1" }));
+    store.addProject(projeto({ id: "p2", name: "outro" }));
+    store.addTask(tarefa({ id: "a", projectId: "p1" }));
+    store.addTask(tarefa({ id: "b", projectId: "p1" }));
+    store.addTask(tarefa({ id: "c", projectId: "p2" }));
+
+    const removidas = store.removeProject("p1");
+    expect(removidas.map((t) => t.id).sort()).toEqual(["a", "b"]);
+    expect(store.getProject("p1")).toBeUndefined();
+    expect(store.getProject("p2")).toBeDefined();
+    expect(store.listTasks().map((t) => t.id)).toEqual(["c"]); // só a tarefa do p2 sobra
+
+    // Persistiu: sobrevive a um restart.
+    const store2 = await restart();
+    expect(store2.getProject("p1")).toBeUndefined();
+    expect(store2.listTasks().map((t) => t.id)).toEqual(["c"]);
+  });
 });
 
 describe("store: nextEspaco", () => {

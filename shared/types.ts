@@ -19,7 +19,32 @@ export interface Project {
   defaultBranch: string;
   /** Quando o projeto foi preparado (setup guiado). Ausente = ainda não preparado. */
   preparado?: string;
+  /** Arquivado (ISO): sai da grade principal, previews parados. Reversível. Ausente = ativo. */
+  arquivadoEm?: string;
   createdAt: string; // ISO
+}
+
+/** Impacto real de excluir um projeto — inspecionado no servidor (git de verdade). */
+export interface ExclusaoInfo {
+  projectId: string;
+  name: string;
+  /** A pasta é gerenciada pelo Inhouse (dentro de ~/Inhouse) → dá pra apagar do disco. */
+  gerenciado: boolean;
+  /** Caminho da pasta no disco (mostrado ao usuário quando é "aberto no lugar"). */
+  path: string;
+  /** Tem cópia no GitHub (originUrl) → reabrível/reclonável. */
+  temRemoto: boolean;
+  /** Tarefas em execução AGORA (bloqueiam a exclusão). */
+  rodando: number;
+  /** Tarefas não finalizadas (rodando/aguardando). */
+  tarefasAtivas: number;
+  nTarefas: number;
+  /** Há mudanças não commitadas no checkout principal. */
+  sujo: boolean;
+  /** Commits locais à frente do GitHub (só quando temRemoto). */
+  commitsFrente: number;
+  /** Branches de tarefa (tarefa/*) — trabalho local não publicado. */
+  branchesTarefa: number;
 }
 
 /** Passos da esteira, na ordem. "concluida" é terminal. */
@@ -188,6 +213,7 @@ export type ServerEvent =
   | { type: "state"; projects: Project[]; tasks: Task[]; permissions: PermissionRequest[] }
   | { type: "task_updated"; task: Task }
   | { type: "project_updated"; project: Project }
+  | { type: "project_removed"; projectId: string }
   | { type: "project_progress"; projectId?: string; name: string; message: string; pct?: number }
   | { type: "chat_delta"; taskId: string; text: string } // streaming do texto do assistente
   | { type: "transcript"; taskId: string; item: TranscriptItem }

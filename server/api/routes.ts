@@ -39,7 +39,14 @@ import {
   upsertWorkflow,
 } from "../workflow/library.js";
 import { gerarWorkflow } from "../workflow/gerar.js";
-import { cloneProject, createFromTemplate, openProject } from "../services/projects.js";
+import {
+  cloneProject,
+  createFromTemplate,
+  deleteProject,
+  exclusaoInfo,
+  openProject,
+  setArquivado,
+} from "../services/projects.js";
 import * as store from "../store.js";
 import { applyAction, startPreparacao, startTask, steer } from "../workflow/machine.js";
 
@@ -260,6 +267,53 @@ export function buildRouter(): Router {
       const id = req.params.id ?? "";
       if (!store.getProject(id)) throw new HttpError(404, "Projeto não encontrado.");
       res.json(await startPreparacao(id));
+    }),
+  );
+
+  // Arquivar / desarquivar (suave, reversível — nada é apagado).
+  router.post(
+    "/api/projects/:id/arquivar",
+    h(async (req, res) => {
+      const id = req.params.id ?? "";
+      if (!store.getProject(id)) throw new HttpError(404, "Projeto não encontrado.");
+      res.json(await setArquivado(id, true));
+    }),
+  );
+  router.post(
+    "/api/projects/:id/desarquivar",
+    h(async (req, res) => {
+      const id = req.params.id ?? "";
+      if (!store.getProject(id)) throw new HttpError(404, "Projeto não encontrado.");
+      res.json(await setArquivado(id, false));
+    }),
+  );
+
+  // Impacto real de excluir (git de verdade) — a UI mostra e escala a confirmação.
+  router.get(
+    "/api/projects/:id/exclusao-info",
+    h(async (req, res) => {
+      const id = req.params.id ?? "";
+      if (!store.getProject(id)) throw new HttpError(404, "Projeto não encontrado.");
+      res.json(await exclusaoInfo(id));
+    }),
+  );
+
+  // Excluir. `apagarArquivos` só vale para pasta GERENCIADA — o servidor reforça.
+  // Recusa (409) se houver tarefa rodando.
+  router.delete(
+    "/api/projects/:id",
+    h(async (req, res) => {
+      const id = req.params.id ?? "";
+      if (!store.getProject(id)) throw new HttpError(404, "Projeto não encontrado.");
+      const apagarArquivos = (req.body as Record<string, unknown> | undefined)?.["apagarArquivos"] === true;
+      try {
+        await deleteProject(id, { apagarArquivos });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Não foi possível excluir o projeto.";
+        // Tarefa em andamento → conflito (a UI trata como "espere/cancele").
+        throw new HttpError(/em andamento/.test(msg) ? 409 : 400, msg);
+      }
+      res.json({ ok: true });
     }),
   );
 

@@ -63,6 +63,14 @@ export function updateProject(id: string, patch: Partial<Project>): Project {
   persist();
   return p;
 }
+/** Remove o projeto E todas as suas tarefas do estado (uma única gravação). */
+export function removeProject(id: string): Task[] {
+  const removidas = state.tasks.filter((t) => t.projectId === id);
+  state.tasks = state.tasks.filter((t) => t.projectId !== id);
+  state.projects = state.projects.filter((p) => p.id !== id);
+  persist();
+  return removidas;
+}
 
 // ---------- Tasks ----------
 export const listTasks = (): Task[] => state.tasks;
