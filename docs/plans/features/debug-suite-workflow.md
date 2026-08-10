@@ -103,7 +103,7 @@ Catálogo inicial (grupo **stub**, rápido, sem `npm`):
 6. `grande` · UI sim · design sim — jornada cheia (office-hours + eng/design-review + review/qa).
 7. `grande` · bypass `approve_plan_direto` — pula detalhamento/protótipo.
 8. `media` · gates `stub-fail-once` — 1 rodada de auto-fix e passa.
-9. `media` · gates `stub-fail-always` — estoura `MAX_GATE_FIX_ROUNDS`, termina `falhou`.
+9. `media` · gates `stub-fail-always` — o agente nunca converge nem desiste, bate no teto de segurança `GATE_FIX_SAFETY_ROUNDS`, termina `falhou`.
 10. `grande` · UI sim · `skillGateVeredito: reprovado` — a skill-gate `/review` reprova → auto-fix.
 11. `media` · `setDesign: nao` sobre task de design — desliga o protótipo.
 12. **preparação** (`startPreparacao`) · `prepPronto: sim` e `nao`.
