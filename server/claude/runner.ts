@@ -19,6 +19,7 @@ import { claudeEnv, claudePath } from "../config.js";
 import { fakeRunPhase } from "../debug/fakeModel.js";
 import { isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
+import { acquire } from "../services/limiter.js";
 import { transcriptAppend } from "../store.js";
 
 /** Timeout de segurança global de uma fase. */
@@ -31,12 +32,18 @@ const phaseAborts = new Map<string, AbortController>();
  * Tentativas de (re)spawn do CLI. O binário nativo do Claude Code se auto-atualiza
  * (troca o arquivo em ~/.local/share/claude/versions e repointa o symlink). Se o
  * spawn cai bem nessa janela, o processo nem inicia — é uma corrida transitória,
- * não um defeito. Nesse caso re-tentamos, com um respiro para o swap terminar.
+ * não um defeito. Nesse caso re-tentamos, com backoff exponencial + jitter (o jitter
+ * evita "thundering herd" quando várias tarefas re-tentam em lockstep).
  */
-const SPAWN_MAX_ATTEMPTS = 3;
-const SPAWN_RETRY_MS = [600, 1800];
+const SPAWN_MAX_ATTEMPTS = 5;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Backoff exponencial com jitter para re-spawn: ~400,800,1600,3200ms (+0-400ms). */
+function spawnBackoffMs(attempt: number): number {
+  const base = Math.min(8000, 400 * 2 ** (attempt - 1));
+  return base + Math.floor(Math.random() * 400);
+}
 
 /**
  * Erro de LANÇAMENTO do processo (não de execução): o binário existe mas o spawn
@@ -190,19 +197,40 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   };
   armTimer();
 
+  // Slot do limitador global de sessões Claude. É SOLTO durante a espera de decisão
+  // humana (permissão) e re-adquirido depois — senão uma fase parada numa porteira
+  // seguraria o slot por até 30min e travaria o início de outras tarefas.
+  let releaseSlot: (() => void) | null = null;
+  const soltarSlot = (): void => {
+    if (releaseSlot) {
+      releaseSlot();
+      releaseSlot = null;
+    }
+  };
+  const pegarSlot = async (): Promise<void> => {
+    if (!releaseSlot && !abortController.signal.aborted) releaseSlot = await acquire("claude");
+  };
+
   // O relógio de segurança da fase não corre enquanto uma permissão espera a
   // decisão humana — quem manda nessa espera é o PERMISSION_TIMEOUT_MS (30min).
+  // E o slot do limitador é solto nesse meio-tempo (a fase está ociosa, não spawna).
   let permissoesPendentes = 0;
   const baseCanUseTool = opts.canUseTool;
   const canUseTool: CanUseTool | undefined = baseCanUseTool
     ? async (toolName, input, options) => {
         permissoesPendentes++;
-        if (permissoesPendentes === 1) clearTimeout(timer);
+        if (permissoesPendentes === 1) {
+          clearTimeout(timer);
+          soltarSlot();
+        }
         try {
           return await baseCanUseTool(toolName, input, options);
         } finally {
           permissoesPendentes--;
-          if (permissoesPendentes === 0) armTimer();
+          if (permissoesPendentes === 0) {
+            armTimer();
+            await pegarSlot();
+          }
         }
       }
     : undefined;
@@ -240,6 +268,21 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   let filesTouched = false;
   /** Último erro de API visto em mensagem assistant (auth, rate limit...). */
   let apiError: SDKAssistantMessage["error"];
+  // Observabilidade: modelo(s) da fase (incl. sub-agents de modelo diferente, via
+  // modelUsage) e effort REAL do turno. O effort não volta no resultado do SDK, então
+  // é capturado por um hook in-process (input.effort.level) — sem DEFINIR/sobrescrever
+  // o effort configurado pelo usuário; só lê o valor ativo (após downgrade do modelo).
+  const modelosUsados = new Set<string>();
+  let effortLevel: string | undefined;
+  const capturarEffort = async (input: unknown): Promise<{ continue: true }> => {
+    const nivel = (input as { effort?: { level?: string } }).effort?.level;
+    if (nivel) effortLevel = nivel;
+    return { continue: true };
+  };
+  options.hooks = {
+    PreToolUse: [{ hooks: [capturarEffort] }],
+    Stop: [{ hooks: [capturarEffort] }],
+  };
 
   // Fases sem tarefa real (ex.: juiz do eval) não gravam transcript — o taskId
   // sintético nem passaria pela validação do sink.
@@ -276,6 +319,8 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   const handleMessage = (m: SDKMessage): void => {
     if (m.type === "system" && m.subtype === "init") {
       sessionId = m.session_id;
+      const modelo = (m as { model?: string }).model;
+      if (modelo) modelosUsados.add(modelo);
       return;
     }
     if (m.type === "stream_event") {
@@ -295,6 +340,12 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
     }
     if (m.type === "result") {
       resultSeen = true;
+      // modelUsage é um mapa por modelo — captura TODOS os modelos da fase, inclusive
+      // sub-agents que rodaram em modelo diferente (ex.: /review lança sub-agents).
+      const modelUsage = (m as { modelUsage?: Record<string, { canonicalModel?: string }> }).modelUsage;
+      if (modelUsage) {
+        for (const [id, u] of Object.entries(modelUsage)) modelosUsados.add(u?.canonicalModel ?? id);
+      }
       if (typeof m.total_cost_usd === "number" && m.usage) {
         const u = m.usage;
         metricas = {
@@ -306,6 +357,8 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
             (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
           tokensOut: u.output_tokens ?? 0,
           negacoesAuto: m.permission_denials?.length ?? 0,
+          ...(modelosUsados.size ? { modelos: [...modelosUsados] } : {}),
+          ...(effortLevel ? { effort: effortLevel } : {}),
         };
       }
       if (m.subtype === "success") {
@@ -324,6 +377,10 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   };
 
   try {
+    // Limitador GLOBAL: adquire um slot de sessão Claude antes de começar (o excedente
+    // enfileira). Evita a "tempestade de spawns" que esgota fork/thread (EAGAIN). O slot
+    // é solto/re-adquirido em torno da espera de permissão humana (ver canUseTool).
+    await pegarSlot();
     for (let attempt = 1; ; attempt++) {
       try {
         const q = query({ prompt: opts.prompt, options });
@@ -348,7 +405,7 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
           );
           apiError = undefined;
           stderrTail = "";
-          await sleep(SPAWN_RETRY_MS[attempt - 1] ?? 1800);
+          await sleep(spawnBackoffMs(attempt));
           continue;
         }
         throw err;
@@ -369,6 +426,7 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   } finally {
     phaseDone = true;
     clearTimeout(timer);
+    soltarSlot();
     phaseAborts.delete(opts.taskId);
   }
 

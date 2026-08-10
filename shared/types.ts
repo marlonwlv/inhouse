@@ -83,6 +83,10 @@ export interface UsoFase {
   tokensIn: number;
   tokensOut: number;
   negacoesAuto: number;
+  /** Modelo(s) usados na etapa (ids canônicos, ex.: "claude-opus-4-8"; inclui sub-agents). */
+  modelos?: string[];
+  /** Effort ativo observado na etapa ("low"|"medium"|"high"|"xhigh"|"max"). */
+  effort?: string;
 }
 /** Acumulado da tarefa para o eval de experiência. */
 export interface TaskUso {

@@ -3,6 +3,7 @@
  * nunca aparece na UI). Ficam em ESPACOS_DIR/<projeto>/espaco-<N>.
  */
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { cp, mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -11,10 +12,24 @@ import { ESPACOS_DIR, claudeEnv } from "../config.js";
 import { fakeRealGates, isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
 import { loadConfigCascata } from "../workflow/config.js";
+import { withLimit } from "./limiter.js";
 import { withProjectLock } from "./locks.js";
 import { git, gitCommit, lastLines, tryGit } from "./proc.js";
 
 const NPM_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Installs de espaço (npm/pnpm) em andamento — mortos no shutdown para não virar órfãos. */
+const installsDeEspaco = new Set<ChildProcess>();
+export function killInstallsDeEspaco(): void {
+  for (const child of installsDeEspaco) {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // best-effort
+    }
+  }
+  installsDeEspaco.clear();
+}
 
 /** Converte um título livre em slug seguro para nome de branch. */
 export function slugify(title: string): string {
@@ -210,7 +225,8 @@ export async function ensureDeps(worktreePath: string, projectName: string): Pro
     ? ["corepack", ["pnpm", "install"]]
     : ["npm", ["install"]];
 
-  await new Promise<void>((resolve, reject) => {
+  // Limitador GLOBAL de installs: no máx. N `npm/pnpm install` em paralelo na máquina.
+  await withLimit("install", () => new Promise<void>((resolve, reject) => {
     // claudeEnv(): scripts postinstall de dependências rodam código arbitrário
     // do projeto — não podem ver ANTHROPIC_API_KEY/AUTH_TOKEN.
     const child = spawn(cmd, args, {
@@ -218,6 +234,7 @@ export async function ensureDeps(worktreePath: string, projectName: string): Pro
       env: claudeEnv(),
       stdio: ["ignore", "ignore", "pipe"],
     });
+    installsDeEspaco.add(child); // rastreado para o shutdown matar (evita órfão)
     let stderrTail = "";
     child.stderr?.on("data", (d: Buffer) => {
       stderrTail = lastLines(stderrTail + String(d), 30);
@@ -229,10 +246,12 @@ export async function ensureDeps(worktreePath: string, projectName: string): Pro
     }, NPM_INSTALL_TIMEOUT_MS);
     child.on("error", (err) => {
       clearTimeout(timer);
+      installsDeEspaco.delete(child);
       reject(new Error("Não foi possível rodar o npm nesta máquina. Fale com o time técnico.", { cause: err }));
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      installsDeEspaco.delete(child);
       if (code === 0) {
         resolve();
       } else {
@@ -246,7 +265,7 @@ export async function ensureDeps(worktreePath: string, projectName: string): Pro
         );
       }
     });
-  });
+  }));
 
   broadcast({ type: "project_progress", name: projectName, message: "Espaço pronto." });
 }

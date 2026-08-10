@@ -51,7 +51,7 @@ function stepsAtivos(t) {
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.23.0";
+const UI_VERSION = "0.24.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -1599,7 +1599,7 @@ function taskCardHtml(t) {
       <b>${esc(t.title)}</b>
       ${t.modo === "livre" ? `<span class="chip modo-chip">⚡ livre</span>` : ""}
       ${statusChip(t)}
-      <div class="meta"><span class="chip">espaço ${t.espaco}</span>
+      <div class="meta"><span class="chip">espaço ${t.espaco}</span>${custoChip(t, true)}
       <button class="btn sm ${t.autoAprovar ? "primary" : "ghost"}" data-act="auto-toggle" data-task="${esc(t.id)}" title="Com o modo auto ligado, ações sensíveis não pedem permissão">${t.autoAprovar ? `<span class="dot"></span> Auto ligado` : "Auto: desligado"}</button> ${timeAgo(t.updatedAt)}</div>
     </div>
     ${t.status === "concluida" || t.status === "cancelada" || t.modo === "livre" ? "" : flowHtml(t)}
@@ -1737,8 +1737,8 @@ function renderEditor(id) {
       : "",
   ].join("");
   $("#ed-flowstrip", root).innerHTML = t.modo === "livre"
-    ? `<span>⚡ <b>Modo livre</b> — você conduz o Claude direto: sem plano nem porteiras. Peça <code>/review</code>, <code>/qa</code> etc. no chat e publique quando quiser.</span>`
-    : `<span>Onde essa tarefa está: <b>${esc(STEP_LABELS[t.step] ?? t.step)}</b></span>${flowHtml(t)}${nextGateChip(t)}`;
+    ? `<span>⚡ <b>Modo livre</b> — você conduz o Claude direto: sem plano nem porteiras. Peça <code>/review</code>, <code>/qa</code> etc. no chat e publique quando quiser.</span>${modeloChip(t)}${custoChip(t, false)}`
+    : `<span>Onde essa tarefa está: <b>${esc(STEP_LABELS[t.step] ?? t.step)}</b></span>${flowHtml(t)}${nextGateChip(t)}${modeloChip(t)}${custoChip(t, false)}`;
   renderArtefatos(root, t);
   loadArtefatos(id);
   renderChat(id);
@@ -1795,6 +1795,76 @@ function editorStatusHtml(t) {
   if (t.status === "concluida") return `Tarefa concluída ✓`;
   if (t.status === "cancelada") return `Tarefa cancelada`;
   return `Aguardando você · ${esc(STEP_LABELS[t.step] ?? t.step)}`;
+}
+
+/* Nome amigável de um id de modelo (ex.: "claude-opus-4-8" → "Opus 4.8"). */
+function nomeModelo(id) {
+  if (!id) return "";
+  const s = String(id).replace(/^claude-/, "").replace(/-\d{8}$/, ""); // tira prefixo e data
+  const parts = s.split("-");
+  const fam = parts[0] ? parts[0][0].toUpperCase() + parts[0].slice(1) : "";
+  const ver = parts.slice(1).filter((p) => /^\d+$/.test(p)).join(".");
+  return ver ? `${fam} ${ver}` : fam || String(id);
+}
+
+/* Chip com o(s) modelo(s) e o effort que o Claude usou na tarefa (Task.uso.porEtapa). */
+function modeloChip(t) {
+  const uso = t.uso && t.uso.porEtapa;
+  if (!uso) return "";
+  const modelos = new Set();
+  let effort = "";
+  for (const st of Object.keys(uso)) {
+    const u = uso[st];
+    (u && u.modelos ? u.modelos : []).forEach((m) => modelos.add(m));
+    if (u && u.effort) effort = u.effort; // último visto
+  }
+  if (uso[t.step] && uso[t.step].effort) effort = uso[t.step].effort; // etapa atual tem prioridade
+  const nomes = [...modelos].map(nomeModelo).filter(Boolean);
+  const partes = [
+    nomes.length ? `Modelo: ${nomes.join(" + ")}` : "",
+    effort ? `Effort: ${effort}` : "",
+  ].filter(Boolean).join(" · ");
+  return partes
+    ? `<span class="chip model-chip" title="Modelo(s) e esforço de raciocínio que o Claude usou nesta tarefa">${esc(partes)}</span>`
+    : "";
+}
+
+/* Soma custo (estimado) e tokens de todas as fases da tarefa (Task.uso.porEtapa). */
+function usoTotais(t) {
+  const uso = t.uso && t.uso.porEtapa;
+  let custoUsd = 0;
+  let tokens = 0;
+  let temDados = false;
+  if (uso) {
+    for (const st of Object.keys(uso)) {
+      const u = uso[st];
+      if (!u) continue;
+      custoUsd += u.custoUsd || 0;
+      tokens += (u.tokensIn || 0) + (u.tokensOut || 0);
+      if (u.chamadas) temDados = true;
+    }
+  }
+  return { custoUsd, tokens, temDados };
+}
+function fmtUsd(v) {
+  if (v <= 0) return "$0";
+  if (v < 0.01) return "<$0.01";
+  return `$${v.toFixed(2)}`;
+}
+function fmtTokens(n) {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+  return String(n);
+}
+/* Chip sutil de gasto: compacto (~$0,42) no card; com tokens no editor. */
+function custoChip(t, compact) {
+  const { custoUsd, tokens, temDados } = usoTotais(t);
+  if (!temDados) return "";
+  const money = fmtUsd(custoUsd);
+  const tks = `${fmtTokens(tokens)} tokens`;
+  const label = compact ? `~${money}` : `~${money} · ${tks}`;
+  const title = `Valor estimado (equivalente à API): ${money} · ${tks}. Você paga sua assinatura — isto é só a noção do quanto foi consumido.`;
+  return `<span class="chip custo-chip" title="${esc(title)}">${esc(label)}</span>`;
 }
 
 function nextGateChip(t) {
