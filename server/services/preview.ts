@@ -26,6 +26,9 @@ const registry = new Map<string, ChildProcess>();
 const emAndamento = new Map<string, Promise<string>>();
 /** Todos os processos spawnados ainda vivos (mesmo fora do registry) — o shutdown mata todos. */
 const todos = new Set<ChildProcess>();
+/** Logs (stdout+stderr) do dev server, por tarefa — sobrevivem ao "ready" e a um crash. */
+const logs = new Map<string, string[]>();
+const LOG_MAX_LINHAS = 500;
 
 /** Timeout default de subida (cold-starts de monorepo/Next pedem folga). */
 const START_TIMEOUT_MS = 120_000;
@@ -35,6 +38,20 @@ const URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1):\d+\/?/;
 
 /** Onde ficam as receitas de preview aprendidas pelo agente, por projeto. */
 const RECEITAS_DIR = join(DATA_DIR, "previews");
+
+/** Anexa saída bruta (sem ANSI) ao buffer de logs da tarefa, truncando ao teto. */
+function pushLog(taskId: string, chunk: string): void {
+  const buf = logs.get(taskId);
+  if (!buf) return;
+  for (const l of chunk.replace(ANSI_RE, "").split("\n")) buf.push(l);
+  if (buf.length > LOG_MAX_LINHAS) buf.splice(0, buf.length - LOG_MAX_LINHAS);
+}
+
+/** Logs capturados do dev server desta tarefa (a UI usa para diagnosticar falhas). */
+export function previewLogs(taskId: string): string {
+  if (isFakeModelActive()) return "";
+  return (logs.get(taskId) ?? []).join("\n");
+}
 
 interface PkgJson {
   scripts?: Record<string, string>;
@@ -171,16 +188,34 @@ function limparUrl(taskId: string): void {
   }
 }
 
-/** A porta está livre em 127.0.0.1? (bind de teste; pega também binds em 0.0.0.0) */
-function portaDisponivel(porta: number): Promise<boolean> {
+/** Bind de teste numa família (host). IPv6 indisponível na máquina não conta como
+ *  "porta ocupada" — só EADDRINUSE (e afins) reprova. */
+function bindLivre(porta: number, host: string): Promise<boolean> {
   return new Promise((resolve) => {
     const srv = createServer();
     srv.unref();
-    srv.once("error", () => resolve(false));
-    srv.listen(porta, "127.0.0.1", () => {
-      srv.close(() => resolve(true));
+    srv.once("error", (err) => {
+      const code = (err as NodeJS.ErrnoException).code;
+      // IPv6 ausente/desligado: ignora essa família (não é conflito de porta).
+      if (host === "::" && (code === "EADDRNOTAVAIL" || code === "EAFNOSUPPORT" || code === "EINVAL")) {
+        resolve(true);
+      } else {
+        resolve(false);
+      }
     });
+    srv.listen(porta, host, () => srv.close(() => resolve(true)));
   });
+}
+
+/**
+ * A porta está livre em IPv4 (127.0.0.1) E IPv6 (`::`)? Precisa das DUAS: o Next
+ * (e outros dev servers) bindam `::` (todas as interfaces), então checar só
+ * 127.0.0.1 deixava passar um preview órfão que segura `::porta` — e o novo dev
+ * server morria com EADDRINUSE. Checando as duas famílias, `portaLivre` pula a
+ * porta ocupada e escolhe a próxima de verdade livre.
+ */
+async function portaDisponivel(porta: number): Promise<boolean> {
+  return (await bindLivre(porta, "127.0.0.1")) && (await bindLivre(porta, "::"));
 }
 
 /**
@@ -299,7 +334,11 @@ function execSetup(cmd: string, cwd: string, env: NodeJS.ProcessEnv): Promise<nu
   });
 }
 
-export function startPreview(task: Task, project: Project): Promise<string> {
+export function startPreview(
+  task: Task,
+  project: Project,
+  opts: { verificarSaude?: boolean } = {},
+): Promise<string> {
   // Modo debug: sobe um preview fake (multi-rota, em memória) em vez do dev
   // server real — as skill-gates de UI (/qa) e a barra de URL funcionam sem `vite`.
   if (isFakeModelActive()) return startFakePreview(task);
@@ -315,7 +354,7 @@ export function startPreview(task: Task, project: Project): Promise<string> {
     if (salvo) return Promise.resolve(salvo);
   }
 
-  const p = attemptStart(task, project).finally(() => {
+  const p = attemptStart(task, project, opts).finally(() => {
     emAndamento.delete(task.id);
   });
   emAndamento.set(task.id, p);
@@ -391,6 +430,14 @@ export async function attemptStart(
   });
   todos.add(child);
   child.on("exit", () => todos.delete(child));
+
+  // Buffer de logs persistente (separado do `olhar`, que para no "ready"): é o que
+  // captura o erro de runtime que só aparece ao navegar para outra rota. Resetado
+  // a cada attemptStart desta tarefa; preservado num crash para diagnóstico.
+  logs.set(task.id, []);
+  const registrarLog = (d: Buffer) => pushLog(task.id, String(d));
+  child.stdout?.on("data", registrarLog);
+  child.stderr?.on("data", registrarLog);
 
   // readyRegex custom (servidores não-JS/sem URL no stdout): quando bate mas não
   // há URL, montamos http://localhost:porta. Já validado no config (compila).
@@ -497,6 +544,7 @@ export function stopAllPreviews(): void {
   for (const child of todos) matar(child);
   todos.clear();
   registry.clear();
+  logs.clear();
 }
 
 // ---------- Camada 2.5: o agente descobre como abrir o preview ----------

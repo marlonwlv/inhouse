@@ -24,6 +24,7 @@ import {
   autoDetectar,
   parsePreviewRecipe,
   portaLivre,
+  previewLogs,
   startPreview,
   stopPreview,
   verificarSaude,
@@ -120,6 +121,23 @@ describe("portaLivre", () => {
       await new Promise((r) => srv.close(r));
     }
   });
+
+  it("pula uma porta ocupada SÓ em IPv6 (::) — o caso do next dev órfão", async () => {
+    const srv = createServer();
+    const ok = await new Promise<boolean>((r) => {
+      srv.once("error", () => r(false));
+      srv.listen(0, "::", () => r(true));
+    });
+    if (!ok) return; // IPv6 indisponível nesta máquina — nada a testar
+    const ocupada = (srv.address() as AddressInfo).port;
+    try {
+      const livre = await portaLivre(ocupada);
+      expect(livre).not.toBe(ocupada); // antes do fix, entregaria a porta ocupada em ::
+      expect(livre).toBeGreaterThan(ocupada);
+    } finally {
+      await new Promise((r) => srv.close(r));
+    }
+  });
 });
 
 describe("startPreview/stopPreview", () => {
@@ -147,6 +165,17 @@ describe("startPreview/stopPreview", () => {
     expect(pid).toBeGreaterThan(0);
     await stopPreview(task.id);
     expect(await esperaMorrer(pid)).toBe(true);
+  });
+
+  it("guarda os logs (stdout) do dev server para diagnóstico", async () => {
+    const dir = fixtureDevServer(65431);
+    const task = tarefa(dir);
+    await startPreview(task, projeto);
+    // O server imprime a URL no boot via console.log — tem que estar nos logs.
+    expect(previewLogs(task.id)).toContain("http://127.0.0.1:65431/");
+    await stopPreview(task.id);
+    // Os logs sobrevivem ao stop (para diagnosticar uma falha depois de derrubar).
+    expect(previewLogs(task.id)).toContain("http://127.0.0.1:65431/");
   });
 });
 

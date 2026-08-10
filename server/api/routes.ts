@@ -24,6 +24,7 @@ import {
   PreviewIndisponivelError,
   PreviewQuebradoError,
   configurarPreviewComAgente,
+  previewLogs,
   startPreview,
   stopPreview,
   temPreviewConfigCommitada,
@@ -493,7 +494,12 @@ export function buildRouter(): Router {
       const project = store.getProject(task.projectId);
       if (!project) throw new HttpError(404, "O projeto desta tarefa não foi encontrado.");
       try {
-        const url = await startPreview(task, project);
+        // Start MANUAL (botão do usuário): sobe o app e devolve a URL SEM o
+        // health-check-que-mata. Um Next pesado leva ~1min para compilar cada
+        // rota a frio; matar o server porque uma sub-rota demorou deixava a
+        // pessoa com "não conseguiu iniciar". Aqui ela abre o app e navega —
+        // erros por rota aparecem no iframe e no painel de Logs (transparência).
+        const url = await startPreview(task, project, { verificarSaude: false });
         res.json({ url });
       } catch (err) {
         // Degradação graciosa: sem tela para pré-visualizar (ou a subida falhou).
@@ -501,9 +507,16 @@ export function buildRouter(): Router {
         const msg = err instanceof Error ? err.message : "Não foi possível abrir o preview.";
         const status = err instanceof PreviewIndisponivelError ? 422 : 502;
         const podeConfigurarComAgente = !temPreviewConfigCommitada(project, task.worktreePath);
-        // PreviewQuebradoError: subiu mas está quebrado — manda o detalhe técnico junto.
-        const detalhe = err instanceof PreviewQuebradoError ? err.detalhe : undefined;
-        res.status(status).json({ error: msg, podeConfigurarComAgente, ...(detalhe ? { detalhe } : {}) });
+        // PreviewQuebradoError: subiu mas está quebrado — manda o detalhe técnico
+        // (status HTTP + rota + trecho do corpo) para a UI mostrar o erro real.
+        const q = err instanceof PreviewQuebradoError ? err : undefined;
+        res.status(status).json({
+          error: msg,
+          podeConfigurarComAgente,
+          ...(q?.detalhe ? { detalhe: q.detalhe } : {}),
+          ...(q?.status ? { status: q.status } : {}),
+          ...(q?.rota ? { rota: q.rota } : {}),
+        });
       }
     }),
   );
@@ -529,6 +542,17 @@ export function buildRouter(): Router {
           throw err;
         }
       }
+    }),
+  );
+
+  // Logs (stdout+stderr) do dev server do preview — para o usuário diagnosticar
+  // uma rota que quebrou (ex.: variável de ambiente faltando). Só leitura.
+  router.get(
+    "/api/tasks/:id/preview/logs",
+    h(async (req, res) => {
+      const id = req.params.id ?? "";
+      if (!store.getTask(id)) throw new HttpError(404, "Tarefa não encontrada.");
+      res.json({ logs: previewLogs(id) });
     }),
   );
 
