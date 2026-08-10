@@ -1,5 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { PermissionRequest, Project, Task, TranscriptItem } from "../shared/types.js";
 import { isHumanStep } from "../shared/types.js";
@@ -11,6 +21,32 @@ interface State {
 }
 
 const STATE_FILE = join(DATA_DIR, "state.json");
+const BACKUPS_DIR = join(DATA_DIR, "backups");
+
+/**
+ * Snapshot do state.json ANTES de uma operação destrutiva (remoção de projeto),
+ * para recuperação. Mantém os 30 mais novos. É best-effort: nunca bloqueia a operação.
+ */
+function backupState(motivo: string): void {
+  if (!existsSync(STATE_FILE)) return;
+  try {
+    mkdirSync(BACKUPS_DIR, { recursive: true });
+    const carimbo = new Date().toISOString().replace(/[:.]/g, "-");
+    copyFileSync(STATE_FILE, join(BACKUPS_DIR, `state-${carimbo}-${motivo}.json`));
+    const antigos = readdirSync(BACKUPS_DIR)
+      .filter((f) => f.startsWith("state-") && f.endsWith(".json"))
+      .sort();
+    for (const f of antigos.slice(0, Math.max(0, antigos.length - 30))) {
+      try {
+        unlinkSync(join(BACKUPS_DIR, f));
+      } catch {
+        // ok
+      }
+    }
+  } catch {
+    // backup é best-effort
+  }
+}
 
 let state: State = { projects: [], tasks: [] };
 /** Pedidos de permissão são efêmeros (não sobrevivem a restart — o claude filho já terá morrido). */
@@ -62,6 +98,15 @@ export function updateProject(id: string, patch: Partial<Project>): Project {
   Object.assign(p, patch);
   persist();
   return p;
+}
+/** Remove o projeto E todas as suas tarefas do estado (uma única gravação). */
+export function removeProject(id: string): Task[] {
+  backupState("antes-remover-projeto"); // rede de segurança: dá pra recuperar se algo remover demais
+  const removidas = state.tasks.filter((t) => t.projectId === id);
+  state.tasks = state.tasks.filter((t) => t.projectId !== id);
+  state.projects = state.projects.filter((p) => p.id !== id);
+  persist();
+  return removidas;
 }
 
 // ---------- Tasks ----------

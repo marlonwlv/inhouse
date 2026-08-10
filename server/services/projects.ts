@@ -1,5 +1,6 @@
 /**
- * Ciclo de vida de projetos: clonar do GitHub, criar de template, abrir pasta.
+ * Ciclo de vida de projetos: clonar do GitHub, criar de template, abrir pasta,
+ * arquivar/desarquivar e excluir (com guardrails — ver deleteProject/exclusaoInfo).
  */
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
@@ -8,17 +9,22 @@ import { cp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Project } from "../../shared/types.js";
-import { DATA_DIR, ESPACOS_DIR, PROJECTS_DIR, claudeEnv, ensureDirs } from "../config.js";
+import type { ExclusaoInfo, Project } from "../../shared/types.js";
+import { ANEXOS_DIR, DATA_DIR, ESPACOS_DIR, PROJECTS_DIR, TRANSCRIPTS_DIR, claudeEnv, ensureDirs } from "../config.js";
 import { broadcast } from "../events.js";
 import * as store from "../store.js";
+import { forgetProject } from "../workflow/library.js";
+import { stopPreview } from "./preview.js";
 import { git, gitCommit, lastLines, tryGit } from "./proc.js";
+import { removeEspaco } from "./worktrees.js";
 
 /** Templates embutidos vivem no repo do builder, ao lado de server/. */
 const TEMPLATES_DIR = fileURLToPath(new URL("../../templates", import.meta.url));
 
 /** Instalações npm em background, rastreadas (não são detached; morrem com o server). */
 const backgroundInstalls = new Set<ChildProcess>();
+/** Install em andamento por projeto — para matar antes de excluir (senão recria a pasta). */
+const installsPorProjeto = new Map<string, ChildProcess>();
 
 async function detectDefaultBranch(repoPath: string): Promise<string> {
   const head = await tryGit(repoPath, "symbolic-ref", "refs/remotes/origin/HEAD");
@@ -193,6 +199,7 @@ export async function createFromTemplate(name: string, template: string): Promis
     stdio: ["ignore", "ignore", "pipe"],
   });
   backgroundInstalls.add(child);
+  installsPorProjeto.set(project.id, child);
   broadcast({
     type: "project_progress",
     projectId: project.id,
@@ -205,6 +212,7 @@ export async function createFromTemplate(name: string, template: string): Promis
   });
   const encerrar = (ok: boolean) => {
     backgroundInstalls.delete(child);
+    installsPorProjeto.delete(project.id);
     broadcast({
       type: "project_progress",
       projectId: project.id,
@@ -283,4 +291,146 @@ export async function openProject(path: string): Promise<Project> {
   store.addProject(project);
   broadcast({ type: "project_updated", project });
   return project;
+}
+
+/**
+ * A pasta do projeto é GERENCIADA pelo Inhouse (foi criada/baixada por nós, dentro
+ * de PROJECTS_DIR) → podemos oferecer apagá-la do disco. Projeto "aberto no lugar"
+ * (pasta que já era do usuário) fica fora daqui e NUNCA tem a pasta apagada.
+ */
+export function gerenciado(project: Project): boolean {
+  const alvo = resolve(project.path);
+  return dentroDe(alvo, PROJECTS_DIR) && alvo !== resolve(PROJECTS_DIR) && !dentroDe(alvo, ESPACOS_DIR);
+}
+
+/** Arquiva/desarquiva: some da grade principal e para os previews. Nada é apagado. */
+export async function setArquivado(id: string, on: boolean): Promise<Project> {
+  const project = store.getProject(id);
+  if (!project) throw new Error("Projeto não encontrado.");
+  if (on) {
+    // Libera portas/processos dos previews; worktrees, branches e tarefas ficam.
+    for (const t of store.listTasks().filter((t) => t.projectId === id)) {
+      try {
+        await stopPreview(t.id);
+      } catch {
+        // best-effort
+      }
+    }
+  }
+  const project2 = store.updateProject(id, { arquivadoEm: on ? new Date().toISOString() : undefined });
+  broadcast({ type: "project_updated", project: project2 });
+  return project2;
+}
+
+/** Impacto real de excluir — inspeciona o git de verdade para informar o usuário. */
+export async function exclusaoInfo(id: string): Promise<ExclusaoInfo> {
+  const project = store.getProject(id);
+  if (!project) throw new Error("Projeto não encontrado.");
+  const tasks = store.listTasks().filter((t) => t.projectId === id);
+  const rodando = tasks.filter((t) => t.status === "rodando").length;
+  const tarefasAtivas = tasks.filter((t) => t.status === "rodando" || t.status === "aguardando").length;
+  const temRemoto = !!project.originUrl;
+
+  const sujo = ((await tryGit(project.path, "status", "--porcelain")) ?? "").trim().length > 0;
+  let commitsFrente = 0;
+  if (temRemoto) {
+    const c = await tryGit(project.path, "rev-list", "--count", `origin/${project.defaultBranch}..HEAD`);
+    commitsFrente = c ? Number(c) || 0 : 0;
+  }
+  // Branches de tarefa (tarefa/*) = trabalho local que nunca foi publicado.
+  const branchesRaw = await tryGit(project.path, "for-each-ref", "--format=%(refname:short)", "refs/heads/tarefa");
+  const branchesTarefa = branchesRaw ? branchesRaw.split("\n").filter(Boolean).length : 0;
+
+  return {
+    projectId: id,
+    name: project.name,
+    gerenciado: gerenciado(project),
+    path: project.path,
+    temRemoto,
+    rodando,
+    tarefasAtivas,
+    nTarefas: tasks.length,
+    sujo,
+    commitsFrente,
+    branchesTarefa,
+  };
+}
+
+/**
+ * Exclui um projeto. Guardrails (autoritativos no servidor — nunca confiam no cliente):
+ * - recusa se houver tarefa RODANDO (não mata o Claude no meio);
+ * - a pasta principal (project.path) só é apagada se `apagarArquivos` E a pasta for
+ *   GERENCIADA por nós — projeto "aberto no lugar" nunca tem a pasta do usuário apagada;
+ * - sempre limpa o que é nosso: worktrees, previews, transcripts, anexos, override de workflow.
+ */
+export async function deleteProject(id: string, opts: { apagarArquivos?: boolean } = {}): Promise<void> {
+  const project = store.getProject(id);
+  if (!project) throw new Error("Projeto não encontrado.");
+  const tasks = store.listTasks().filter((t) => t.projectId === id);
+  if (tasks.some((t) => t.status === "rodando")) {
+    throw new Error("Há uma tarefa em andamento neste projeto. Cancele ou espere terminar antes de excluir.");
+  }
+  const ehGerenciado = gerenciado(project);
+  const apagarPasta = !!opts.apagarArquivos && ehGerenciado; // aberto no lugar: a flag é ignorada
+
+  // 0. Mata um `npm install` inicial ainda em andamento — senão ele RECRIA a pasta
+  //    depois do rm (corrida ao excluir um app recém-criado). Espera ele morrer.
+  const inst = installsPorProjeto.get(id);
+  if (inst) {
+    installsPorProjeto.delete(id);
+    await new Promise<void>((res) => {
+      const done = () => res();
+      inst.once("exit", done);
+      inst.kill("SIGKILL");
+      setTimeout(done, 1500); // não trava se o processo já tinha morrido
+    });
+  }
+
+  // 1. Para os previews (portas/processos) de todas as tarefas.
+  for (const t of tasks) {
+    try {
+      await stopPreview(t.id);
+    } catch {
+      // best-effort
+    }
+  }
+  // 2. Remove os worktrees registrados — mantém o repo do usuário limpo mesmo quando
+  //    NÃO apagamos a pasta principal (projeto aberto no lugar).
+  for (const t of tasks) {
+    if (t.worktreePath && dentroDe(t.worktreePath, ESPACOS_DIR) && resolve(t.worktreePath) !== resolve(project.path)) {
+      try {
+        await removeEspaco(project, t.worktreePath, { keepBranch: true });
+      } catch {
+        // best-effort
+      }
+    }
+  }
+  // 3. Limpa a pasta de espaços do projeto (abrigos .recuperar-*, sobras).
+  const espacosDoProjeto = join(ESPACOS_DIR, project.name);
+  if (dentroDe(espacosDoProjeto, ESPACOS_DIR) && resolve(espacosDoProjeto) !== resolve(ESPACOS_DIR)) {
+    await rm(espacosDoProjeto, { recursive: true, force: true }).catch(() => {});
+  }
+  // 4. Apaga a pasta principal — SÓ gerenciada e a pedido. Guarda dupla contra "cagada".
+  if (apagarPasta) {
+    const alvo = resolve(project.path);
+    const seguro = dentroDe(alvo, PROJECTS_DIR) && alvo !== resolve(PROJECTS_DIR) && !dentroDe(alvo, ESPACOS_DIR);
+    if (!seguro) {
+      throw new Error("Por segurança, o Inhouse não apaga esta pasta. Fale com o time técnico.");
+    }
+    await rm(alvo, { recursive: true, force: true });
+  }
+  // 5. Estado: remove projeto + tarefas (uma gravação); devolve as tarefas removidas.
+  const removidas = store.removeProject(id);
+  // 6. Transcripts + anexos das tarefas removidas (best-effort).
+  for (const t of removidas) {
+    await rm(join(TRANSCRIPTS_DIR, `${t.id}.jsonl`), { force: true }).catch(() => {});
+    for (const a of t.anexos ?? []) {
+      if (a.path && dentroDe(resolve(a.path), ANEXOS_DIR)) {
+        await rm(a.path, { force: true }).catch(() => {});
+      }
+    }
+  }
+  // 7. Esquece o override de workflow do projeto.
+  forgetProject(id);
+  broadcast({ type: "project_removed", projectId: id });
 }

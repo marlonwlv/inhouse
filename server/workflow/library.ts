@@ -204,6 +204,15 @@ export function activeGates(projectId?: string): { aprovacao: boolean; aprovacao
   };
 }
 
+/** Esquece o override de workflow de um projeto (ao excluí-lo). Idempotente. */
+export function forgetProject(projectId: string): void {
+  const s = load();
+  if (s.porProjeto[projectId] !== undefined) {
+    delete s.porProjeto[projectId];
+    persist();
+  }
+}
+
 export function deleteWorkflow(id: string): void {
   const s = load();
   const w = s.workflows.find((x) => x.id === id);

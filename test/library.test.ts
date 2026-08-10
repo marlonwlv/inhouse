@@ -70,6 +70,17 @@ describe("biblioteca de workflows", () => {
     expect(() => lib.deleteWorkflow("padrao")).toThrow(/preset/i);
   });
 
+  it("forgetProject remove o override do projeto (ao excluí-lo), voltando ao global", () => {
+    const c = lib.upsertWorkflow({ name: "Temp", skills: {} });
+    lib.setActive(c.id, "proj-del");
+    expect(lib.activeWorkflowId("proj-del")).toBe(c.id);
+    lib.forgetProject("proj-del");
+    expect(lib.activeWorkflowId("proj-del")).toBe("padrao"); // sem override → global
+    // Idempotente: esquecer de novo (ou um projeto sem override) não quebra.
+    expect(() => lib.forgetProject("proj-del")).not.toThrow();
+    expect(() => lib.forgetProject("nunca-existiu")).not.toThrow();
+  });
+
   it("catálogo lista skills com fase e flag de instalada", () => {
     const cat = lib.skillCatalog();
     expect(cat.some((c) => c.skill === "office-hours" && c.fase === "plano_produto")).toBe(true);

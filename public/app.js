@@ -51,7 +51,7 @@ function stepsAtivos(t) {
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.20.0";
+const UI_VERSION = "0.22.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -370,6 +370,11 @@ function handleEvent(ev) {
     case "project_updated":
       upsert(state.projects, ev.project);
       clearProgressFor(ev.project);
+      render();
+      break;
+    case "project_removed":
+      state.projects = state.projects.filter((p) => p.id !== ev.projectId);
+      state.tasks = state.tasks.filter((t) => t.projectId !== ev.projectId);
       render();
       break;
     case "project_progress":
@@ -797,7 +802,7 @@ function renderConfiguracoes() {
     <div class="cfg-context">
       <span class="cfg-lbl">Projeto</span>
       <select id="cfg-project" class="repo-pick" ${semProjeto ? "disabled" : ""} aria-label="Projeto">
-        ${semProjeto ? `<option>— nenhum projeto —</option>` : state.projects.map((p) => `<option value="${esc(p.id)}" ${p.id === pid ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
+        ${semProjeto ? `<option>— nenhum projeto —</option>` : opcoesProjeto(pid)}
       </select>
       <span class="gap" style="flex:1"></span>
       <span class="cfg-active">Em uso: <b>${esc(ativo?.name || "—")}</b></span>
@@ -933,6 +938,144 @@ function confirmar({ titulo, corpo, textoConfirmar = "Confirmar", perigo = false
       const ok = dlg.returnValue === "sim";
       dlg.remove();
       resolve(ok);
+    });
+    dlg.showModal();
+  });
+}
+
+/** Orquestra a exclusão: busca o impacto real, mostra o modal certo, executa. */
+async function excluirProjetoFluxo(projectId) {
+  const info = await api(`/api/projects/${encodeURIComponent(projectId)}/exclusao-info`);
+  if (!info) return; // erro já avisado pelo api()
+  if (info.rodando > 0) {
+    await confirmar({
+      titulo: "Tem tarefa em andamento",
+      corpo: "Espere a tarefa terminar ou cancele antes de excluir este projeto.",
+      textoConfirmar: "Entendi",
+    });
+    return;
+  }
+  const escolha = await confirmarExclusao(info);
+  if (escolha === "arquivar") {
+    const r = await api(`/api/projects/${encodeURIComponent(projectId)}/arquivar`, {});
+    if (r) toast(`“${info.name}” arquivado em vez de excluído.`);
+    return;
+  }
+  if (escolha !== "sim") return;
+  // apagarArquivos só é aceito (e só faz sentido) para pasta gerenciada por nós.
+  let res;
+  try {
+    res = await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apagarArquivos: info.gerenciado }),
+    });
+  } catch {
+    setOnline(false);
+    return;
+  }
+  setOnline(true);
+  if (res.ok) {
+    toast(info.gerenciado
+      ? `“${info.name}” excluído.`
+      : `“${info.name}” removido do Inhouse. Seus arquivos ficaram no lugar.`);
+    // A lista se atualiza sozinha pelo evento project_removed.
+  } else {
+    const j = await res.json().catch(() => ({}));
+    toast(j.error || "Não foi possível excluir o projeto.");
+  }
+}
+
+/** Modal de exclusão com fricção escalonada pela irreversibilidade. Resolve "sim"|"nao"|"arquivar". */
+function confirmarExclusao(info) {
+  const nome = info.name;
+  const unpushed = info.sujo || info.commitsFrente > 0 || info.branchesTarefa > 0;
+  const tarefasNota = info.nTarefas > 0
+    ? `<li>Remove ${info.nTarefas === 1 ? "1 tarefa e seu histórico" : `${info.nTarefas} tarefas e seus históricos`} do Inhouse.</li>`
+    : "";
+
+  let titulo, tone, corpo, textoConfirmar, exigeNome, sugereArquivar;
+  if (!info.gerenciado) {
+    // Projeto "aberto no lugar": a pasta é do usuário — nunca apagamos.
+    titulo = `Remover “${esc(nome)}” do Inhouse?`;
+    tone = "neutro";
+    corpo = `<p>O Inhouse esquece este projeto — ele sai da lista e os espaços de tarefas e prévias são limpos.</p>
+      <p class="excl-safe"><b>Seus arquivos não são apagados.</b> A pasta continua em <code>${esc(info.path)}</code>. Dá para abrir de novo depois.</p>
+      <ul class="excl-list">${tarefasNota}</ul>`;
+    textoConfirmar = "Remover do Inhouse";
+    exigeNome = false;
+    sugereArquivar = false;
+  } else if (!info.temRemoto) {
+    // App que só existe aqui: perda total e irreversível.
+    titulo = `Excluir “${esc(nome)}” do computador?`;
+    tone = "perigo";
+    corpo = `<p class="excl-alerta">Este app <b>só existe neste computador</b> — não tem cópia no GitHub.</p>
+      <p>Excluir <b>apaga a pasta e todo o conteúdo para sempre</b>. Não dá para desfazer.</p>
+      <ul class="excl-list">${tarefasNota}</ul>`;
+    textoConfirmar = "Excluir para sempre";
+    exigeNome = true;
+    sugereArquivar = true;
+  } else if (unpushed) {
+    // Tem GitHub, mas há trabalho local não enviado.
+    const itens = [];
+    if (info.sujo) itens.push("mudanças não salvas (ainda não commitadas)");
+    if (info.commitsFrente > 0) itens.push(`${info.commitsFrente === 1 ? "1 commit local" : `${info.commitsFrente} commits locais`} à frente do GitHub`);
+    if (info.branchesTarefa > 0) itens.push(`${info.branchesTarefa === 1 ? "1 tarefa com trabalho" : `${info.branchesTarefa} tarefas com trabalho`} em branches não publicadas`);
+    titulo = `Excluir “${esc(nome)}” do computador?`;
+    tone = "perigo";
+    corpo = `<p>Este projeto tem cópia no GitHub, mas há <b>trabalho que ainda não foi enviado</b> e será perdido:</p>
+      <ul class="excl-list perde">${itens.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
+      <p class="excl-safe">O que já está no GitHub continua lá.</p>
+      <ul class="excl-list">${tarefasNota}</ul>`;
+    textoConfirmar = "Excluir mesmo assim";
+    exigeNome = true;
+    sugereArquivar = true;
+  } else {
+    // Tem GitHub e está tudo enviado: reabrível.
+    titulo = `Excluir “${esc(nome)}” do computador?`;
+    tone = "neutro";
+    corpo = `<p>Isso apaga a pasta local do projeto. Como está tudo enviado ao GitHub, você pode <b>baixar de novo</b> quando quiser.</p>
+      <ul class="excl-list">${tarefasNota}</ul>`;
+    textoConfirmar = "Excluir do computador";
+    exigeNome = false;
+    sugereArquivar = false;
+  }
+
+  return new Promise((resolve) => {
+    const dlg = document.createElement("dialog");
+    dlg.className = `cancel-dialog excl-dialog ${tone}`;
+    dlg.innerHTML = `<form method="dialog">
+      <h3>${titulo}</h3>
+      <div class="excl-corpo">${corpo}</div>
+      ${exigeNome ? `<label class="excl-nome">Para confirmar, digite <b>${esc(nome)}</b>:
+        <input id="excl-nome-inp" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="${esc(nome)}"></label>` : ""}
+      <div class="dlg-acts">
+        ${sugereArquivar ? `<button value="arquivar" class="btn sm ghost">Arquivar em vez disso</button>` : ""}
+        <span class="gap" style="flex:1"></span>
+        <button value="nao" class="btn sm ghost">Voltar</button>
+        <button value="sim" class="btn sm danger" ${exigeNome ? "disabled" : ""}>${esc(textoConfirmar)}</button>
+      </div>
+    </form>`;
+    document.body.appendChild(dlg);
+    if (exigeNome) {
+      const inp = dlg.querySelector("#excl-nome-inp");
+      const ok = dlg.querySelector('button[value="sim"]');
+      const casa = () => inp.value.trim() === nome;
+      inp.addEventListener("input", () => { ok.disabled = !casa(); });
+      // Enter no campo confirma só quando o nome bate (senão os botões-submit
+      // padrão fechariam o diálogo com o valor errado).
+      inp.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          if (casa()) { dlg.returnValue = "sim"; dlg.close(); }
+        }
+      });
+      setTimeout(() => inp.focus(), 30);
+    }
+    dlg.addEventListener("close", () => {
+      const v = dlg.returnValue;
+      dlg.remove();
+      resolve(v === "sim" ? "sim" : v === "arquivar" ? "arquivar" : "nao");
     });
     dlg.showModal();
   });
@@ -1189,11 +1332,21 @@ function renderHome() {
   const busyCreate = !!state.busy.create;
   const claudeOff = state.loaded && !state.claude.ok;
 
-  const projectsHtml = projects.length
-    ? `<div class="repo-grid">${projects.map(projectCardHtml).join("")}</div>`
-    : `<div class="empty-card" style="margin-bottom:32px">${state.loaded
-        ? "Nenhum projeto por aqui ainda. Abra um do GitHub ou crie um app novo logo abaixo."
-        : `<span class="spinner"></span> Carregando os seus projetos…`}</div>`;
+  const ativos = projects.filter((p) => !p.arquivadoEm);
+  const arquivados = projects.filter((p) => p.arquivadoEm);
+  const projectsHtml = ativos.length
+    ? `<div class="repo-grid">${ativos.map(projectCardHtml).join("")}</div>`
+    : projects.length
+      ? `<div class="empty-card" style="margin-bottom:16px">Todos os seus projetos estão arquivados. Abra “Arquivados” abaixo para restaurar, ou crie um novo.</div>`
+      : `<div class="empty-card" style="margin-bottom:32px">${state.loaded
+          ? "Nenhum projeto por aqui ainda. Abra um do GitHub ou crie um app novo logo abaixo."
+          : `<span class="spinner"></span> Carregando os seus projetos…`}</div>`;
+  const arquivadosHtml = arquivados.length
+    ? `<details class="arquivados-sect">
+        <summary>Arquivados <span class="cnt">${arquivados.length}</span></summary>
+        <div class="repo-grid" style="margin-top:14px">${arquivados.map(projectCardHtml).join("")}</div>
+      </details>`
+    : "";
 
   const progressEntries = Object.entries(state.progress);
   const progressHtml = progressEntries.map(([name, pr]) => `
@@ -1210,8 +1363,9 @@ function renderHome() {
 
       ${claudeOff ? primeirosPassosHtml() : ""}
 
-      <div class="sect"><h3>Meus projetos</h3><span>${projects.length ? "cada tarefa roda num espaço isolado, sem conflito" : ""}</span></div>
+      <div class="sect"><h3>Meus projetos</h3><span>${ativos.length ? "cada tarefa roda num espaço isolado, sem conflito" : ""}</span></div>
       ${projectsHtml}
+      ${arquivadosHtml}
 
       ${state.fake ? debugPanelHtml() : ""}
 
@@ -1288,19 +1442,41 @@ function debugScenarioResumo(s) {
   return `${tags.join(" · ")}<br><span class="debug-steps">${esc((s.expectSteps || []).join(" → "))} · fim: ${esc(s.expectFinal)}</span>`;
 }
 
+/** Opções de <select> de projeto: esconde arquivados, mas mantém o já selecionado. */
+function opcoesProjeto(pid) {
+  return state.projects
+    .filter((p) => !p.arquivadoEm || p.id === pid)
+    .map((p) => `<option value="${esc(p.id)}" ${p.id === pid ? "selected" : ""}>${esc(p.name)}${p.arquivadoEm ? " (arquivado)" : ""}</option>`)
+    .join("");
+}
+
 function projectCardHtml(p) {
   const n = state.tasks.filter(
     (t) => t.projectId === p.id && t.status !== "concluida" && t.status !== "cancelada",
   ).length;
   const tarefas = n === 0 ? "Sem tarefas ativas" : n === 1 ? "1 tarefa ativa" : `${n} tarefas ativas`;
-  return `<div class="repo-card">
+  const arq = !!p.arquivadoEm;
+  // O card inteiro é clicável: abre o projeto (ou restaura, se arquivado). O menu ⋯
+  // e seus itens não disparam isso (são <button>, tratados antes no handler de clique).
+  const abrir = arq
+    ? `data-restore-project="${esc(p.id)}" title="Clique para restaurar “${esc(p.name)}”"`
+    : `data-open-project="${esc(p.id)}" title="Abrir “${esc(p.name)}”"`;
+  return `<div class="repo-card clickable ${arq ? "arquivado" : ""}" ${abrir} role="button" tabindex="0">
     <div class="rh">
       <span class="app-ico" style="background:${icoColor(p.name)}">${esc((p.name[0] || "?").toUpperCase())}</span>
       <b>${esc(p.name)}</b>
       <span class="chip">${p.kind === "repo" ? "GitHub" : "App"}</span>
+      <div class="proj-menu-wrap">
+        <button class="proj-kebab" data-act="proj-menu" data-project="${esc(p.id)}" aria-label="Mais ações deste projeto" aria-haspopup="menu">⋯</button>
+        <div class="proj-menu-pop" id="proj-menu-${esc(p.id)}" role="menu">
+          ${arq
+            ? `<button role="menuitem" data-act="desarquivar-projeto" data-project="${esc(p.id)}">Desarquivar</button>`
+            : `<button role="menuitem" data-act="arquivar-projeto" data-project="${esc(p.id)}">Arquivar</button>`}
+          <button role="menuitem" class="perigo" data-act="excluir-projeto" data-project="${esc(p.id)}">Excluir…</button>
+        </div>
+      </div>
     </div>
-    <p>${tarefas} · criado ${timeAgo(p.createdAt)}</p>
-    <button class="btn sm primary" data-act="open-project" data-project="${esc(p.id)}">Abrir</button>
+    <p>${arq ? `Arquivado ${timeAgo(p.arquivadoEm)} · clique para restaurar` : `${tarefas} · criado ${timeAgo(p.createdAt)}`}</p>
   </div>`;
 }
 
@@ -1361,7 +1537,7 @@ function renderBoard() {
   <div class="view view-board">
     <div class="topbar">
       <select id="project-select" class="repo-pick" aria-label="Escolher projeto" title="${esc(proj?.name || "")}">
-        ${state.projects.map((p) => `<option value="${esc(p.id)}" ${p.id === pid ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
+        ${opcoesProjeto(pid)}
       </select>
       <div class="status">${statusLine}</div>
       <button class="btn sm primary" data-act="focus-new-task">+ Nova tarefa</button>
@@ -1957,9 +2133,28 @@ function decidePermission(id, allow) {
 }
 
 const actions = {
-  "open-project": (btn) => {
-    localStorage.setItem("inhouse.projectId", btn.dataset.project);
-    location.hash = "#/tarefas";
+  "proj-menu": (btn) => {
+    const pop = document.getElementById(`proj-menu-${btn.dataset.project}`);
+    if (!pop) return;
+    const abrir = !pop.classList.contains("open");
+    document.querySelectorAll(".proj-menu-pop.open").forEach((p) => p.classList.remove("open"));
+    if (abrir) pop.classList.add("open");
+  },
+  "arquivar-projeto": async (btn) => {
+    document.querySelectorAll(".proj-menu-pop.open").forEach((p) => p.classList.remove("open"));
+    const p = state.projects.find((x) => x.id === btn.dataset.project);
+    const r = await api(`/api/projects/${encodeURIComponent(btn.dataset.project)}/arquivar`, {});
+    if (r) toast(`“${p?.name || "Projeto"}” arquivado. Você pode restaurar quando quiser.`);
+  },
+  "desarquivar-projeto": async (btn) => {
+    document.querySelectorAll(".proj-menu-pop.open").forEach((p) => p.classList.remove("open"));
+    const p = state.projects.find((x) => x.id === btn.dataset.project);
+    const r = await api(`/api/projects/${encodeURIComponent(btn.dataset.project)}/desarquivar`, {});
+    if (r) toast(`“${p?.name || "Projeto"}” restaurado.`);
+  },
+  "excluir-projeto": async (btn) => {
+    document.querySelectorAll(".proj-menu-pop.open").forEach((p) => p.classList.remove("open"));
+    await excluirProjetoFluxo(btn.dataset.project);
   },
   "go-task": (btn) => { location.hash = `#/tarefa/${btn.dataset.task}`; },
   "focus-new-task": () => {
@@ -2297,14 +2492,35 @@ document.addEventListener("click", (e) => {
     actions[btn.dataset.act]?.(btn, e);
     return;
   }
-  // Card inteiro clicável abre o editor — desde que o clique não tenha sido em
-  // botão/link/campo (esses já trataram acima ou têm comportamento próprio) e
-  // que não seja seleção de texto.
-  const card = e.target.closest("[data-open-task]");
-  if (!card) return;
+  // Card inteiro clicável — desde que o clique não tenha sido em botão/link/campo
+  // (esses já trataram acima ou têm comportamento próprio) e não seja seleção de texto.
   if (e.target.closest("button, a, input, select, textarea, label")) return;
   if (String(window.getSelection() ?? "").length > 0) return;
-  location.hash = `#/tarefa/${card.dataset.openTask}`;
+  const taskCard = e.target.closest("[data-open-task]");
+  if (taskCard) { location.hash = `#/tarefa/${taskCard.dataset.openTask}`; return; }
+  const projOpen = e.target.closest("[data-open-project]");
+  if (projOpen) {
+    localStorage.setItem("inhouse.projectId", projOpen.dataset.openProject);
+    location.hash = "#/tarefas";
+    return;
+  }
+  const projRestore = e.target.closest("[data-restore-project]");
+  if (projRestore) {
+    const id = projRestore.dataset.restoreProject;
+    const p = state.projects.find((x) => x.id === id);
+    api(`/api/projects/${encodeURIComponent(id)}/desarquivar`, {}).then((r) => {
+      if (r) toast(`“${p?.name || "Projeto"}” restaurado.`);
+    });
+  }
+});
+// Card clicável acessível pelo teclado (Enter/Espaço quando ele está focado).
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const el = document.activeElement;
+  if (el && (el.hasAttribute?.("data-open-project") || el.hasAttribute?.("data-restore-project"))) {
+    e.preventDefault();
+    el.click();
+  }
 });
 
 document.addEventListener("change", (e) => {
@@ -2478,6 +2694,10 @@ document.addEventListener("input", (e) => {
 document.addEventListener("click", (e) => {
   if (e.target.closest?.('[data-act="toggle-docs"]') || e.target.closest?.(".docs-pop")) return;
   document.querySelectorAll(".docs-pop.open").forEach((p) => p.classList.remove("open"));
+});
+document.addEventListener("click", (e) => {
+  if (e.target.closest?.('[data-act="proj-menu"]') || e.target.closest?.(".proj-menu-pop")) return;
+  document.querySelectorAll(".proj-menu-pop.open").forEach((p) => p.classList.remove("open"));
 });
 // Arrastar-e-soltar arquivos direto na caixa de nova tarefa ou no compositor.
 document.addEventListener("dragover", (e) => {
