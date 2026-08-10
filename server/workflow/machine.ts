@@ -33,8 +33,10 @@ import { createEspaco, removeEspaco, slugify } from "../services/worktrees.js";
 import * as store from "../store.js";
 import { registrarFalha, registrarTarefaFinalizada } from "../eval/coleta.js";
 import { verificarGatilhoAuto } from "../eval/juiz.js";
-import { loadConfigCascata, skillsDetalhamento, skillsProduto, temUi } from "./config.js";
+import { skillsDetalhamento, skillsProduto, temUi } from "./config.js";
+import { activeConfig, activeGates } from "./library.js";
 import {
+  anexosBloco,
   changesPrompt,
   consolidarPlanoPrompt,
   consolidarProdutoPrompt,
@@ -402,8 +404,8 @@ async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
     patch(taskId, { step: "plano", status: "rodando", error: undefined });
     sistema(taskId, feedback ? "Refazendo o plano de produto com o seu feedback…" : "Montando o plano de produto…");
 
-    const projeto = store.getProject(task.projectId);
-    const cfg = loadConfigCascata(task.worktreePath, projeto?.path);
+    // Skills vêm do workflow ativo do projeto (biblioteca de workflows).
+    const cfg = activeConfig(task.projectId);
 
     // office-hours é o insumo de produto; feedback humano não re-roda a cadeia.
     const cadeia = feedback ? [] : skillsProduto(cfg, task.porte ?? "media");
@@ -433,8 +435,8 @@ async function runPlano(taskId: string, feedback?: string): Promise<boolean> {
       fail(taskId, "O plano veio vazio. Tente de novo.");
       return false;
     }
-    patch(taskId, { plan, step: "aprovacao", status: "aguardando" });
-    sistema(taskId, "Plano de produto pronto — revise e aprove.");
+    patch(taskId, { plan });
+    pousarAprovacao(taskId); // espera a pessoa, ou auto-aprova se o workflow desligou a porteira
     return true;
   } finally {
     planoDireto.delete(taskId);
@@ -452,8 +454,7 @@ async function runDetalhamento(taskId: string): Promise<boolean> {
   patch(taskId, { step: "detalhamento", status: "rodando", error: undefined });
   sistema(taskId, `Detalhando o COMO (plano técnico${rodaDesign(task) ? " + design" : ""})…`);
 
-  const projeto = store.getProject(task.projectId);
-  const cfg = loadConfigCascata(task.worktreePath, projeto?.path);
+  const cfg = activeConfig(task.projectId);
   // O design-review (quando: "ui") só roda se ESTA task realmente faz design.
   const cadeia = skillsDetalhamento(cfg, task.porte ?? "media").filter(
     (st) => st.quando !== "ui" || rodaDesign(task),
@@ -505,8 +506,7 @@ async function runPrototipo(taskId: string, feedback?: string): Promise<boolean>
     failOuPausa(taskId, r, "O protótipo falhou. Tente de novo.");
     return false;
   }
-  patch(taskId, { step: "aprovacao_prototipo", status: "aguardando", temPrototipo: true });
-  sistema(taskId, "Protótipo pronto — veja o mockup e aprove (ou peça mudanças).");
+  pousarPrototipoGate(taskId);
   return true;
 }
 
@@ -553,7 +553,7 @@ async function runExecucao(
   // não re-roda as verificações à toa — volta pro teste com a resposta do agente visível.
   if (opts?.pularVerificacaoSemEdicao && !r.filesTouched) {
     sistema(taskId, "Nenhuma mudança de código — pulando as verificações.");
-    patch(taskId, { step: "teste", status: "aguardando" });
+    pousarTeste(taskId);
     return true;
   }
   return runVerificacoes(taskId);
@@ -573,9 +573,7 @@ async function runVerificacoes(taskId: string): Promise<boolean> {
   // Gates de skill (ex.: /review, /qa via gstack) só rodam se os do projeto passaram —
   // não faz sentido pagar um review de código que nem compila.
   if (results.every((g) => g.ok)) {
-    const projGates = store.getProject(task.projectId);
-    const skillGates =
-      loadConfigCascata(task.worktreePath, projGates?.path)?.skills?.verificacoes ?? [];
+    const skillGates = activeConfig(task.projectId).skills?.verificacoes ?? [];
     const ui = temUi(task.worktreePath);
     for (const step of skillGates) {
       if (step.quando === "ui" && !ui) continue;
@@ -680,8 +678,8 @@ async function runPreviewCheck(taskId: string): Promise<boolean> {
 
   // Sem UI (ou sem projeto): não há tela para preparar — direto pro teste.
   if (!project || !temUi(task.worktreePath)) {
-    patch(taskId, { step: "teste", status: "aguardando" });
-    sistema(taskId, "Tudo verificado — pronto pro seu teste.");
+    sistema(taskId, "Tudo verificado.");
+    pousarTeste(taskId);
     return true;
   }
 
@@ -760,8 +758,8 @@ async function runPreviewCheck(taskId: string): Promise<boolean> {
     const saude = await verificarSaude(atualUrl, cfg);
     if (cancelada(taskId)) return false;
     if (saude.ok) {
-      patch(taskId, { step: "teste", status: "aguardando" });
-      sistema(taskId, "Preview no ar e conferido nas telas principais — pode abrir e testar.");
+      sistema(taskId, "Preview no ar e conferido nas telas principais.");
+      pousarTeste(taskId);
       return true;
     }
     if (tentativa === 0) {
@@ -792,6 +790,125 @@ async function pipelineFromEspec(taskId: string): Promise<void> {
   await runPlano(taskId);
 }
 
+/**
+ * Modo Livre: uma tarefa SEM esteira. Sessão única e resumível (acceptEdits +
+ * gate de permissão + skills do usuário), conduzida pelas mensagens da pessoa —
+ * ela mesma pede /review, /qa, etc. no chat. Sem espec/plano/verificações/porteiras.
+ * Ao terminar um turno sem mensagens novas, fica "aguardando" (a vez do usuário);
+ * publicar fica liberado a qualquer momento.
+ */
+async function runLivre(taskId: string, prompt: string): Promise<boolean> {
+  const task = store.getTask(taskId);
+  if (!task) return false;
+  pausaManual.delete(taskId);
+  patch(taskId, { step: "execucao", status: "rodando", error: undefined, pausadaManual: undefined, pausadaPorTempo: undefined });
+
+  const extras = drainSteer(taskId);
+  const base =
+    extras.length > 0
+      ? `${prompt}\n\nMensagens que o usuário enviou (leve em conta):\n${extras.map((t) => `- ${t}`).join("\n")}`
+      : prompt;
+  // Anexos da tarefa entram no prompt (o Read do Claude abre imagens/PDF por caminho).
+  const promptFinal = `${base}${anexosBloco(task)}`;
+
+  const r = await runPhase({
+    taskId,
+    cwd: task.worktreePath,
+    prompt: promptFinal,
+    permissionMode: "acceptEdits",
+    resume: store.getTask(taskId)?.claudeSessionId,
+    canUseTool: gateComStatus(taskId),
+    // settingSources [user, project] → o usuário pode invocar /review, /qa, etc. direto no chat.
+    ...SKILL_PHASE_OPTS,
+  });
+
+  if (cancelada(taskId)) return false;
+  if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
+  if (pausou(taskId)) return false;
+  if (!r.success) {
+    failOuPausa(taskId, r, "A sessão encontrou um erro. Tente de novo ou mande outra instrução.");
+    return false;
+  }
+  // Mensagens novas chegaram enquanto trabalhava? Mais uma rodada.
+  if ((steerQueue.get(taskId)?.length ?? 0) > 0) {
+    return runLivre(taskId, "Continue levando em conta as mensagens do usuário abaixo.");
+  }
+  patch(taskId, { status: "aguardando" });
+  return true;
+}
+
+// ---------- Porteiras humanas (com auto-avanço quando o workflow as desliga) ----------
+
+/** Avança após a aprovação do plano: detalhamento (fluxo normal) ou execução. */
+function avancarAposAprovacao(taskId: string, direto = false): void {
+  const t = store.getTask(taskId);
+  if (!t) return;
+  const proximo = direto ? "execucao" : proximoStep(t, "aprovacao");
+  if (proximo === "detalhamento") {
+    patch(taskId, { step: "detalhamento", status: "rodando", error: undefined });
+    sistema(taskId, "Detalhando o como…");
+    fireAndForget(taskId, () => runDetalhamento(taskId));
+  } else {
+    patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
+    sistema(taskId, "Começando a execução.");
+    fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(t)));
+  }
+}
+
+/** Avança após a aprovação do protótipo: execução de verdade. */
+function avancarAposPrototipo(taskId: string): void {
+  const t = store.getTask(taskId);
+  if (!t) return;
+  patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
+  sistema(taskId, "Implementando de verdade.");
+  fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(t)));
+}
+
+/** Avança após o teste: fica em "publicar" (SEMPRE humano — nada é publicado sozinho). */
+function avancarAposTeste(taskId: string): void {
+  patch(taskId, { step: "publicar", status: "aguardando" });
+  sistema(taskId, "Pronto para publicar — clique em Publicar para levar as mudanças ao projeto.");
+}
+
+/** Chega na aprovação do plano: espera a pessoa, ou auto-aprova se o workflow desligou a porteira. */
+function pousarAprovacao(taskId: string): void {
+  const t = store.getTask(taskId);
+  if (!t) return;
+  if (activeGates(t.projectId).aprovacao) {
+    patch(taskId, { step: "aprovacao", status: "aguardando" });
+    sistema(taskId, "Plano de produto pronto — revise e aprove.");
+  } else {
+    sistema(taskId, "Plano pronto — aprovação automática (este workflow não pede a sua revisão aqui).");
+    avancarAposAprovacao(taskId);
+  }
+}
+
+/** Chega na aprovação do protótipo: espera a pessoa, ou auto-aprova se desligada. */
+function pousarPrototipoGate(taskId: string): void {
+  const t = store.getTask(taskId);
+  if (!t) return;
+  if (activeGates(t.projectId).aprovacao_prototipo) {
+    patch(taskId, { step: "aprovacao_prototipo", status: "aguardando", temPrototipo: true });
+    sistema(taskId, "Protótipo pronto — veja o mockup e aprove (ou peça mudanças).");
+  } else {
+    patch(taskId, { temPrototipo: true });
+    sistema(taskId, "Protótipo pronto — aprovação automática; implementando.");
+    avancarAposPrototipo(taskId);
+  }
+}
+
+/** Chega no "Seu teste": espera a pessoa, ou auto-avança para publicar se desligada. */
+function pousarTeste(taskId: string): void {
+  const t = store.getTask(taskId);
+  if (!t) return;
+  if (activeGates(t.projectId).teste) {
+    patch(taskId, { step: "teste", status: "aguardando" });
+  } else {
+    sistema(taskId, "Verificações concluídas — teste automático (este workflow não pede o seu teste).");
+    avancarAposTeste(taskId);
+  }
+}
+
 // ---------- API pública da máquina ----------
 
 /** Cria a tarefa, prepara o espaço e dispara o pipeline automático (espec → plano). */
@@ -800,17 +917,21 @@ export async function startTask(
   title: string,
   description: string,
   anexos?: TaskAnexo[],
+  modo: "esteira" | "livre" = "esteira",
 ): Promise<Task> {
   const project = store.getProject(projectId);
   if (!project) throw new Error("Projeto não encontrado.");
 
   const now = new Date().toISOString();
+  // Livre nasce direto no passo de execução (sem espec/plano); a esteira começa na espec.
+  const passoInicial: Step = modo === "livre" ? "execucao" : "espec";
   const task: Task = {
     id: store.newId(),
     projectId,
+    ...(modo === "livre" ? { modo } : {}),
     title,
     description,
-    step: "espec",
+    step: passoInicial,
     status: "rodando",
     espaco: store.nextEspaco(projectId),
     // Preenchidos logo abaixo por ensureEspaco (se falhar, a tarefa fica "falhou" e dá retry).
@@ -819,7 +940,7 @@ export async function startTask(
     gates: [],
     gateFixRounds: 0,
     ...(anexos && anexos.length > 0 ? { anexos } : {}),
-    historico: [{ step: "espec" as Step, inicio: now }],
+    historico: [{ step: passoInicial, inicio: now }],
     createdAt: now,
     updatedAt: now,
   };
@@ -829,10 +950,13 @@ export async function startTask(
   if (anexos && anexos.length > 0) {
     sistema(task.id, `Arquivos anexados: ${anexos.map((a) => a.nome).join(", ")}.`);
   }
+  if (modo === "livre") {
+    sistema(task.id, "Modo livre: eu conduzo direto pelo que você pedir — sem plano nem porteiras. Peça /review, /qa etc. quando quiser, e publique quando estiver pronto.");
+  }
 
   const ok = await ensureEspaco(task.id);
   if (ok) {
-    fireAndForget(task.id, () => pipelineFromEspec(task.id));
+    fireAndForget(task.id, () => (modo === "livre" ? runLivre(task.id, description) : pipelineFromEspec(task.id)));
   }
   const atual = store.getTask(task.id);
   if (!atual) throw new Error("Tarefa não encontrada.");
@@ -925,17 +1049,8 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       if (!(task.step === "aprovacao" && task.status === "aguardando")) {
         throw new Error("Esta tarefa não está aguardando a aprovação do plano.");
       }
-      // direto = pular detalhamento/protótipo. Senão, vai pro próximo step ativo.
-      const proximo = action.direto ? "execucao" : proximoStep(task, "aprovacao");
-      if (proximo === "detalhamento") {
-        patch(taskId, { step: "detalhamento", status: "rodando", error: undefined });
-        sistema(taskId, "Plano aprovado — detalhando o como.");
-        fireAndForget(taskId, () => runDetalhamento(taskId));
-      } else {
-        patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
-        sistema(taskId, action.direto ? "Plano aprovado — indo direto pra execução." : "Plano aprovado — começando a execução.");
-        fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(task)));
-      }
+      sistema(taskId, action.direto ? "Plano aprovado — indo direto pra execução." : "Plano aprovado.");
+      avancarAposAprovacao(taskId, action.direto);
       break;
     }
 
@@ -943,9 +1058,8 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       if (!(task.step === "aprovacao_prototipo" && task.status === "aguardando")) {
         throw new Error("Esta tarefa não está aguardando a aprovação do protótipo.");
       }
-      patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
-      sistema(taskId, "Protótipo aprovado — implementando de verdade.");
-      fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(store.getTask(taskId) ?? task)));
+      sistema(taskId, "Protótipo aprovado.");
+      avancarAposPrototipo(taskId);
       break;
     }
 
@@ -1001,13 +1115,18 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       if (!(task.step === "teste" && task.status === "aguardando")) {
         throw new Error("Esta tarefa não está aguardando o seu teste.");
       }
-      patch(taskId, { step: "publicar", status: "aguardando" });
-      sistema(taskId, "Teste aprovado — clique em Publicar para levar as mudanças ao projeto.");
+      sistema(taskId, "Teste aprovado.");
+      avancarAposTeste(taskId);
       break;
     }
 
     case "publish": {
-      if (!(task.step === "publicar" && task.status === "aguardando")) {
+      // Modo livre: publica quando quiser (desde que não esteja no meio de uma resposta).
+      if (task.modo === "livre") {
+        if (task.status !== "aguardando") {
+          throw new Error("Espere o Claude terminar a resposta atual para publicar.");
+        }
+      } else if (!(task.step === "publicar" && task.status === "aguardando")) {
         throw new Error("Esta tarefa ainda não está pronta para publicar.");
       }
       const project = store.getProject(task.projectId);
@@ -1061,7 +1180,11 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
         // falharia de novo na hora, sem nenhuma tentativa de auto-correção.
         patch(taskId, { status: "rodando", gateFixRounds: 0, error: undefined, pausadaPorTempo: undefined, pausadaManual: undefined });
         fireAndForget(taskId, () =>
-          task.kind === "preparacao" ? runPreparacao(taskId) : runExecucao(taskId, execucaoPrompt(task)),
+          task.kind === "preparacao"
+            ? runPreparacao(taskId)
+            : task.modo === "livre"
+              ? runLivre(taskId, task.description)
+              : runExecucao(taskId, execucaoPrompt(task)),
         );
       } else if (task.step === "verificacoes") {
         patch(taskId, { status: "rodando", gateFixRounds: 0, error: undefined, pausadaPorTempo: undefined, pausadaManual: undefined });
@@ -1205,7 +1328,20 @@ export async function steer(taskId: string, text: string, anexos?: TaskAnexo[]):
       .join("; ")}`;
   }
 
-  // Enfileira quando a execução está em andamento OU pausada (retoma com o ajuste junto).
+  // Modo livre: rodando → enfileira (a rodada atual consome no próximo ciclo);
+  // ocioso/pausado/falhou → começa (ou retoma) um turno já com a mensagem.
+  if (task.modo === "livre") {
+    if (task.status === "rodando") {
+      const q = steerQueue.get(taskId) ?? [];
+      q.push(msgFila);
+      steerQueue.set(taskId, q);
+    } else if (task.status !== "concluida" && task.status !== "cancelada") {
+      fireAndForget(taskId, () => runLivre(taskId, msgFila));
+    }
+    return;
+  }
+
+  // Esteira: enfileira quando a execução está em andamento OU pausada (retoma com o ajuste junto).
   const naExecucao = task.step === "execucao" && (task.status === "rodando" || task.status === "aguardando");
   const pausadaNaExecucao = task.step === "execucao" && task.status === "falhou" && !!task.pausadaManual;
   if (naExecucao || pausadaNaExecucao) {

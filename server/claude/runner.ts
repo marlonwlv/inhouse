@@ -28,6 +28,26 @@ const PHASE_TIMEOUT_MS = 60 * 60 * 1000;
 const phaseAborts = new Map<string, AbortController>();
 
 /**
+ * Tentativas de (re)spawn do CLI. O binário nativo do Claude Code se auto-atualiza
+ * (troca o arquivo em ~/.local/share/claude/versions e repointa o symlink). Se o
+ * spawn cai bem nessa janela, o processo nem inicia — é uma corrida transitória,
+ * não um defeito. Nesse caso re-tentamos, com um respiro para o swap terminar.
+ */
+const SPAWN_MAX_ATTEMPTS = 3;
+const SPAWN_RETRY_MS = [600, 1800];
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Erro de LANÇAMENTO do processo (não de execução): o binário existe mas o spawn
+ * falhou — típico quando o auto-update está trocando o arquivo naquele instante.
+ * Só esses casos são seguros para re-tentar (o CLI nem chegou a rodar).
+ */
+function isSpawnLaunchError(detail: string): boolean {
+  return /exists but failed to launch|Failed to spawn Claude Code|\bETXTBSY\b|\bEAGAIN\b/i.test(detail);
+}
+
+/**
  * Aborta a fase em andamento de uma tarefa (usado pelo cancel da esteira).
  * Retorna false se não havia fase rodando.
  */
@@ -304,12 +324,35 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   };
 
   try {
-    const q = query({ prompt: opts.prompt, options });
-    for await (const m of q) handleMessage(m);
-    if (!resultSeen && !errorMessage) {
-      success = false;
-      finalText = lastAssistantText;
-      errorMessage = "O Claude Code encerrou sem terminar o passo. Tente de novo.";
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const q = query({ prompt: opts.prompt, options });
+        for await (const m of q) handleMessage(m);
+        if (!resultSeen && !errorMessage) {
+          success = false;
+          finalText = lastAssistantText;
+          errorMessage = "O Claude Code encerrou sem terminar o passo. Tente de novo.";
+        }
+        break;
+      } catch (err) {
+        if (timedOut || err instanceof AbortError) throw err;
+        const detail = err instanceof Error ? err.message : String(err);
+        // Só re-tenta se o processo NEM COMEÇOU: sem sessão, sem resultado, sem
+        // edição e sem texto do assistente. Aí re-rodar é idempotente (nada foi
+        // feito ainda). Qualquer sinal de trabalho já iniciado → propaga o erro.
+        const nadaAconteceu = !sessionId && !resultSeen && !filesTouched && lastAssistantText === "";
+        if (attempt < SPAWN_MAX_ATTEMPTS && nadaAconteceu && isSpawnLaunchError(detail)) {
+          console.warn(
+            `[runner] spawn do Claude Code falhou (tentativa ${attempt}/${SPAWN_MAX_ATTEMPTS}, task ${opts.taskId}) — ` +
+              `o binário pode estar sendo atualizado; retentando. detalhe: ${detail}`,
+          );
+          apiError = undefined;
+          stderrTail = "";
+          await sleep(SPAWN_RETRY_MS[attempt - 1] ?? 1800);
+          continue;
+        }
+        throw err;
+      }
     }
   } catch (err) {
     success = false;
@@ -343,6 +386,9 @@ function friendlyError(apiError: SDKAssistantMessage["error"], detail?: string):
   }
   if (apiError === "billing_error") {
     return "Há um problema com a assinatura do Claude nesta máquina. Verifique sua conta e tente de novo.";
+  }
+  if (isSpawnLaunchError(detail ?? "")) {
+    return "O Claude Code não pôde iniciar agora — provavelmente estava sendo atualizado. Aguarde alguns segundos e tente de novo.";
   }
   const suffix = detail ? ` (detalhe técnico: ${truncate(detail, 120)})` : "";
   return `O Claude encontrou um erro neste passo. Tente de novo.${suffix}`;

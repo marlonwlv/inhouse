@@ -94,6 +94,12 @@ export interface Task {
   projectId: string;
   /** "preparacao" = fluxo de setup do repositório (roda no checkout principal, sem esteira/PR). Ausente = tarefa normal. */
   kind?: "preparacao";
+  /**
+   * "esteira" (padrão) = passa pela esteira completa (espec→plano→…→publicar).
+   * "livre" = sem esteira: o usuário conduz o Claude direto e escolhe as skills no prompt.
+   * Ausente = "esteira".
+   */
+  modo?: "esteira" | "livre";
   title: string;
   /** Pedido original do usuário, em português. */
   description: string;
@@ -201,11 +207,15 @@ export type ServerEvent =
 // POST /api/projects/open               { path } -> Project (registra pasta existente)
 // GET  /api/tasks/:id/transcript        -> TranscriptItem[]
 // POST /api/anexos                      { files: [{nome,tipo,dataBase64}] } -> { anexos: TaskAnexo[] }
-// POST /api/tasks                       { projectId, title?, description, anexos? } -> Task
+// POST /api/tasks                       { projectId, title?, description, anexos?, modo? } -> Task
 // POST /api/tasks/:id/action            TaskAction -> Task
 // POST /api/tasks/:id/message           { text, anexos? } -> 202 (steering durante execução)
 // GET  /api/tasks/:id/artefatos         -> { temPrototipo, docs: {nome,rel}[] }
 // GET  /api/tasks/:id/artefatos/doc?rel= -> { conteudo } (markdown de docs/plans)
+// GET  /api/workflows                   -> { workflows, globalAtivo, porProjeto, catalogo }
+// POST /api/workflows                   WorkflowDef (id ausente = criar) -> WorkflowDef
+// DELETE /api/workflows/:id             -> 200
+// POST /api/workflows/:id/ativar        { projectId? } -> WorkflowsState (por projeto ou global)
 // POST /api/permissions/:id/decision    { allow, remember? } -> 200
 // POST /api/tasks/:id/preview/start     -> { url }
 // POST /api/tasks/:id/preview/stop      -> 200
@@ -345,6 +355,53 @@ export interface InhouseConfig {
   };
   /** Como subir o preview deste projeto (opcional; auto-detecção cobre o resto). */
   preview?: PreviewConfig;
+}
+
+// ---------- Workflows (biblioteca configurável) ----------
+// Um workflow nomeado é o config de skills da esteira. A biblioteca guarda vários;
+// cada projeto escolhe um (com um padrão global). O `preview` continua vindo do
+// inhouse.config.json do repo (não faz parte do workflow).
+
+/**
+ * Porteiras humanas que um workflow pode DESLIGAR (o Claude auto-avança em vez de
+ * esperar). `false` = desligada (auto). Ausente/`true` = pede a pessoa (padrão).
+ * "publicar" fica SEMPRE humano (nada é mesclado/publicado sem um clique).
+ */
+export type GateConfig = Partial<Record<"aprovacao" | "aprovacao_prototipo" | "teste", boolean>>;
+
+export interface WorkflowDef {
+  id: string;
+  name: string;
+  descricao?: string;
+  /** De onde veio (só metadado p/ a UI). */
+  origem?: "padrao" | "manual" | "ia";
+  /** Config de skills por fase (mesma forma do inhouse.config.json). */
+  skills: NonNullable<InhouseConfig["skills"]>;
+  /** Porteiras humanas ligadas/desligadas (ausente = todas ligadas). */
+  gates?: GateConfig;
+  /** Não editável/removível (os presets embutidos). */
+  builtin?: boolean;
+}
+
+/** Estado da biblioteca de workflows (persistido em DATA_DIR/workflows.json). */
+export interface WorkflowsState {
+  workflows: WorkflowDef[];
+  /** Workflow padrão para projetos sem escolha própria. */
+  globalAtivo: string;
+  /** Override por projeto: projectId -> workflowId. */
+  porProjeto: Record<string, string>;
+}
+
+/** Uma skill disponível para montar workflows (lista fixa das instaladas). */
+export interface SkillCatalogItem {
+  /** Nome da skill (sem barra) — vira /skill. */
+  skill: string;
+  /** Rótulo amigável em português. */
+  rotulo: string;
+  /** Em que fase da esteira ela faz sentido. */
+  fase: "plano_produto" | "detalhamento" | "verificacoes";
+  /** Detectada de fato na máquina? (senão, aparece esmaecida). */
+  instalada: boolean;
 }
 
 // ---------- Utilidades ----------

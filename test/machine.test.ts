@@ -34,9 +34,12 @@ const h = vi.hoisted(() => {
     execHang: false,
     abortReturns: false,
     releaseExec: undefined as undefined | (() => void),
+    // Porteiras do workflow ativo (todas ligadas por padrão; um teste desliga uma).
+    gates: { aprovacao: true, aprovacao_prototipo: true, teste: true },
   };
   return {
     state,
+    activeGates: () => state.gates,
     async runPhase(opts: { permissionMode: string; prompt: string; resume?: string }) {
       state.calls.push({
         permissionMode: opts.permissionMode,
@@ -142,6 +145,9 @@ vi.mock("../server/services/preview.js", () => ({
 }));
 vi.mock("../server/services/publish.js", () => ({ publishTask: h.publishTask }));
 vi.mock("../server/events.js", () => ({ broadcast: () => {}, addClient: () => {} }));
+// A máquina resolve as skills pelo workflow ativo; aqui testamos as transições, não
+// as skills — então o workflow ativo é vazio (comportamento "sem config" original).
+vi.mock("../server/workflow/library.js", () => ({ activeConfig: () => ({ skills: {} }), activeGates: h.activeGates }));
 
 // DATA_DIR temporário ANTES de importar store/máquina (o config lê o env no import).
 const TMP = mkdtempSync(join(tmpdir(), "inhouse-machine-"));
@@ -149,7 +155,7 @@ process.env.INHOUSE_DATA_DIR = join(TMP, "data");
 process.env.INHOUSE_PROJECTS_DIR = join(TMP, "projects");
 
 const store = await import("../server/store.js");
-const { applyAction, startPreparacao, startTask } = await import("../server/workflow/machine.js");
+const { applyAction, startPreparacao, startTask, steer } = await import("../server/workflow/machine.js");
 const { MAX_GATE_FIX_ROUNDS } = await import("../server/config.js");
 const coleta = await import("../server/eval/coleta.js");
 
@@ -188,11 +194,19 @@ beforeEach(() => {
   h.state.execHang = false;
   h.state.abortReturns = false;
   h.state.releaseExec = undefined;
+  h.state.gates = { aprovacao: true, aprovacao_prototipo: true, teste: true };
 });
 
 async function esperaStep(taskId: string, step: Task["step"]): Promise<Task> {
   await vi.waitFor(() => {
     expect(store.getTask(taskId)?.step).toBe(step);
+  }, { timeout: 3000 });
+  return store.getTask(taskId)!;
+}
+
+async function esperaStatus(taskId: string, status: Task["status"]): Promise<Task> {
+  await vi.waitFor(() => {
+    expect(store.getTask(taskId)?.status).toBe(status);
   }, { timeout: 3000 });
   return store.getTask(taskId)!;
 }
@@ -244,6 +258,39 @@ describe("machine: pipeline automático", () => {
     expect(t.status).toBe("falhou");
     expect(t.worktreePath).toBe("");
     expect(t.error).toContain("mock");
+  });
+});
+
+describe("machine: modo livre (sem esteira)", () => {
+  it("roda sessão direta (sem espec/plano), para em aguardando; steer dispara novo turno; publica", async () => {
+    const t = await startTask("p1", "Ajuste rápido", "troque o texto do botão", undefined, "livre");
+    expect(t.modo).toBe("livre");
+    expect(t.step).toBe("execucao"); // nasce direto na execução
+
+    const ocioso = await esperaStatus(t.id, "aguardando");
+    expect(ocioso.step).toBe("execucao");
+    // Não passou pela esteira: nada de fase "plan" (espec/plano), só acceptEdits.
+    expect(h.state.calls.some((c) => c.permissionMode === "plan")).toBe(false);
+    expect(h.state.calls.length).toBeGreaterThanOrEqual(1);
+
+    // Uma mensagem numa tarefa livre ociosa dispara um novo turno.
+    const antes = h.state.calls.length;
+    await steer(t.id, "agora deixe o texto em azul");
+    await vi.waitFor(() => expect(h.state.calls.length).toBeGreaterThan(antes), { timeout: 3000 });
+    await esperaStatus(t.id, "aguardando");
+
+    // Publica direto, sem porteiras.
+    const done = await applyAction(t.id, { action: "publish", createPr: false });
+    expect(done.status).toBe("concluida");
+    expect(h.state.publishCalls.length).toBe(1);
+  });
+
+  it("publicar antes de o turno terminar é recusado", async () => {
+    h.state.execHang = true; // sessão "em andamento"
+    const t = await startTask("p1", "Livre travada", "faça algo demorado", undefined, "livre");
+    await esperaStatus(t.id, "rodando");
+    await expect(applyAction(t.id, { action: "publish" })).rejects.toThrow(/termin/i);
+    h.state.releaseExec?.(); // destrava pra não vazar
   });
 });
 
@@ -595,6 +642,35 @@ describe("machine: esteira de plano em fases", () => {
     h.state.espPorte = "simples";
     const t = await criaTaskEmAprovacao("Trocar um texto");
     await applyAction(t.id, { action: "approve_plan" });
+    await esperaStep(t.id, "teste");
+  });
+});
+
+describe("machine: porteiras do workflow (ligar/desligar)", () => {
+  it("aprovacao desligada: após o plano, segue sozinho sem parar na aprovação", async () => {
+    h.state.gates.aprovacao = false;
+    const t = await startTask("p1", "Sem me pedir aprovação", "Descrição da tarefa de teste");
+    // Sem nenhum applyAction, chega no teste humano (a aprovação do plano foi automática).
+    const emTeste = await esperaStep(t.id, "teste");
+    expect(emTeste.status).toBe("aguardando");
+  });
+
+  it("teste desligado: após as verificações, vai direto para publicar (sempre humano)", async () => {
+    h.state.gates.teste = false;
+    const t = await criaTaskEmAprovacao("Sem me pedir teste");
+    await applyAction(t.id, { action: "approve_plan" });
+    // execução → verificações → (teste automático) → publicar
+    const pub = await esperaStep(t.id, "publicar");
+    expect(pub.status).toBe("aguardando");
+  });
+
+  it("aprovacao_prototipo desligada: task com design pula a porteira do protótipo", async () => {
+    h.state.espPorte = "grande";
+    h.state.espDesign = true;
+    h.state.gates.aprovacao_prototipo = false;
+    const t = await criaTaskEmAprovacao("Design sem aprovar protótipo");
+    await applyAction(t.id, { action: "approve_plan" });
+    // detalhamento → protótipo → (aprovação automática) → execução → teste
     await esperaStep(t.id, "teste");
   });
 });
