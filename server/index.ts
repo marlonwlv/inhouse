@@ -12,6 +12,7 @@ import { HOST, PORT, ensureDirs } from "./config.js";
 import { broadcast } from "./events.js";
 import { killBackgroundInstalls } from "./services/projects.js";
 import { stopAllPreviews } from "./services/preview.js";
+import { killInstallsDeEspaco } from "./services/worktrees.js";
 import { checarUpdate } from "./services/update.js";
 import { backfillSeVazio } from "./eval/coleta.js";
 import { listTasks, load } from "./store.js";
@@ -107,6 +108,7 @@ function shutdown(sinal: string): void {
   // Claude em curso (abort → o SDK mata o processo do CLI).
   stopAllPreviews();
   killBackgroundInstalls();
+  killInstallsDeEspaco();
   for (const t of listTasks()) if (t.status === "rodando") abortPhase(t.id);
   server.close();
   server6.close();

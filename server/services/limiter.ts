@@ -52,14 +52,29 @@ function liberar(s: Semaforo): void {
   else s.emUso = Math.max(0, s.emUso - 1);
 }
 
-/** Roda `fn` respeitando o teto global do `tipo`; enfileira o excedente. Libera mesmo em erro. */
-export async function withLimit<T>(tipo: string, fn: () => Promise<T>): Promise<T> {
+/**
+ * Adquire um slot do `tipo` e devolve a função que o LIBERA (idempotente).
+ * Use quando precisar segurar/soltar o slot manualmente — ex.: soltar o slot de
+ * uma sessão Claude enquanto ela espera decisão humana, e re-adquirir depois.
+ */
+export async function acquire(tipo: string): Promise<() => void> {
   const s = get(tipo);
   await adquirir(s);
+  let liberado = false;
+  return () => {
+    if (liberado) return;
+    liberado = true;
+    liberar(s);
+  };
+}
+
+/** Roda `fn` respeitando o teto global do `tipo`; enfileira o excedente. Libera mesmo em erro. */
+export async function withLimit<T>(tipo: string, fn: () => Promise<T>): Promise<T> {
+  const release = await acquire(tipo);
   try {
     return await fn();
   } finally {
-    liberar(s);
+    release();
   }
 }
 

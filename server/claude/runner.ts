@@ -19,7 +19,7 @@ import { claudeEnv, claudePath } from "../config.js";
 import { fakeRunPhase } from "../debug/fakeModel.js";
 import { isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
-import { withLimit } from "../services/limiter.js";
+import { acquire } from "../services/limiter.js";
 import { transcriptAppend } from "../store.js";
 
 /** Timeout de segurança global de uma fase. */
@@ -197,19 +197,40 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   };
   armTimer();
 
+  // Slot do limitador global de sessões Claude. É SOLTO durante a espera de decisão
+  // humana (permissão) e re-adquirido depois — senão uma fase parada numa porteira
+  // seguraria o slot por até 30min e travaria o início de outras tarefas.
+  let releaseSlot: (() => void) | null = null;
+  const soltarSlot = (): void => {
+    if (releaseSlot) {
+      releaseSlot();
+      releaseSlot = null;
+    }
+  };
+  const pegarSlot = async (): Promise<void> => {
+    if (!releaseSlot && !abortController.signal.aborted) releaseSlot = await acquire("claude");
+  };
+
   // O relógio de segurança da fase não corre enquanto uma permissão espera a
   // decisão humana — quem manda nessa espera é o PERMISSION_TIMEOUT_MS (30min).
+  // E o slot do limitador é solto nesse meio-tempo (a fase está ociosa, não spawna).
   let permissoesPendentes = 0;
   const baseCanUseTool = opts.canUseTool;
   const canUseTool: CanUseTool | undefined = baseCanUseTool
     ? async (toolName, input, options) => {
         permissoesPendentes++;
-        if (permissoesPendentes === 1) clearTimeout(timer);
+        if (permissoesPendentes === 1) {
+          clearTimeout(timer);
+          soltarSlot();
+        }
         try {
           return await baseCanUseTool(toolName, input, options);
         } finally {
           permissoesPendentes--;
-          if (permissoesPendentes === 0) armTimer();
+          if (permissoesPendentes === 0) {
+            armTimer();
+            await pegarSlot();
+          }
         }
       }
     : undefined;
@@ -251,7 +272,6 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   // modelUsage) e effort REAL do turno. O effort não volta no resultado do SDK, então
   // é capturado por um hook in-process (input.effort.level) — sem DEFINIR/sobrescrever
   // o effort configurado pelo usuário; só lê o valor ativo (após downgrade do modelo).
-  let sessionModel: string | undefined;
   const modelosUsados = new Set<string>();
   let effortLevel: string | undefined;
   const capturarEffort = async (input: unknown): Promise<{ continue: true }> => {
@@ -300,10 +320,7 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
     if (m.type === "system" && m.subtype === "init") {
       sessionId = m.session_id;
       const modelo = (m as { model?: string }).model;
-      if (modelo) {
-        sessionModel = modelo;
-        modelosUsados.add(modelo);
-      }
+      if (modelo) modelosUsados.add(modelo);
       return;
     }
     if (m.type === "stream_event") {
@@ -360,40 +377,40 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   };
 
   try {
-    // Limitador GLOBAL: no máximo N sessões Claude simultâneas na máquina (o resto
-    // enfileira). Evita a "tempestade de spawns" que esgota fork/thread (EAGAIN).
-    await withLimit("claude", async () => {
-      for (let attempt = 1; ; attempt++) {
-        try {
-          const q = query({ prompt: opts.prompt, options });
-          for await (const m of q) handleMessage(m);
-          if (!resultSeen && !errorMessage) {
-            success = false;
-            finalText = lastAssistantText;
-            errorMessage = "O Claude Code encerrou sem terminar o passo. Tente de novo.";
-          }
-          break;
-        } catch (err) {
-          if (timedOut || err instanceof AbortError) throw err;
-          const detail = err instanceof Error ? err.message : String(err);
-          // Só re-tenta se o processo NEM COMEÇOU: sem sessão, sem resultado, sem
-          // edição e sem texto do assistente. Aí re-rodar é idempotente (nada foi
-          // feito ainda). Qualquer sinal de trabalho já iniciado → propaga o erro.
-          const nadaAconteceu = !sessionId && !resultSeen && !filesTouched && lastAssistantText === "";
-          if (attempt < SPAWN_MAX_ATTEMPTS && nadaAconteceu && isSpawnLaunchError(detail)) {
-            console.warn(
-              `[runner] spawn do Claude Code falhou (tentativa ${attempt}/${SPAWN_MAX_ATTEMPTS}, task ${opts.taskId}) — ` +
-                `o binário pode estar sendo atualizado; retentando. detalhe: ${detail}`,
-            );
-            apiError = undefined;
-            stderrTail = "";
-            await sleep(spawnBackoffMs(attempt));
-            continue;
-          }
-          throw err;
+    // Limitador GLOBAL: adquire um slot de sessão Claude antes de começar (o excedente
+    // enfileira). Evita a "tempestade de spawns" que esgota fork/thread (EAGAIN). O slot
+    // é solto/re-adquirido em torno da espera de permissão humana (ver canUseTool).
+    await pegarSlot();
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const q = query({ prompt: opts.prompt, options });
+        for await (const m of q) handleMessage(m);
+        if (!resultSeen && !errorMessage) {
+          success = false;
+          finalText = lastAssistantText;
+          errorMessage = "O Claude Code encerrou sem terminar o passo. Tente de novo.";
         }
+        break;
+      } catch (err) {
+        if (timedOut || err instanceof AbortError) throw err;
+        const detail = err instanceof Error ? err.message : String(err);
+        // Só re-tenta se o processo NEM COMEÇOU: sem sessão, sem resultado, sem
+        // edição e sem texto do assistente. Aí re-rodar é idempotente (nada foi
+        // feito ainda). Qualquer sinal de trabalho já iniciado → propaga o erro.
+        const nadaAconteceu = !sessionId && !resultSeen && !filesTouched && lastAssistantText === "";
+        if (attempt < SPAWN_MAX_ATTEMPTS && nadaAconteceu && isSpawnLaunchError(detail)) {
+          console.warn(
+            `[runner] spawn do Claude Code falhou (tentativa ${attempt}/${SPAWN_MAX_ATTEMPTS}, task ${opts.taskId}) — ` +
+              `o binário pode estar sendo atualizado; retentando. detalhe: ${detail}`,
+          );
+          apiError = undefined;
+          stderrTail = "";
+          await sleep(spawnBackoffMs(attempt));
+          continue;
+        }
+        throw err;
       }
-    });
+    }
   } catch (err) {
     success = false;
     finalText = lastAssistantText;
@@ -409,6 +426,7 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   } finally {
     phaseDone = true;
     clearTimeout(timer);
+    soltarSlot();
     phaseAborts.delete(opts.taskId);
   }
 
