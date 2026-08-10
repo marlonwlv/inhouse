@@ -24,7 +24,8 @@ Fix: `nextEspaco` (`server/store.ts`) agora é **`max(espaço do projeto) + 1`**
 ## Parte 3 — Modelo(s) + effort na tarefa (+ corrigir o leapy-2)
 
 - **Captura** (`runner.ts` + `coleta.ts` + `shared/types.ts`): modelo da sessão (`SDKSystemMessage.model` no init) e todos os modelos da fase (`SDKResultMessage.modelUsage` — inclui sub-agents de modelo diferente); effort **real** do turno via **hook in-process** (`input.effort.level`), sem sobrescrever a config do usuário. Persistido em `Task.uso.porEtapa[step].{modelos,effort}` (`UsoFase`/`FaseMetricas` estendidos).
-- **Exibição** (`public/app.js`, UI 0.23.0): chip `Modelo: … · Effort: …` no cabeçalho da tarefa (`#ed-flowstrip`); com mais de um modelo, lista ("Opus 4.8 + Haiku 4.5"). `nomeModelo()` mapeia ids canônicos para nomes amigáveis.
+- **Exibição** (`public/app.js`, UI 0.24.0): chip `Modelo: … · Effort: …` no cabeçalho da tarefa (`#ed-flowstrip`); com mais de um modelo, lista ("Opus 4.8 + Haiku 4.5"). `nomeModelo()` mapeia ids canônicos para nomes amigáveis.
+- **Gasto (tokens + valor estimado)**: os dados de custo/tokens por fase já eram capturados (`Task.uso.porEtapa`); `usoTotais()` soma por tarefa e um chip sutil `~$X · Nk tokens` aparece no **card** (compacto, só o valor) e no **editor** (valor + tokens). Rotulado como valor estimado (equivalente à API) — a pessoa paga a assinatura; é só a noção de quanto foi consumido. Verificado com dados reais (ex.: uma task = ~$52 · 56M tokens).
 - **3c. Corrigir o leapy-2** (dado de produção, **pendente de OK do usuário**): reapontar o workflow ativo do `leapy-2` para "Padrão" (ou tirar `plan-ceo-review` do custom), para parar de rodar a skill surpresa.
 
 ## Verificação
