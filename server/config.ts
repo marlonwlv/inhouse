@@ -30,8 +30,14 @@ export const PREVIEW_PORT_BASE = 4500;
 /** Timeout para pedidos de permissão sem resposta humana (nega ao expirar). */
 export const PERMISSION_TIMEOUT_MS = 30 * 60 * 1000;
 
-/** Rodadas máximas de auto-correção quando as verificações falham. */
-export const MAX_GATE_FIX_ROUNDS = 2;
+/**
+ * Teto de SEGURANÇA para as rodadas de auto-correção das verificações.
+ * NÃO é o critério normal de parada: o agente conserta até os gates passarem OU
+ * até ele mesmo declarar que não dá (precisa de decisão humana). Este número só
+ * existe para impedir loop infinito/custo desgovernado quando o agente insiste
+ * sem convergir e sem desistir. Override: INHOUSE_MAX_GATE_FIX_ROUNDS.
+ */
+export const GATE_FIX_SAFETY_ROUNDS = Number(process.env.INHOUSE_MAX_GATE_FIX_ROUNDS ?? 8);
 
 export function ensureDirs(): void {
   for (const d of [PROJECTS_DIR, ESPACOS_DIR, DATA_DIR, TRANSCRIPTS_DIR, ANEXOS_DIR, EVAL_DIR, RELATORIOS_DIR]) {

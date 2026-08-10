@@ -25,6 +25,9 @@ const h = vi.hoisted(() => {
     removeEspacoCalls: [] as string[],
     abortCalls: [] as string[],
     execFilesTouched: true,
+    // Quando true, a fase de CORREÇÃO de gates devolve "CONSERTO: impossivel"
+    // (o agente declara que não resolve sozinho) em vez de seguir tentando.
+    fixDesiste: false,
     prepPronto: true,
     espPorte: "media" as "simples" | "media" | "grande",
     espUi: false,
@@ -69,9 +72,15 @@ const h = vi.hoisted(() => {
           return { sessionId: "sess-exec", success: false, errorMessage: "O passo foi interrompido." };
         }
         const ehPrep = /PREPARAR este projeto/i.test(opts.prompt);
+        const ehFix = /verificações automáticas do projeto falharam/i.test(opts.prompt);
+        const finalText = ehPrep
+          ? `Resumo da preparação.\nPREPARADO: ${state.prepPronto ? "sim" : "nao"}`
+          : ehFix && state.fixDesiste
+            ? "Isso precisa de decisão sua.\nCONSERTO: impossivel — precisa de decisão de produto"
+            : "Mudanças feitas.";
         return {
           sessionId: "sess-exec",
-          finalText: ehPrep ? `Resumo da preparação.\nPREPARADO: ${state.prepPronto ? "sim" : "nao"}` : "Mudanças feitas.",
+          finalText,
           success: true,
           filesTouched: state.execFilesTouched,
         };
@@ -156,7 +165,7 @@ process.env.INHOUSE_PROJECTS_DIR = join(TMP, "projects");
 
 const store = await import("../server/store.js");
 const { applyAction, startPreparacao, startTask, steer } = await import("../server/workflow/machine.js");
-const { MAX_GATE_FIX_ROUNDS } = await import("../server/config.js");
+const { GATE_FIX_SAFETY_ROUNDS } = await import("../server/config.js");
 const coleta = await import("../server/eval/coleta.js");
 
 const project: Project = {
@@ -177,6 +186,7 @@ beforeEach(() => {
   h.state.calls.length = 0;
   h.state.gateRuns = 0;
   h.state.execFilesTouched = true;
+  h.state.fixDesiste = false;
   h.state.prepPronto = true;
   h.state.espPorte = "media";
   h.state.espUi = false;
@@ -390,25 +400,25 @@ describe("machine: aprovação e execução", () => {
 });
 
 describe("machine: verificações e retry", () => {
-  it("gates falhando estouram MAX_GATE_FIX_ROUNDS, tarefa falha e retry re-roda", async () => {
+  it("gates falhando sem convergir batem no teto de segurança, tarefa falha e retry re-roda", async () => {
     const t = await criaTaskEmAprovacao();
-    h.state.gatesOk = false;
+    h.state.gatesOk = false; // erro determinístico + agente nunca desiste → estoura o teto
     await applyAction(t.id, { action: "approve_plan" });
 
     await vi.waitFor(() => {
       expect(store.getTask(t.id)?.status).toBe("falhou");
-    }, { timeout: 3000 });
+    }, { timeout: 5000 });
 
     const falhada = store.getTask(t.id)!;
     expect(falhada.step).toBe("verificacoes");
-    expect(falhada.gateFixRounds).toBe(MAX_GATE_FIX_ROUNDS);
+    expect(falhada.gateFixRounds).toBe(GATE_FIX_SAFETY_ROUNDS);
     expect(falhada.gates[0]?.ok).toBe(false);
-    expect(falhada.error).toMatch(/verificações/i);
+    expect(falhada.error).toMatch(/teto de segurança/i);
 
-    // Execução inicial + uma rodada de correção por tentativa.
+    // Execução inicial + uma rodada de correção por tentativa até o teto.
     const execs = h.state.calls.filter((c) => c.permissionMode === "acceptEdits");
-    expect(execs).toHaveLength(1 + MAX_GATE_FIX_ROUNDS);
-    expect(h.state.gateRuns).toBe(1 + MAX_GATE_FIX_ROUNDS);
+    expect(execs).toHaveLength(1 + GATE_FIX_SAFETY_ROUNDS);
+    expect(h.state.gateRuns).toBe(1 + GATE_FIX_SAFETY_ROUNDS);
     // Os prompts de correção citam o erro do gate.
     expect(execs[1]?.prompt).toContain("error TS2304");
 
@@ -419,23 +429,43 @@ describe("machine: verificações e retry", () => {
     expect(depois.status).toBe("aguardando");
   });
 
-  it("retry após esgotar as rodadas zera gateFixRounds e tenta a auto-correção de novo", async () => {
+  it("o agente pode declarar que não resolve sozinho e a tarefa para na hora (sem estourar o teto)", async () => {
+    const t = await criaTaskEmAprovacao();
+    h.state.gatesOk = false;
+    h.state.fixDesiste = true; // a 1ª correção devolve "CONSERTO: impossivel"
+    await applyAction(t.id, { action: "approve_plan" });
+
+    await vi.waitFor(() => {
+      expect(store.getTask(t.id)?.status).toBe("falhou");
+    }, { timeout: 3000 });
+
+    const falhada = store.getTask(t.id)!;
+    expect(falhada.step).toBe("verificacoes");
+    expect(falhada.error).toMatch(/não resolve sozinho|decisão de produto/i);
+    // Parou na 1ª correção: NÃO ficou tentando até o teto.
+    expect(falhada.gateFixRounds).toBe(0);
+    expect(h.state.gateRuns).toBe(1);
+    const execs = h.state.calls.filter((c) => c.permissionMode === "acceptEdits");
+    expect(execs).toHaveLength(2); // execução inicial + 1 correção que desistiu
+  });
+
+  it("retry após falhar re-roda a auto-correção do zero", async () => {
     const t = await criaTaskEmAprovacao();
     h.state.gatesOk = false; // erro determinístico: gates falham sempre
     await applyAction(t.id, { action: "approve_plan" });
     await vi.waitFor(() => {
       expect(store.getTask(t.id)?.status).toBe("falhou");
-    }, { timeout: 3000 });
+    }, { timeout: 5000 });
 
     const execsAntes = h.state.calls.filter((c) => c.permissionMode === "acceptEdits").length;
     await applyAction(t.id, { action: "retry" });
     await vi.waitFor(() => {
       expect(store.getTask(t.id)?.status).toBe("falhou");
-    }, { timeout: 3000 });
+    }, { timeout: 5000 });
 
-    // Sem o reset, falharia na hora com zero tentativas de correção.
+    // O retry recomeça o loop de correção (só as verificações, sem execução inicial).
     const execsDepois = h.state.calls.filter((c) => c.permissionMode === "acceptEdits").length;
-    expect(execsDepois - execsAntes).toBe(MAX_GATE_FIX_ROUNDS);
+    expect(execsDepois - execsAntes).toBe(GATE_FIX_SAFETY_ROUNDS);
   });
 
   it("request_changes com a tarefa falhada nas verificações volta para a execução", async () => {

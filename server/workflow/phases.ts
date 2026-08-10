@@ -212,7 +212,28 @@ export function fixGatesPrompt(_task: Task, gates: GateResult[]): string {
     PREVIEW_GERENCIADO,
     "",
     blocos,
+    "",
+    "Quando terminar, a sua ÚLTIMA linha deve ser exatamente uma destas:",
+    "CONSERTO: feito",
+    "  → você corrigiu o que dava e acredita que as verificações agora passam. É o padrão:",
+    "    na dúvida, tente consertar e devolva 'feito' — as verificações rodam de novo e confirmam.",
+    "CONSERTO: impossivel — <motivo curto>",
+    "  → só quando insistir NÃO vai adiantar sem a pessoa: o problema pede uma DECISÃO humana/de",
+    "    produto, ou não dá para resolver apenas no código (ex.: um review pedindo mudança de",
+    "    comportamento que o usuário precisa aprovar; um teste que exige um dado que você não tem).",
+    "    Nesse caso, explique acima, em português simples, o que a pessoa precisa decidir.",
   ].join("\n");
+}
+
+/**
+ * Lê o veredito da fase de correção de gates. Sem marcador = seguiu tentando
+ * (não desistiu) — as verificações rodam de novo e confirmam.
+ */
+export function parseConserto(finalText: string): { desistiu: boolean; motivo?: string } {
+  const m = /CONSERTO:\s*(feito|imposs[ií]vel|desisto|nao|n[aã]o)\s*(?:—|-)?\s*(.*)/i.exec(finalText);
+  if (!m) return { desistiu: false };
+  const desistiu = !/^feito/i.test(m[1]!);
+  return { desistiu, motivo: desistiu ? m[2]?.trim() || undefined : undefined };
 }
 
 /** Feedback humano pedindo mudanças (usado tanto na aprovação do plano quanto no teste). */

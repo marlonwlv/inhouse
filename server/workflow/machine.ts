@@ -8,7 +8,7 @@
  * (Agente B). Toda transição atualiza o store e faz broadcast de task_updated.
  */
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
-import type { Step, Task, TaskAction, TaskAnexo, TranscriptItem } from "../../shared/types.js";
+import type { GateResult, Step, Task, TaskAction, TaskAnexo, TranscriptItem } from "../../shared/types.js";
 import { STEP_LABELS, isHumanStep, proximoStep, rodaDesign } from "../../shared/types.js";
 import {
   createPermissionGate,
@@ -17,7 +17,7 @@ import {
   resolvePermission,
 } from "../claude/permissions.js";
 import { abortPhase, runPhase } from "../claude/runner.js";
-import { MAX_GATE_FIX_ROUNDS } from "../config.js";
+import { GATE_FIX_SAFETY_ROUNDS } from "../config.js";
 import { broadcast } from "../events.js";
 import { runGates } from "../services/gates.js";
 import {
@@ -44,6 +44,7 @@ import {
   execucaoPrompt,
   fixGatesPrompt,
   limparJulgamento,
+  parseConserto,
   parsePorte,
   parsePreparado,
   parsePrecisaDesign,
@@ -559,110 +560,195 @@ async function runExecucao(
   return runVerificacoes(taskId);
 }
 
-/** Fase verificações: gates do projeto + até MAX_GATE_FIX_ROUNDS rodadas de auto-correção. */
-async function runVerificacoes(taskId: string): Promise<boolean> {
-  const task = store.getTask(taskId);
-  if (!task) return false;
-  patch(taskId, { step: "verificacoes", status: "rodando", error: undefined });
-  sistema(taskId, "Rodando as verificações automáticas…");
+/**
+ * Roda os skill-gates configurados (ex.: /review, /qa) que ainda NÃO passaram,
+ * anexando cada resultado a task.gates. Pula os que já passaram (memoizados em
+ * `passados`) — não re-rodamos verificações caras já aprovadas — e os "quando: ui"
+ * em projeto sem UI. Devolve false só quando precisa abortar (cancel/timeout).
+ */
+async function rodarSkillGates(taskId: string, passados: Map<string, GateResult>): Promise<boolean> {
+  const inicial = store.getTask(taskId);
+  if (!inicial) return false;
+  const skillGates = activeConfig(inicial.projectId).skills?.verificacoes ?? [];
+  const ui = temUi(inicial.worktreePath);
+  for (const step of skillGates) {
+    const gateName = step.gate ?? step.skill;
+    if (passados.has(gateName)) {
+      sistema(taskId, `Verificação "${gateName}" já passou — pulando (não re-rodo verificações caras já aprovadas).`);
+      continue;
+    }
+    if (step.quando === "ui" && !ui) continue;
+    const atual = store.getTask(taskId);
+    if (!atual || cancelada(taskId)) return false;
+    sistema(taskId, `Rodando a verificação "${gateName}" (/${step.skill})…`);
 
-  const results = await runGates(taskId, task.worktreePath);
-  if (cancelada(taskId)) return false;
-  patch(taskId, { gates: results });
-
-  // Gates de skill (ex.: /review, /qa via gstack) só rodam se os do projeto passaram —
-  // não faz sentido pagar um review de código que nem compila.
-  if (results.every((g) => g.ok)) {
-    const skillGates = activeConfig(task.projectId).skills?.verificacoes ?? [];
-    const ui = temUi(task.worktreePath);
-    for (const step of skillGates) {
-      if (step.quando === "ui" && !ui) continue;
-      const atual = store.getTask(taskId);
-      if (!atual || cancelada(taskId)) return false;
-      const gateName = step.gate ?? step.skill;
-      sistema(taskId, `Rodando a verificação "${gateName}" (/${step.skill})…`);
-
-      // {previewUrl} nos args → precisa do app rodando no espaço.
-      let previewUrl = atual.previewUrl ?? "";
-      if ((step.args ?? "").includes("{previewUrl}") && !previewUrl) {
-        const project = store.getProject(atual.projectId);
-        if (project) {
-          try {
-            previewUrl = await startPreview(atual, project);
-          } catch (err) {
-            sistema(
-              taskId,
-              `Não deu para subir o preview para a verificação "${gateName}" — pulando: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            );
-            continue;
-          }
+    // {previewUrl} nos args → precisa do app rodando no espaço.
+    let previewUrl = atual.previewUrl ?? "";
+    if ((step.args ?? "").includes("{previewUrl}") && !previewUrl) {
+      const project = store.getProject(atual.projectId);
+      if (project) {
+        try {
+          previewUrl = await startPreview(atual, project);
+        } catch (err) {
+          sistema(
+            taskId,
+            `Não deu para subir o preview para a verificação "${gateName}" — pulando: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          continue;
         }
       }
-
-      const inicio = Date.now();
-      const rg = await runPhase({
-        taskId,
-        cwd: atual.worktreePath,
-        prompt: skillGatePrompt(step, atual, previewUrl),
-        permissionMode: "acceptEdits",
-        resume: atual.claudeSessionId,
-        canUseTool: gateComStatus(taskId),
-        ...SKILL_PHASE_OPTS,
-      });
-      if (cancelada(taskId)) return false;
-      if (rg.sessionId) store.updateTask(taskId, { claudeSessionId: rg.sessionId });
-
-      if (!rg.success && rg.timedOut) {
-        failOuPausa(taskId, rg, "");
-        return false;
-      }
-      const veredito = rg.success ? parseVeredito(rg.finalText) : { ok: false, motivo: rg.errorMessage };
-      const gate = {
-        name: gateName,
-        command: `/${step.skill}`,
-        ok: veredito.ok,
-        output: veredito.ok ? undefined : (veredito.motivo ?? rg.finalText.slice(-1500)),
-        durationMs: Date.now() - inicio,
-      };
-      const comGate = store.getTask(taskId);
-      if (!comGate) return false;
-      patch(taskId, { gates: [...comGate.gates, gate] });
-      broadcast({ type: "gate_result", taskId, gate });
-      sistema(
-        taskId,
-        `Verificação "${gateName}": ${veredito.ok ? "passou" : `reprovou${veredito.motivo ? ` — ${veredito.motivo}` : ""}`}`,
-      );
     }
-  }
 
-  const todos = store.getTask(taskId)?.gates ?? results;
-  const falhas = todos.filter((g) => !g.ok);
-  if (falhas.length === 0) {
-    // Verificações passaram: o agente prepara e valida o preview (tasks com UI)
-    // antes de a task chegar ao "Seu teste" — o usuário só vê preview funcionando.
-    return runPreviewCheck(taskId);
-  }
+    const inicio = Date.now();
+    const rg = await runPhase({
+      taskId,
+      cwd: atual.worktreePath,
+      prompt: skillGatePrompt(step, atual, previewUrl),
+      permissionMode: "acceptEdits",
+      resume: atual.claudeSessionId,
+      canUseTool: gateComStatus(taskId),
+      ...SKILL_PHASE_OPTS,
+    });
+    if (cancelada(taskId)) return false;
+    if (rg.sessionId) store.updateTask(taskId, { claudeSessionId: rg.sessionId });
 
-  const atual = store.getTask(taskId);
-  if (!atual) return false;
-  if (atual.gateFixRounds < MAX_GATE_FIX_ROUNDS) {
-    patch(taskId, { gateFixRounds: atual.gateFixRounds + 1 });
+    if (!rg.success && rg.timedOut) {
+      failOuPausa(taskId, rg, "");
+      return false;
+    }
+    const veredito = rg.success ? parseVeredito(rg.finalText) : { ok: false, motivo: rg.errorMessage };
+    const gate: GateResult = {
+      name: gateName,
+      command: `/${step.skill}`,
+      ok: veredito.ok,
+      output: veredito.ok ? undefined : (veredito.motivo ?? rg.finalText.slice(-1500)),
+      durationMs: Date.now() - inicio,
+    };
+    if (veredito.ok) passados.set(gateName, gate); // aprovado: não re-roda nas próximas rodadas
+    const comGate = store.getTask(taskId);
+    if (!comGate) return false;
+    patch(taskId, { gates: [...comGate.gates, gate] });
+    broadcast({ type: "gate_result", taskId, gate });
     sistema(
       taskId,
-      `Algumas verificações falharam — tentando corrigir automaticamente (tentativa ${
-        atual.gateFixRounds + 1
-      } de ${MAX_GATE_FIX_ROUNDS}).`,
+      `Verificação "${gateName}": ${veredito.ok ? "passou" : `reprovou${veredito.motivo ? ` — ${veredito.motivo}` : ""}`}`,
     );
-    return runExecucao(taskId, fixGatesPrompt(atual, falhas));
+  }
+  return true;
+}
+
+/**
+ * Uma rodada de correção dos gates que falharam. Diferente da execução normal:
+ * o agente é orientado a consertar SÓ o apontado e a terminar com um veredito
+ * (CONSERTO: feito | impossivel). Devolve o veredito, ou null se precisa abortar.
+ */
+async function runGateFix(taskId: string, falhas: GateResult[]): Promise<{ desistiu: boolean; motivo?: string } | null> {
+  const task = store.getTask(taskId);
+  if (!task) return null;
+  patch(taskId, { step: "execucao", status: "rodando", error: undefined });
+
+  const extras = drainSteer(taskId);
+  const prompt =
+    extras.length > 0
+      ? `${fixGatesPrompt(task, falhas)}\n\nMensagens que o usuário enviou durante a correção (leve em conta):\n${extras
+          .map((t) => `- ${t}`)
+          .join("\n")}`
+      : fixGatesPrompt(task, falhas);
+
+  const r = await runPhase({
+    taskId,
+    cwd: task.worktreePath,
+    prompt,
+    permissionMode: "acceptEdits",
+    resume: store.getTask(taskId)?.claudeSessionId,
+    canUseTool: gateComStatus(taskId),
+  });
+  if (cancelada(taskId)) return null;
+  if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
+  if (!r.success) {
+    failOuPausa(taskId, r, "A correção das verificações falhou. Tente de novo.");
+    return null;
+  }
+  return parseConserto(r.finalText);
+}
+
+/**
+ * Fase verificações: gates do projeto (sempre) + skill-gates (só os que ainda não
+ * passaram) + auto-correção. SEM cap fixo de rodadas — o agente conserta até os
+ * gates passarem OU até ele mesmo declarar que não dá (precisa de decisão sua).
+ * GATE_FIX_SAFETY_ROUNDS é só um teto de segurança contra loop infinito/custo.
+ */
+async function runVerificacoes(taskId: string): Promise<boolean> {
+  const inicial = store.getTask(taskId);
+  if (!inicial) return false;
+
+  // Skill-gates já aprovados (por nome) que NÃO re-rodamos — os caros (ex.: /review,
+  // /qa). Semeado do estado persistido, então um retry manual também aproveita o que
+  // já passou. Os gates do PROJETO (TS/Lint/Testes) re-rodam sempre: são baratos e
+  // são a rede de segurança contra um conserto que quebrou o typecheck/teste.
+  const nomesSkill = new Set(
+    (activeConfig(inicial.projectId).skills?.verificacoes ?? []).map((s) => s.gate ?? s.skill),
+  );
+  const passados = new Map<string, GateResult>();
+  for (const g of inicial.gates ?? []) {
+    if (g.ok && nomesSkill.has(g.name)) passados.set(g.name, g);
   }
 
-  fail(
-    taskId,
-    "As verificações continuaram falhando mesmo depois das correções automáticas. Você pode tentar de novo ou pedir mudanças.",
-  );
-  return false;
+  for (let round = 0; ; round++) {
+    const task = store.getTask(taskId);
+    if (!task || cancelada(taskId)) return false;
+    patch(taskId, { step: "verificacoes", status: "rodando", gateFixRounds: round, error: undefined });
+    sistema(taskId, round === 0 ? "Rodando as verificações automáticas…" : "Reconferindo as verificações após a correção…");
+
+    // 1) Gates do projeto — sempre re-rodam (rede de segurança barata).
+    const results = await runGates(taskId, task.worktreePath);
+    if (cancelada(taskId)) return false;
+    // Preserva os skill-gates já aprovados na visão da tarefa (a UI segue mostrando-os).
+    patch(taskId, { gates: [...results, ...passados.values()] });
+
+    // 2) Skill-gates só rodam se os do projeto passaram — e só os que ainda não passaram.
+    if (results.every((g) => g.ok)) {
+      if (!(await rodarSkillGates(taskId, passados))) return false;
+    }
+
+    const todos = store.getTask(taskId)?.gates ?? results;
+    const falhas = todos.filter((g) => !g.ok);
+    if (falhas.length === 0) {
+      // Verificações passaram: o agente prepara e valida o preview (tasks com UI)
+      // antes de a task chegar ao "Seu teste" — o usuário só vê preview funcionando.
+      return runPreviewCheck(taskId);
+    }
+
+    // 3) Teto de segurança: só para impedir loop infinito quando o agente insiste
+    // sem convergir e sem desistir. NÃO é o critério normal de parada.
+    if (round >= GATE_FIX_SAFETY_ROUNDS) {
+      fail(
+        taskId,
+        `As verificações continuaram falhando após ${GATE_FIX_SAFETY_ROUNDS} tentativas de correção (teto de segurança). Você pode tentar de novo ou pedir mudanças.`,
+      );
+      return false;
+    }
+
+    // 4) Auto-correção. O agente conserta e diz se conseguiu — ou que precisa de você.
+    sistema(taskId, `Algumas verificações falharam — o Claude vai tentar corrigir (tentativa ${round + 1}).`);
+    const conserto = await runGateFix(taskId, falhas);
+    if (conserto === null) return false; // cancelada/pausada/falha de fase (já tratada)
+    if (conserto.desistiu) {
+      // A falha é da verificação (não da execução): volta o passo pra "verificacoes"
+      // para o retry re-rodar só os gates, não a execução inteira.
+      patch(taskId, { step: "verificacoes" });
+      fail(
+        taskId,
+        `O Claude tentou corrigir mas concluiu que não resolve sozinho${
+          conserto.motivo ? `: ${conserto.motivo}` : ""
+        }. Isso costuma pedir uma decisão sua — peça mudanças explicando o caminho, ou tente de novo.`,
+      );
+      return false;
+    }
+    // conserto.desistiu === false → volta ao topo e re-roda os gates para confirmar.
+  }
 }
 
 /**

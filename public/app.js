@@ -87,7 +87,9 @@ const state = {
   progress: {}, // name -> { projectId?, message, pct? }
   transcripts: {}, // taskId -> { loaded, loading, items[], stream }
   busy: {}, // chaves de ações em andamento ("clone", "create", "preview:<id>", "publish:<id>")
-  previewErro: {}, // taskId -> { msg, podeConfigurar } quando o preview não sobe
+  previewErro: {}, // taskId -> { msg, podeConfigurar, detalhe?, status?, rota? } quando o preview não sobe
+  previewLogs: {}, // taskId -> string com os logs do dev server (buscados sob demanda)
+  previewLogsOpen: {}, // taskId -> bool: o painel de logs do preview está aberto
   anexosPendentes: {}, // alvo ("new-task" | "composer") -> TaskAnexo[] já enviados, aguardando o envio da mensagem
   artefatos: {}, // taskId -> { at, temPrototipo, docs[], loading } (barra de artefatos do editor)
   showArquivadas: false, // mostrar as tarefas arquivadas no quadro
@@ -2070,6 +2072,34 @@ function appendChatDom(taskId, item) {
   if (stick) scroller.scrollTop = scroller.scrollHeight;
 }
 
+// HTML do painel de logs do dev server (escondido até abrir em "Logs"). É um
+// elemento próprio, alternado por DOM direto — nunca reconstruímos o pane ao
+// abrir/atualizar, senão o iframe (o app rodando) recarregaria e perderia estado.
+function previewLogsHtml(t) {
+  const aberto = !!state.previewLogsOpen[t.id];
+  const txt = state.previewLogs[t.id];
+  return `
+      <div class="preview-logs-wrap" id="preview-logs-wrap"${aberto ? "" : " hidden"}>
+        <div class="preview-logs-head"><span>Logs do dev server</span><button class="btn ghost sm" data-act="refresh-preview-logs" data-task="${esc(t.id)}">Atualizar</button></div>
+        <pre id="preview-logs" class="preview-logs">${esc(txt || "carregando logs…")}</pre>
+      </div>`;
+}
+
+// Busca os logs do preview e preenche o <pre> sem re-renderizar o pane.
+async function carregarPreviewLogs(id) {
+  try {
+    const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/preview/logs`);
+    setOnline(true);
+    const body = await res.json().catch(() => null);
+    state.previewLogs[id] = body && typeof body.logs === "string" ? body.logs : "";
+  } catch {
+    setOnline(false);
+    state.previewLogs[id] = "(não deu para carregar os logs agora)";
+  }
+  const el = document.querySelector("#preview-logs");
+  if (el) el.textContent = state.previewLogs[id] || "(sem logs ainda — o preview talvez não tenha subido)";
+}
+
 function updatePreview(root, t) {
   const pane = $("#preview-pane", root);
   if (!pane) return;
@@ -2082,7 +2112,7 @@ function updatePreview(root, t) {
   // Modo livre pode subir/ver o preview a qualquer momento (o usuário conduz).
   const naEtapaDeTeste = t.step === "teste" || t.step === "publicar" || t.modo === "livre";
   const mostra = url && naEtapaDeTeste;
-  const key = `${url}|${naEtapaDeTeste}|${busy}|${config}|${erro ? erro.msg + erro.podeConfigurar : ""}`;
+  const key = `${url}|${naEtapaDeTeste}|${busy}|${config}|${erro ? erro.msg + erro.podeConfigurar + (erro.detalhe || "") + (erro.status || "") + (erro.rota || "") : ""}`;
   if (pane.dataset.key === key) return; // não recarregar o iframe à toa
   pane.dataset.key = key;
   if (mostra) {
@@ -2090,9 +2120,12 @@ function updatePreview(root, t) {
       <div class="preview-bar">
         <div class="url"><span class="dot"></span><input class="url-input" id="preview-url" data-task="${esc(t.id)}" value="${esc(url)}" spellcheck="false" autocomplete="off" aria-label="Endereço do preview (digite e Enter para navegar)"></div>
         <button class="btn sm ghost" data-act="reload-preview">Recarregar</button>
+        <button class="btn sm ghost" data-act="restart-preview" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>${busy ? "Reiniciando…" : "Reiniciar"}</button>
+        <button class="btn sm ghost" data-act="toggle-preview-logs" data-task="${esc(t.id)}">Logs</button>
         <a class="btn sm" id="preview-open" href="${esc(url)}" target="_blank" rel="noreferrer">Abrir no navegador</a>
       </div>
       <iframe id="preview-frame" src="${esc(url)}" title="Preview do app"></iframe>
+      ${previewLogsHtml(t)}
       <div class="preview-foot"><span class="dot"></span> Preview gerenciado pelo Inhouse · espaço ${t.espaco} · digite um endereço e Enter para navegar</div>`;
   } else if (config) {
     // Agente preparando o preview — o progresso aparece no chat da tarefa.
@@ -2110,25 +2143,39 @@ function updatePreview(root, t) {
         <p class="preview-hint">O Claude sobe o app e confere as telas antes de você abrir — assim você testa algo que já funciona.</p>
       </div>`;
   } else if (erro) {
-    // No teste, uma tentativa manual não subiu: sem susto, com uma saída.
+    // No teste, uma tentativa manual não subiu: sem susto, com uma saída — e agora
+    // com o erro técnico real (status HTTP + rota + trecho do corpo) e os logs.
+    const cab = (erro.status ? `HTTP ${erro.status}` : "") + (erro.rota ? `${erro.status ? " " : ""}em ${erro.rota}` : "");
+    const tec = erro.detalhe || cab
+      ? `<pre class="preview-detalhe">${esc((cab ? cab + "\n" : "") + (erro.detalhe || ""))}</pre>`
+      : "";
     pane.innerHTML = `
-      <div class="preview-bar"><div class="url muted">sem preview</div></div>
+      <div class="preview-bar">
+        <div class="url muted">sem preview</div>
+        <button class="btn sm ghost" data-act="toggle-preview-logs" data-task="${esc(t.id)}">Logs</button>
+      </div>
       <div class="preview-empty">
         <p>${esc(erro.msg)}</p>
+        ${tec}
         ${erro.podeConfigurar
           ? `<p class="preview-hint">Posso pedir ao Claude para preparar e abrir o preview deste projeto.</p>
              <button class="btn primary" data-act="configure-preview" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>Pedir ao Claude para configurar o preview</button>
              <button class="btn ghost sm" data-act="start-preview" data-task="${esc(t.id)}">Tentar de novo</button>`
           : `<button class="btn primary" data-act="start-preview" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>${busy ? `<span class="spinner"></span> Iniciando…` : "Tentar de novo"}</button>`}
-      </div>`;
+      </div>
+      ${previewLogsHtml(t)}`;
   } else {
     // No teste, mas sem preview no ar (ex.: server reiniciou): fallback manual.
     pane.innerHTML = `
-      <div class="preview-bar"><div class="url muted">preview parado</div></div>
+      <div class="preview-bar">
+        <div class="url muted">preview parado</div>
+        <button class="btn sm ghost" data-act="toggle-preview-logs" data-task="${esc(t.id)}">Logs</button>
+      </div>
       <div class="preview-empty">
         <p>O preview roda o app deste espaço isolado, sem afetar as outras tarefas.</p>
         <button class="btn primary" data-act="start-preview" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>${busy ? `<span class="spinner"></span> Iniciando…` : "Iniciar preview"}</button>
-      </div>`;
+      </div>
+      ${previewLogsHtml(t)}`;
   }
 }
 
@@ -2498,6 +2545,9 @@ const actions = {
         state.previewErro[id] = {
           msg: body?.error || "Não foi possível abrir o preview.",
           podeConfigurar: !!body?.podeConfigurarComAgente,
+          detalhe: body?.detalhe,
+          status: body?.status,
+          rota: body?.rota,
         };
       }
     } catch {
@@ -2526,6 +2576,9 @@ const actions = {
         state.previewErro[id] = {
           msg: body?.error || "O preview ainda não subiu.",
           podeConfigurar: !!body?.podeConfigurarComAgente,
+          detalhe: body?.detalhe,
+          status: body?.status,
+          rota: body?.rota,
         };
       }
     } catch {
@@ -2538,6 +2591,56 @@ const actions = {
   "reload-preview": () => {
     const f = $("#preview-frame");
     if (f) f.src = f.src;
+  },
+  "restart-preview": async (btn) => {
+    const id = btn.dataset.task;
+    if (state.busy[`preview:${id}`]) return;
+    state.busy[`preview:${id}`] = true;
+    delete state.previewErro[id];
+    render();
+    let body = null;
+    try {
+      // Derruba o que estiver no ar e sobe fresco (o start reaproveitaria um vivo).
+      await fetch(`/api/tasks/${encodeURIComponent(id)}/preview/stop`, { method: "POST" });
+      const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/preview/start`, { method: "POST" });
+      setOnline(true);
+      body = await res.json().catch(() => null);
+      if (res.ok && body?.url) {
+        const t = getTask(id);
+        if (t) t.previewUrl = body.url;
+      } else {
+        state.previewErro[id] = {
+          msg: body?.error || "Não foi possível reiniciar o preview.",
+          podeConfigurar: !!body?.podeConfigurarComAgente,
+          detalhe: body?.detalhe,
+          status: body?.status,
+          rota: body?.rota,
+        };
+      }
+    } catch {
+      setOnline(false);
+    }
+    delete state.busy[`preview:${id}`];
+    render();
+  },
+  "toggle-preview-logs": async (btn) => {
+    const id = btn.dataset.task;
+    const wrap = document.querySelector("#preview-logs-wrap");
+    if (!wrap) return;
+    const abrir = wrap.hidden;
+    wrap.hidden = !abrir;
+    state.previewLogsOpen[id] = abrir;
+    btn.classList.toggle("active", abrir);
+    if (abrir) {
+      const el = document.querySelector("#preview-logs");
+      if (el) el.textContent = "carregando logs…";
+      await carregarPreviewLogs(id);
+    }
+  },
+  "refresh-preview-logs": async (btn) => {
+    const el = document.querySelector("#preview-logs");
+    if (el) el.textContent = "carregando logs…";
+    await carregarPreviewLogs(btn.dataset.task);
   },
   "perm-allow": (btn) => decidePermission(btn.dataset.perm, true),
   "perm-deny": (btn) => decidePermission(btn.dataset.perm, false),
