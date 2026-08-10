@@ -11,6 +11,7 @@ import { ESPACOS_DIR, claudeEnv } from "../config.js";
 import { fakeRealGates, isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
 import { loadConfigCascata } from "../workflow/config.js";
+import { withLimit } from "./limiter.js";
 import { withProjectLock } from "./locks.js";
 import { git, gitCommit, lastLines, tryGit } from "./proc.js";
 
@@ -210,7 +211,8 @@ export async function ensureDeps(worktreePath: string, projectName: string): Pro
     ? ["corepack", ["pnpm", "install"]]
     : ["npm", ["install"]];
 
-  await new Promise<void>((resolve, reject) => {
+  // Limitador GLOBAL de installs: no máx. N `npm/pnpm install` em paralelo na máquina.
+  await withLimit("install", () => new Promise<void>((resolve, reject) => {
     // claudeEnv(): scripts postinstall de dependências rodam código arbitrário
     // do projeto — não podem ver ANTHROPIC_API_KEY/AUTH_TOKEN.
     const child = spawn(cmd, args, {
@@ -246,7 +248,7 @@ export async function ensureDeps(worktreePath: string, projectName: string): Pro
         );
       }
     });
-  });
+  }));
 
   broadcast({ type: "project_progress", name: projectName, message: "Espaço pronto." });
 }

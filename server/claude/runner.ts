@@ -19,6 +19,7 @@ import { claudeEnv, claudePath } from "../config.js";
 import { fakeRunPhase } from "../debug/fakeModel.js";
 import { isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
+import { withLimit } from "../services/limiter.js";
 import { transcriptAppend } from "../store.js";
 
 /** Timeout de segurança global de uma fase. */
@@ -31,12 +32,18 @@ const phaseAborts = new Map<string, AbortController>();
  * Tentativas de (re)spawn do CLI. O binário nativo do Claude Code se auto-atualiza
  * (troca o arquivo em ~/.local/share/claude/versions e repointa o symlink). Se o
  * spawn cai bem nessa janela, o processo nem inicia — é uma corrida transitória,
- * não um defeito. Nesse caso re-tentamos, com um respiro para o swap terminar.
+ * não um defeito. Nesse caso re-tentamos, com backoff exponencial + jitter (o jitter
+ * evita "thundering herd" quando várias tarefas re-tentam em lockstep).
  */
-const SPAWN_MAX_ATTEMPTS = 3;
-const SPAWN_RETRY_MS = [600, 1800];
+const SPAWN_MAX_ATTEMPTS = 5;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Backoff exponencial com jitter para re-spawn: ~400,800,1600,3200ms (+0-400ms). */
+function spawnBackoffMs(attempt: number): number {
+  const base = Math.min(8000, 400 * 2 ** (attempt - 1));
+  return base + Math.floor(Math.random() * 400);
+}
 
 /**
  * Erro de LANÇAMENTO do processo (não de execução): o binário existe mas o spawn
@@ -240,6 +247,22 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   let filesTouched = false;
   /** Último erro de API visto em mensagem assistant (auth, rate limit...). */
   let apiError: SDKAssistantMessage["error"];
+  // Observabilidade: modelo(s) da fase (incl. sub-agents de modelo diferente, via
+  // modelUsage) e effort REAL do turno. O effort não volta no resultado do SDK, então
+  // é capturado por um hook in-process (input.effort.level) — sem DEFINIR/sobrescrever
+  // o effort configurado pelo usuário; só lê o valor ativo (após downgrade do modelo).
+  let sessionModel: string | undefined;
+  const modelosUsados = new Set<string>();
+  let effortLevel: string | undefined;
+  const capturarEffort = async (input: unknown): Promise<{ continue: true }> => {
+    const nivel = (input as { effort?: { level?: string } }).effort?.level;
+    if (nivel) effortLevel = nivel;
+    return { continue: true };
+  };
+  options.hooks = {
+    PreToolUse: [{ hooks: [capturarEffort] }],
+    Stop: [{ hooks: [capturarEffort] }],
+  };
 
   // Fases sem tarefa real (ex.: juiz do eval) não gravam transcript — o taskId
   // sintético nem passaria pela validação do sink.
@@ -276,6 +299,11 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   const handleMessage = (m: SDKMessage): void => {
     if (m.type === "system" && m.subtype === "init") {
       sessionId = m.session_id;
+      const modelo = (m as { model?: string }).model;
+      if (modelo) {
+        sessionModel = modelo;
+        modelosUsados.add(modelo);
+      }
       return;
     }
     if (m.type === "stream_event") {
@@ -295,6 +323,12 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
     }
     if (m.type === "result") {
       resultSeen = true;
+      // modelUsage é um mapa por modelo — captura TODOS os modelos da fase, inclusive
+      // sub-agents que rodaram em modelo diferente (ex.: /review lança sub-agents).
+      const modelUsage = (m as { modelUsage?: Record<string, { canonicalModel?: string }> }).modelUsage;
+      if (modelUsage) {
+        for (const [id, u] of Object.entries(modelUsage)) modelosUsados.add(u?.canonicalModel ?? id);
+      }
       if (typeof m.total_cost_usd === "number" && m.usage) {
         const u = m.usage;
         metricas = {
@@ -306,6 +340,8 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
             (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
           tokensOut: u.output_tokens ?? 0,
           negacoesAuto: m.permission_denials?.length ?? 0,
+          ...(modelosUsados.size ? { modelos: [...modelosUsados] } : {}),
+          ...(effortLevel ? { effort: effortLevel } : {}),
         };
       }
       if (m.subtype === "success") {
@@ -324,36 +360,40 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   };
 
   try {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        const q = query({ prompt: opts.prompt, options });
-        for await (const m of q) handleMessage(m);
-        if (!resultSeen && !errorMessage) {
-          success = false;
-          finalText = lastAssistantText;
-          errorMessage = "O Claude Code encerrou sem terminar o passo. Tente de novo.";
+    // Limitador GLOBAL: no máximo N sessões Claude simultâneas na máquina (o resto
+    // enfileira). Evita a "tempestade de spawns" que esgota fork/thread (EAGAIN).
+    await withLimit("claude", async () => {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const q = query({ prompt: opts.prompt, options });
+          for await (const m of q) handleMessage(m);
+          if (!resultSeen && !errorMessage) {
+            success = false;
+            finalText = lastAssistantText;
+            errorMessage = "O Claude Code encerrou sem terminar o passo. Tente de novo.";
+          }
+          break;
+        } catch (err) {
+          if (timedOut || err instanceof AbortError) throw err;
+          const detail = err instanceof Error ? err.message : String(err);
+          // Só re-tenta se o processo NEM COMEÇOU: sem sessão, sem resultado, sem
+          // edição e sem texto do assistente. Aí re-rodar é idempotente (nada foi
+          // feito ainda). Qualquer sinal de trabalho já iniciado → propaga o erro.
+          const nadaAconteceu = !sessionId && !resultSeen && !filesTouched && lastAssistantText === "";
+          if (attempt < SPAWN_MAX_ATTEMPTS && nadaAconteceu && isSpawnLaunchError(detail)) {
+            console.warn(
+              `[runner] spawn do Claude Code falhou (tentativa ${attempt}/${SPAWN_MAX_ATTEMPTS}, task ${opts.taskId}) — ` +
+                `o binário pode estar sendo atualizado; retentando. detalhe: ${detail}`,
+            );
+            apiError = undefined;
+            stderrTail = "";
+            await sleep(spawnBackoffMs(attempt));
+            continue;
+          }
+          throw err;
         }
-        break;
-      } catch (err) {
-        if (timedOut || err instanceof AbortError) throw err;
-        const detail = err instanceof Error ? err.message : String(err);
-        // Só re-tenta se o processo NEM COMEÇOU: sem sessão, sem resultado, sem
-        // edição e sem texto do assistente. Aí re-rodar é idempotente (nada foi
-        // feito ainda). Qualquer sinal de trabalho já iniciado → propaga o erro.
-        const nadaAconteceu = !sessionId && !resultSeen && !filesTouched && lastAssistantText === "";
-        if (attempt < SPAWN_MAX_ATTEMPTS && nadaAconteceu && isSpawnLaunchError(detail)) {
-          console.warn(
-            `[runner] spawn do Claude Code falhou (tentativa ${attempt}/${SPAWN_MAX_ATTEMPTS}, task ${opts.taskId}) — ` +
-              `o binário pode estar sendo atualizado; retentando. detalhe: ${detail}`,
-          );
-          apiError = undefined;
-          stderrTail = "";
-          await sleep(SPAWN_RETRY_MS[attempt - 1] ?? 1800);
-          continue;
-        }
-        throw err;
       }
-    }
+    });
   } catch (err) {
     success = false;
     finalText = lastAssistantText;

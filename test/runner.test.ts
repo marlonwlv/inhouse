@@ -203,13 +203,44 @@ describe("runPhase", () => {
     });
 
     const promessa = runPhase({ taskId: "t-respawn", cwd: "/tmp", prompt: "x", permissionMode: "default" });
-    // Deixa a 1ª tentativa falhar e o retry aguardar o respiro (600ms) do swap.
-    await vi.advanceTimersByTimeAsync(600);
+    // Deixa a 1ª tentativa falhar e o retry aguardar o backoff+jitter (attempt 1 = 400–800ms).
+    await vi.advanceTimersByTimeAsync(800);
 
     const r = await promessa;
     expect(calls).toBe(2); // re-spawnou exatamente uma vez
     expect(r.success).toBe(true);
     expect(r.finalText).toBe("ok");
+  });
+
+  it("captura o(s) modelo(s) da fase (init + modelUsage) e o effort via hook", async () => {
+    setQuery(async function* (props) {
+      yield { type: "system", subtype: "init", session_id: "s", model: "claude-opus-4-8" } as unknown as SDKMessage;
+      // Simula o SDK chamando o hook in-process com o effort ativo do turno.
+      const hook = props.options.hooks?.PreToolUse?.[0]?.hooks?.[0];
+      if (hook) {
+        await hook({ effort: { level: "high" } } as never, undefined, { signal: new AbortController().signal });
+      }
+      yield {
+        type: "result",
+        subtype: "success",
+        result: "ok",
+        is_error: false,
+        total_cost_usd: 0.1,
+        num_turns: 1,
+        duration_ms: 10,
+        duration_api_ms: 5,
+        usage: { input_tokens: 1, output_tokens: 1 },
+        // modelUsage lista TODOS os modelos da fase (inclui sub-agent de modelo diferente).
+        modelUsage: {
+          "claude-opus-4-8": { canonicalModel: "claude-opus-4-8" },
+          "claude-haiku-4-5": { canonicalModel: "claude-haiku-4-5" },
+        },
+      } as unknown as SDKMessage;
+    });
+    const r = await runPhase({ taskId: "t-modelo", cwd: "/tmp", prompt: "x", permissionMode: "default" });
+    expect(r.success).toBe(true);
+    expect(r.metricas?.modelos).toEqual(["claude-opus-4-8", "claude-haiku-4-5"]);
+    expect(r.metricas?.effort).toBe("high");
   });
 
   it("NÃO re-tenta erros que não são de lançamento (ex.: rede) — falha na 1ª", async () => {

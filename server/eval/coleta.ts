@@ -49,6 +49,10 @@ export interface FaseMetricas {
   tokensIn: number;
   tokensOut: number;
   negacoesAuto: number;
+  /** Modelo(s) que a fase usou (incl. sub-agents de modelo diferente, via modelUsage). */
+  modelos?: string[];
+  /** Effort ativo do turno (nível após downgrade do modelo), capturado por hook. */
+  effort?: string;
 }
 
 /** Acumula as métricas de uma fase no Task.uso (persistido — sobrevive a restart). */
@@ -61,6 +65,8 @@ export function acumularFase(taskId: string, m: FaseMetricas): void {
     const atual: UsoFase = uso.porEtapa[etapa] ?? {
       chamadas: 0, custoUsd: 0, turnos: 0, msTotal: 0, msApi: 0, tokensIn: 0, tokensOut: 0, negacoesAuto: 0,
     };
+    // Modelos: união (set) entre as chamadas da etapa. Effort: o último visto.
+    const modelos = [...new Set([...(atual.modelos ?? []), ...(m.modelos ?? [])])];
     uso.porEtapa[etapa] = {
       chamadas: atual.chamadas + 1,
       custoUsd: atual.custoUsd + m.custoUsd,
@@ -70,6 +76,8 @@ export function acumularFase(taskId: string, m: FaseMetricas): void {
       tokensIn: atual.tokensIn + m.tokensIn,
       tokensOut: atual.tokensOut + m.tokensOut,
       negacoesAuto: atual.negacoesAuto + m.negacoesAuto,
+      ...(modelos.length ? { modelos } : {}),
+      ...(m.effort ?? atual.effort ? { effort: m.effort ?? atual.effort } : {}),
     };
     store.updateTask(taskId, { uso });
   } catch (err) {

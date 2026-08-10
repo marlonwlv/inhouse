@@ -7,13 +7,14 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { buildRouter } from "./api/routes.js";
-import { claudeStatus } from "./claude/runner.js";
+import { abortPhase, claudeStatus } from "./claude/runner.js";
 import { HOST, PORT, ensureDirs } from "./config.js";
 import { broadcast } from "./events.js";
+import { killBackgroundInstalls } from "./services/projects.js";
 import { stopAllPreviews } from "./services/preview.js";
 import { checarUpdate } from "./services/update.js";
 import { backfillSeVazio } from "./eval/coleta.js";
-import { load } from "./store.js";
+import { listTasks, load } from "./store.js";
 
 load();
 // Primeira subida com eval: tarefas históricas viram dados (backfill idempotente).
@@ -101,10 +102,16 @@ function shutdown(sinal: string): void {
   if (encerrando) return;
   encerrando = true;
   console.log(`\nEncerrando o Inhouse (${sinal})…`);
+  // Derruba TODO processo-filho para não deixar órfãos a cada restart (era a causa
+  // do acúmulo que sobrecarregava a máquina): previews, npm installs e as fases
+  // Claude em curso (abort → o SDK mata o processo do CLI).
   stopAllPreviews();
+  killBackgroundInstalls();
+  for (const t of listTasks()) if (t.status === "rodando") abortPhase(t.id);
   server.close();
   server6.close();
-  process.exit(0);
+  // Respiro curto para o abort do SDK/preview terminar de matar os filhos antes do exit.
+  setTimeout(() => process.exit(0), 400);
 }
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));

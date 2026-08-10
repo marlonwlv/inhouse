@@ -164,25 +164,26 @@ describe("store: persistência", () => {
 });
 
 describe("store: nextEspaco", () => {
-  it("usa o menor buraco livre e ignora tarefas finalizadas", async () => {
+  it("é monotônico: max(espaço) + 1, nunca reusa número (nem de concluída/cancelada)", async () => {
     const store = await freshStore();
     store.addTask(tarefa({ espaco: 1, status: "rodando" }));
     store.addTask(tarefa({ espaco: 3, status: "aguardando" }));
     store.addTask(tarefa({ espaco: 2, status: "concluida", step: "concluida" }));
     store.addTask(tarefa({ espaco: 4, status: "cancelada" }));
 
-    // 2 e 4 estão livres (finalizadas); o menor buraco é 2.
-    expect(store.nextEspaco("p1")).toBe(2);
-
-    store.addTask(tarefa({ espaco: 2, status: "aguardando" }));
-    expect(store.nextEspaco("p1")).toBe(4);
-
-    // Tarefa "falhou" ainda ocupa o espaço (worktree segue no disco).
-    store.addTask(tarefa({ espaco: 4, status: "falhou" }));
+    // Mesmo com 2 (concluída) e 4 (cancelada) "terminadas", NÃO reusa o número:
+    // a worktree de uma cancelada fica no disco; reusar destruiria ela. max=4 → 5.
     expect(store.nextEspaco("p1")).toBe(5);
 
-    // Outro projeto tem numeração própria.
+    store.addTask(tarefa({ espaco: 5, status: "aguardando" }));
+    expect(store.nextEspaco("p1")).toBe(6);
+
+    // Preparação (espaço 0, checkout principal) não atrapalha; projeto novo começa em 1.
+    store.addTask(tarefa({ projectId: "p2", espaco: 0, kind: "preparacao" }));
     expect(store.nextEspaco("p2")).toBe(1);
+
+    // Outro projeto sem tarefas começa em 1.
+    expect(store.nextEspaco("p3")).toBe(1);
   });
 });
 

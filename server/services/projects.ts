@@ -14,6 +14,7 @@ import { ANEXOS_DIR, DATA_DIR, ESPACOS_DIR, PROJECTS_DIR, TRANSCRIPTS_DIR, claud
 import { broadcast } from "../events.js";
 import * as store from "../store.js";
 import { forgetProject } from "../workflow/library.js";
+import { withLimit } from "./limiter.js";
 import { stopPreview } from "./preview.js";
 import { git, gitCommit, lastLines, tryGit } from "./proc.js";
 import { removeEspaco } from "./worktrees.js";
@@ -190,40 +191,60 @@ export async function createFromTemplate(name: string, template: string): Promis
   store.addProject(project);
   broadcast({ type: "project_updated", project });
 
-  // Instala dependências em background: o usuário já pode ver o projeto na UI.
-  // claudeEnv(): scripts postinstall rodam código arbitrário — não podem ver
-  // ANTHROPIC_API_KEY/AUTH_TOKEN (decisão 1 da arquitetura).
-  const child = spawn("npm", ["install"], {
-    cwd: dest,
-    env: claudeEnv(),
-    stdio: ["ignore", "ignore", "pipe"],
-  });
-  backgroundInstalls.add(child);
-  installsPorProjeto.set(project.id, child);
-  broadcast({
-    type: "project_progress",
-    projectId: project.id,
-    name: slug,
-    message: "Instalando dependências… isso pode levar alguns minutos.",
-  });
-  let stderrTail = "";
-  child.stderr?.on("data", (d: Buffer) => {
-    stderrTail = lastLines(stderrTail + String(d), 30);
-  });
-  const encerrar = (ok: boolean) => {
-    backgroundInstalls.delete(child);
-    installsPorProjeto.delete(project.id);
+  // Instala dependências em background (o usuário já vê o projeto na UI), atrás do
+  // limitador GLOBAL de installs. fire-and-forget: não bloqueia o retorno.
+  void withLimit("install", () => new Promise<void>((resolve) => {
+    // Se o projeto foi excluído enquanto o install esperava na fila, não spawna
+    // (senão recriaria a pasta que a exclusão apagou).
+    if (!store.getProject(project.id)) return resolve();
+    // claudeEnv(): scripts postinstall rodam código arbitrário — não podem ver
+    // ANTHROPIC_API_KEY/AUTH_TOKEN (decisão 1 da arquitetura).
+    const child = spawn("npm", ["install"], {
+      cwd: dest,
+      env: claudeEnv(),
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    backgroundInstalls.add(child);
+    installsPorProjeto.set(project.id, child);
     broadcast({
       type: "project_progress",
       projectId: project.id,
       name: slug,
-      message: ok ? "Pronto" : "A instalação das dependências falhou. O app pode não rodar — fale com o time técnico.",
+      message: "Instalando dependências… isso pode levar alguns minutos.",
     });
-  };
-  child.on("error", () => encerrar(false));
-  child.on("close", (code) => encerrar(code === 0));
+    let stderrTail = "";
+    child.stderr?.on("data", (d: Buffer) => {
+      stderrTail = lastLines(stderrTail + String(d), 30);
+    });
+    const encerrar = (ok: boolean) => {
+      backgroundInstalls.delete(child);
+      installsPorProjeto.delete(project.id);
+      broadcast({
+        type: "project_progress",
+        projectId: project.id,
+        name: slug,
+        message: ok ? "Pronto" : "A instalação das dependências falhou. O app pode não rodar — fale com o time técnico.",
+      });
+      resolve();
+    };
+    child.on("error", () => encerrar(false));
+    child.on("close", (code) => encerrar(code === 0));
+  }));
 
   return project;
+}
+
+/** Mata todos os npm installs em background (usado no shutdown — evita órfãos). */
+export function killBackgroundInstalls(): void {
+  for (const child of backgroundInstalls) {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // best-effort
+    }
+  }
+  backgroundInstalls.clear();
+  installsPorProjeto.clear();
 }
 
 /** `a` é o próprio `b` ou uma pasta dentro de `b`? */

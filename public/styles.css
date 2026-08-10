@@ -211,6 +211,8 @@ h1, h2, h3 { letter-spacing: -0.02em; }
 .chip.ok { background: var(--brand-soft); color: var(--brand); }
 .chip.wait { background: var(--amber-soft); color: var(--amber); }
 .chip.bad { background: var(--danger-soft); color: var(--danger); }
+/* Chip de observabilidade (modelo/effort): discreto, dígitos alinhados. */
+.chip.model-chip { background: transparent; border-color: var(--line-2); color: var(--faint); font-variant-numeric: tabular-nums; }
 
 .btn {
   display: inline-flex;

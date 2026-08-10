@@ -8,7 +8,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "tsx watch server/index.ts",
+    "dev": "INHOUSE_DATA_DIR=\"$HOME/.inhouse-dev\" INHOUSE_PROJECTS_DIR=\"$HOME/Inhouse-dev\" INHOUSE_PORT=4410 tsx watch server/index.ts",
     "dev:fake": "INHOUSE_FAKE_MODEL=1 INHOUSE_FAKE_DELAY_MS=400 INHOUSE_EVAL_A_CADA=1000000 INHOUSE_DATA_DIR=\"$HOME/.inhouse-debug\" INHOUSE_PROJECTS_DIR=\"$HOME/Inhouse-debug\" tsx watch server/index.ts",
     "start": "tsx server/index.ts",
     "typecheck": "tsc --noEmit",

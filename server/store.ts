@@ -124,16 +124,17 @@ export function updateTask(id: string, patch: Partial<Task>): Task {
   persist();
   return t;
 }
-/** Próximo número de espaço livre no projeto (1-based, menor buraco disponível). */
+/**
+ * Próximo número de espaço do projeto — MONOTÔNICO: `max(espaço já usado) + 1`.
+ * Nunca reusa um número enquanto qualquer tarefa (mesmo concluída/cancelada) o tiver
+ * registrado. Isto elimina o bug em que reusar o número de uma tarefa cancelada
+ * (cuja worktree fica no disco para inspeção) fazia o createEspaco destruir a pasta
+ * anterior. Preparação usa espaço 0 (checkout principal) e não interfere.
+ * Números "desperdiçados" são cosméticos: worktree/branch nunca aparecem na UI.
+ */
 export function nextEspaco(projectId: string): number {
-  const used = new Set(
-    state.tasks
-      .filter((t) => t.projectId === projectId && t.status !== "concluida" && t.status !== "cancelada")
-      .map((t) => t.espaco),
-  );
-  let n = 1;
-  while (used.has(n)) n++;
-  return n;
+  const nums = state.tasks.filter((t) => t.projectId === projectId).map((t) => t.espaco);
+  return (nums.length ? Math.max(...nums) : 0) + 1;
 }
 
 // ---------- Permissions (efêmeras) ----------
