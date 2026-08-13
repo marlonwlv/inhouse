@@ -30,6 +30,8 @@ Princípio mantido: quem sobe o server é o Inhouse (correto). O que faltava era
 ### Fora do escopo (Fase 2)
 Manter o preview vivo no conserto; loop de conserto contra o preview ao vivo sem re-rodar as verificações; adicionar a rota reportada ao `healthPaths`; descoberta de sub-rotas antes do "Seu teste". Nada de `machine.ts` nesta fase.
 
+> **2026-08-13:** a Fase 2 foi absorvida pelo plano [Preview 10x — o agente enxerga e pilota o preview](preview-10x-agente-pilota.md).
+
 ## Verificação
 - `npm run typecheck` limpo; `npm run test` **227/227** (novo teste: `previewLogs` captura o stdout do dev server e sobrevive ao stop).
 - Server reiniciado na 4400; `GET /preview/logs` responde `{logs:""}` (200) para tarefa sem preview e 404 para inexistente.

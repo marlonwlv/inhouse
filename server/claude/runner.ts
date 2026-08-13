@@ -20,7 +20,7 @@ import { fakeRunPhase } from "../debug/fakeModel.js";
 import { isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
 import { acquire } from "../services/limiter.js";
-import { transcriptAppend } from "../store.js";
+import { getTask, transcriptAppend } from "../store.js";
 
 /** Timeout de segurança global de uma fase. */
 const PHASE_TIMEOUT_MS = 60 * 60 * 1000;
@@ -97,6 +97,14 @@ export interface RunPhaseOpts {
    * Fases que rodam skills do usuário (ex.: gstack) incluem "user".
    */
   settingSources?: Options["settingSources"];
+  /** Servidores MCP in-process (ex.: as ferramentas de preview do Inhouse). */
+  mcpServers?: Options["mcpServers"];
+  /**
+   * Texto acrescentado ao system prompt padrão do Claude Code (preset+append):
+   * identidade Inhouse, regras do preview e o bloco de estado da tarefa.
+   * Ausente = comportamento atual (juiz/gerar e fases antigas não mudam).
+   */
+  systemPromptAppend?: string;
   /** Variáveis extras de ambiente (ex.: marcador de sessão spawned p/ gstack). */
   extraEnv?: Record<string, string>;
   /**
@@ -160,6 +168,15 @@ function toolItem(name: string, input: Record<string, unknown>, cwd: string): Tr
       return { kind: "tool", op: "?", label: `Acessar a internet: ${truncate(String(input["query"] ?? ""))}`, at };
     case "ExitPlanMode":
       return { kind: "tool", op: "?", label: "Plano pronto para sua aprovação", at };
+    // Ferramentas de preview do Inhouse (MCP in-process) — labels pt-BR dedicados.
+    case "mcp__inhouse__preview_status":
+      return { kind: "tool", op: "?", label: "Consultar o preview", at };
+    case "mcp__inhouse__preview_logs":
+      return { kind: "tool", op: "?", label: "Ler o registro do preview", at };
+    case "mcp__inhouse__preview_reiniciar":
+      return { kind: "tool", op: "$", label: "Reiniciar o preview", at };
+    case "mcp__inhouse__preview_reportar_rota":
+      return { kind: "tool", op: "?", label: "Registrar uma tela importante do preview", at };
     default:
       if (name.startsWith("mcp__")) {
         const parts = name.split("__").filter(Boolean).slice(1);
@@ -246,6 +263,19 @@ export async function runPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
     pathToClaudeCodeExecutable: exe,
     env: { ...claudeEnv(), ...opts.extraEnv },
     settingSources: opts.settingSources ?? ["project"],
+    mcpServers: opts.mcpServers,
+    // SÓ os servidores MCP que o Inhouse injeta explicitamente: sem isto, um
+    // .mcp.json commitado no PROJETO (código não confiável) poderia registrar
+    // um servidor chamado "inhouse" e ganhar o auto-approve das tools de preview.
+    strictMcpConfig: true,
+    // Esforço escolhido para a TAREFA (chip do composer) — não altera a config
+    // da máquina; taskId sintético (juiz/gerar) não tem task → sem override.
+    ...(getTask(opts.taskId)?.esforco ? { effort: getTask(opts.taskId)!.esforco } : {}),
+    // Append sobre o preset padrão do Claude Code — aditivo; fases sem append
+    // (juiz, gerar, fases de plano) ficam idênticas ao comportamento anterior.
+    ...(opts.systemPromptAppend
+      ? { systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: opts.systemPromptAppend } }
+      : {}),
     includePartialMessages: true,
     model: opts.model,
     maxTurns: opts.maxTurns,

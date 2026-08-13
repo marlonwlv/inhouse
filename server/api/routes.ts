@@ -25,6 +25,7 @@ import {
   PreviewQuebradoError,
   configurarPreviewComAgente,
   previewLogs,
+  restartPreview,
   startPreview,
   stopPreview,
   temPreviewConfigCommitada,
@@ -541,6 +542,31 @@ export function buildRouter(): Router {
         } else {
           throw err;
         }
+      }
+    }),
+  );
+
+  // Reinício ATÔMICO do preview (server-side): substitui o stop→start em duas
+  // chamadas da UI. Preserva o buffer de logs (a evidência de um crash não some)
+  // e tenta manter a MESMA porta (a URL do iframe não muda à toa).
+  router.post(
+    "/api/tasks/:id/preview/restart",
+    h(async (req, res) => {
+      const id = req.params.id ?? "";
+      const task = store.getTask(id);
+      if (!task) throw new HttpError(404, "Tarefa não encontrada.");
+      try {
+        const { url } = await restartPreview(id);
+        res.json({ url });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Não foi possível reiniciar o preview.";
+        const q = err instanceof PreviewQuebradoError ? err : undefined;
+        res.status(err instanceof PreviewIndisponivelError ? 422 : 502).json({
+          error: msg,
+          ...(q?.detalhe ? { detalhe: q.detalhe } : {}),
+          ...(q?.status ? { status: q.status } : {}),
+          ...(q?.rota ? { rota: q.rota } : {}),
+        });
       }
     }),
   );

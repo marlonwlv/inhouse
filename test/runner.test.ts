@@ -28,7 +28,7 @@ vi.mock("../server/config.js", async (importOriginal) => {
   const orig = await importOriginal<typeof import("../server/config.js")>();
   return { ...orig, claudePath: () => "/fake/claude", claudeEnv: () => ({}) };
 });
-vi.mock("../server/store.js", () => ({ transcriptAppend: () => {} }));
+vi.mock("../server/store.js", () => ({ transcriptAppend: () => {}, getTask: () => undefined }));
 vi.mock("../server/events.js", () => ({ broadcast: () => {}, addClient: () => {} }));
 
 import { abortPhase, runPhase } from "../server/claude/runner.js";
@@ -97,6 +97,39 @@ describe("runPhase", () => {
     const r = await runPhase({ taskId: "t-sem-metricas", cwd: "/tmp", prompt: "x", permissionMode: "default" });
     expect(r.success).toBe(true);
     expect(r.metricas).toBeUndefined();
+  });
+
+  it("mcpServers e systemPromptAppend chegam às Options do SDK (preset+append)", async () => {
+    let captured: Options | undefined;
+    setQuery(async function* (props) {
+      captured = props.options;
+      yield initMsg;
+      yield resultMsg("ok");
+    });
+    const fakeMcp = { type: "sdk", name: "inhouse", instance: {} } as unknown as NonNullable<
+      Options["mcpServers"]
+    >[string];
+    await runPhase({
+      taskId: "t-mcp",
+      cwd: "/tmp",
+      prompt: "x",
+      permissionMode: "acceptEdits",
+      mcpServers: { inhouse: fakeMcp },
+      systemPromptAppend: "APPEND DE TESTE",
+    });
+    expect(captured?.mcpServers).toEqual({ inhouse: fakeMcp });
+    expect(captured?.systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: "APPEND DE TESTE" });
+  });
+
+  it("sem systemPromptAppend, o systemPrompt NÃO é definido (juiz/gerar intocados)", async () => {
+    let captured: Options | undefined;
+    setQuery(async function* (props) {
+      captured = props.options;
+      yield initMsg;
+      yield resultMsg("ok");
+    });
+    await runPhase({ taskId: "t-sem-append", cwd: "/tmp", prompt: "x", permissionMode: "default" });
+    expect(captured && "systemPrompt" in captured ? captured.systemPrompt : undefined).toBeUndefined();
   });
 
   it("abortPhase interrompe a sessão em andamento (usado pelo cancel)", async () => {

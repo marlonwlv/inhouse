@@ -95,15 +95,49 @@ export const CONTEXTO_NAO_TECNICO = [
 /**
  * Fonte única da verdade do preview: quem sobe o dev server é o Inhouse, numa
  * porta própria. O agente rodar o servidor trava a execução (processo que não
- * termina) e cria uma segunda porta que confunde o usuário.
+ * termina) e cria uma segunda porta que confunde o usuário. v2: o agente tem
+ * ferramentas próprias (MCP in-process) para enxergar e comandar o preview.
  */
 export const PREVIEW_GERENCIADO = [
-  "IMPORTANTE: NÃO rode o servidor de desenvolvimento (npm run dev, pnpm dev, next dev,",
-  "vite, astro dev, etc.) nem deixe qualquer processo servindo. Quem gerencia o preview",
-  "é o Inhouse, numa porta própria — é a ÚNICA fonte da verdade. Rodar o servidor você",
-  "mesmo trava a sua execução e abre uma segunda porta que confunde a pessoa. Se quiser",
-  "conferir o resultado visual, é o botão de preview do Inhouse que faz isso.",
+  "PREVIEW: quem sobe e gerencia o dev server é o Inhouse, numa porta única — NUNCA rode",
+  "o servidor você mesmo (npm run dev, pnpm dev, next dev, vite, astro dev, etc.; será",
+  "bloqueado). Você tem ferramentas próprias: preview_status (URL/porta/estado — use SEMPRE",
+  "que precisar saber onde o app roda), preview_logs (registro do dev server, onde aparecem",
+  "os erros de runtime), preview_reiniciar (após mudar .env/config que não recarrega sozinho)",
+  "e preview_reportar_rota (marca uma tela importante para os health-checks futuros).",
+  "Para conferir uma rota, use curl na URL que o preview_status devolver.",
 ].join("\n");
+
+/**
+ * Append do system prompt das fases "mão na massa" (as mesmas que recebem as
+ * ferramentas MCP): identidade + regras invariantes + um bloco curto de ESTADO.
+ * Fases de planejamento (espec/plano/protótipo) e fases sem tarefa (juiz/gerar)
+ * não recebem — seguem idênticas.
+ */
+export function systemAppend(
+  task: Task,
+  preview?: { status: string; url?: string; porta?: number },
+): string {
+  const previewLinha = !preview
+    ? "Preview: desconhecido — use preview_status."
+    : preview.status === "no_ar" && preview.url
+      ? `Preview: no ar em ${preview.url}${preview.porta ? ` (porta ${preview.porta})` : ""}.`
+      : `Preview: ${preview.status.replace(/_/g, " ")}.`;
+  // Título vai para o SYSTEM prompt: uma linha só e truncado — um título com
+  // quebras de linha não pode "escrever" instruções com autoridade de sistema.
+  const titulo = task.title.replace(/\s+/g, " ").slice(0, 120);
+  return [
+    "Você é o agente do Inhouse — um app builder local para pessoas NÃO-técnicas criarem e",
+    "alterarem apps com segurança. Toda comunicação com a pessoa é em português simples.",
+    CONTEXTO_NAO_TECNICO,
+    PREVIEW_GERENCIADO,
+    "",
+    "[ESTADO]",
+    `Tarefa: "${titulo}" · etapa: ${task.step} · modo: ${task.modo ?? "esteira"}`,
+    previewLinha,
+    "(estado no INÍCIO deste passo — para o estado atual, use preview_status)",
+  ].join("\n");
+}
 
 export function especPrompt(task: Task): string {
   return [
@@ -159,11 +193,10 @@ export function preparacaoPrompt(): string {
   return [
     "Você é o assistente do Inhouse. Sua tarefa agora é PREPARAR este projeto para que uma",
     "pessoa não-técnica consiga rodá-lo e criar tarefas. Trabalhe na pasta principal do projeto.",
-    CONTEXTO_NAO_TECNICO,
     "Faça, nesta ordem:",
-    "1. AUDITE o projeto: gerenciador de pacotes (pelo lockfile), engines/.tool-versions,",
-    "   docker-compose, arquivos .env de exemplo, scripts de setup no package.json/README,",
-    "   serviços/banco necessários.",
+    "1. AUDITE o projeto — comece lendo o README.md e a documentação de setup: gerenciador de",
+    "   pacotes (pelo lockfile), engines/.tool-versions, docker-compose, arquivos .env de exemplo,",
+    "   scripts de setup no package.json/README, serviços/banco necessários.",
     "2. INSTALE o que é do PROJETO: dependências (com o gerenciador certo pelo lockfile);",
     "   copie .env.example/.env.sample para .env/.env.local (NÃO invente segredos — deixe os",
     "   placeholders e avise a pessoa o que ela precisa preencher); rode o script de setup",
@@ -186,13 +219,11 @@ export function parsePreparado(text: string): boolean {
   return m ? /^s/i.test(m[1]!) : false;
 }
 
-/** Fase execução: plano aprovado, mão na massa. */
+/** Fase execução: plano aprovado, mão na massa. (Identidade/regras vêm do systemAppend.) */
 export function execucaoPrompt(task: Task): string {
   const plano = task.plan ? ["", "Plano aprovado:", task.plan] : [];
   return [
     "O usuário aprovou o plano. Execute-o agora, passo a passo, no código deste projeto.",
-    CONTEXTO_NAO_TECNICO,
-    PREVIEW_GERENCIADO,
     "Siga o plano; se algo imprevisto exigir um desvio pequeno, faça e explique.",
     "Ao final, explique em português simples, para uma pessoa não-técnica, o que foi feito.",
     anexosBloco(task),
@@ -209,7 +240,6 @@ export function fixGatesPrompt(_task: Task, gates: GateResult[]): string {
   return [
     "As verificações automáticas do projeto falharam. Corrija os problemas apontados abaixo.",
     "NÃO mude mais nada além do necessário para as verificações passarem.",
-    PREVIEW_GERENCIADO,
     "",
     blocos,
     "",
@@ -236,16 +266,72 @@ export function parseConserto(finalText: string): { desistiu: boolean; motivo?: 
   return { desistiu, motivo: desistiu ? m[2]?.trim() || undefined : undefined };
 }
 
-/** Feedback humano pedindo mudanças (usado tanto na aprovação do plano quanto no teste). */
-export function changesPrompt(msg: string): string {
+/**
+ * Feedback humano pedindo mudanças (aprovação do plano e Seu teste). `ctx` traz
+ * o estado do preview quando há um no ar — o agente confere a própria mudança
+ * contra o app vivo em vez de adivinhar porta/erro (e vê os logs se quebrou).
+ */
+export function changesPrompt(
+  msg: string,
+  ctx?: { url?: string; status?: string; logsTail?: string },
+): string {
+  const preview: string[] = [];
+  if (ctx?.url && ctx.status === "no_ar") {
+    preview.push(
+      `O preview segue NO AR em ${ctx.url} — confira a sua mudança com curl (ou preview_status) antes de devolver.`,
+    );
+  } else if (ctx?.status === "problema") {
+    preview.push(
+      "O preview está COM PROBLEMA. Diagnostique pelos logs abaixo (e preview_logs), corrija e use preview_reiniciar se mudar .env/config.",
+    );
+    if (ctx.logsTail) preview.push("", "Últimas linhas do registro do dev server:", "```", ctx.logsTail, "```");
+  }
   return [
     "O usuário revisou e pediu as seguintes mudanças:",
     "",
     msg,
     "",
     "Faça os ajustes de acordo com o pedido, sem desfazer o restante do trabalho.",
-    PREVIEW_GERENCIADO,
+    ...preview,
     "Ao final, explique em português simples o que mudou.",
+  ].join("\n");
+}
+
+/**
+ * Conserto automático do preview (crash/5xx/reporte do usuário): erro + logs
+ * inline, diagnóstico e correção com verificação do PRÓPRIO conserto contra o
+ * preview vivo. Termina com o mesmo contrato do fixGates (CONSERTO: …).
+ */
+export function consertoPreviewPrompt(
+  causa: { origem: "crash" | "saude" | "usuario"; detalhe: string; rota?: string },
+  logsTail: string,
+): string {
+  const origem =
+    causa.origem === "crash"
+      ? "O dev server do preview CAIU sozinho."
+      : causa.origem === "saude"
+        ? "Uma tela do preview está respondendo com erro de servidor."
+        : "A pessoa reportou um problema no preview.";
+  return [
+    `${origem} Diagnostique e conserte agora.`,
+    causa.rota ? `Tela/rota afetada: ${causa.rota}` : "",
+    causa.detalhe ? `Detalhe: ${causa.detalhe}` : "",
+    "",
+    "Últimas linhas do registro do dev server:",
+    "```",
+    logsTail || "(sem registro capturado)",
+    "```",
+    "",
+    "Como agir:",
+    "1. Descubra a CAUSA pelo registro acima (use preview_logs para mais linhas se precisar).",
+    "2. Corrija o que for de código/.env/config. NÃO mude nada além do necessário.",
+    "3. Se mudou .env/config que o dev server não recarrega sozinho, use preview_reiniciar.",
+    "4. VERIFIQUE o próprio conserto: confira com curl (na URL do preview_status) que a tela",
+    "   afetada responde sem erro de servidor. Não devolva sem verificar.",
+    "",
+    "Quando terminar, a sua ÚLTIMA linha deve ser exatamente uma destas:",
+    "CONSERTO: feito",
+    "CONSERTO: impossivel — <motivo curto em português simples>",
   ].join("\n");
 }
 
@@ -308,8 +394,8 @@ export function prototipoPrompt(slug: string): string {
 export function previewSetupPrompt(): string {
   return [
     "Antes de a pessoa testar, prepare o AMBIENTE deste projeto para o preview subir de verdade.",
-    CONTEXTO_NAO_TECNICO,
-    PREVIEW_GERENCIADO,
+    "Antes de decidir, LEIA o README.md e os docs de setup do projeto (docs/, CONTRIBUTING,",
+    ".env.example, scripts do package.json): é onde costuma estar como subir, migrar e popular o banco.",
     "Faça só o necessário para o app conseguir rodar e servir as telas:",
     "- Preencha as variáveis de ambiente que faltam NESTE espaço: use .env.example/.env.sample e a",
     "  documentação. Para segredos que você não tem, use um valor de desenvolvimento plausível e diga",
@@ -339,7 +425,6 @@ export function previewExercisePrompt(url: string, rotas: string[]): string {
       : "- A página inicial e as telas que ESTA tarefa mexeu.";
   return [
     `O preview já está NO AR em ${url} — quem o subiu foi o Inhouse. NÃO suba outro servidor.`,
-    CONTEXTO_NAO_TECNICO,
     "Sua tarefa: EXERCITAR as telas como um usuário e garantir que funcionam ANTES de a pessoa testar.",
     `Use curl no próprio preview (${url}) para abrir as rotas que importam:`,
     alvos,
@@ -347,7 +432,6 @@ export function previewExercisePrompt(url: string, rotas: string[]): string {
     "Para cada rota, confira o status HTTP e o corpo. Se der erro de runtime (500, exceção, variável de",
     "ambiente faltando, conexão de banco recusada), DESCUBRA a causa e CORRIJA (complete o .env, suba o",
     "serviço que falta, ajuste a config) — e refaça o curl até a rota responder sem erro de servidor.",
-    PREVIEW_GERENCIADO,
     "Se você mudar variáveis de ambiente, o servidor de dev costuma recarregar sozinho: espere alguns",
     "segundos e refaça o curl. Não pare enquanto uma rota que importa ainda devolver erro 500.",
     "Ao final, explique em português simples o que conferiu e o que corrigiu. Se algo AINDA estiver",

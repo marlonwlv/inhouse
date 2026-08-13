@@ -355,4 +355,49 @@ describe("createPreviewSetupGate", () => {
     resolvePermission(pedido.id, false);
     await promessa;
   });
+
+  it("delega ao gate base injetado (ex.: gateComStatus da esteira)", async () => {
+    let chamadas = 0;
+    const base = (async () => {
+      chamadas++;
+      return { behavior: "deny" as const, message: "base custom" };
+    }) as unknown as Parameters<typeof createPreviewSetupGate>[1];
+    const gate = createPreviewSetupGate("task-prev", base);
+    const res = await gate("Bash", { command: "rm -rf build" }, opcoes());
+    expect(chamadas).toBe(1);
+    expect(res).toMatchObject({ behavior: "deny", message: "base custom" });
+    // As regras do preview continuam VENCENDO antes do base:
+    const negado = await gate("Bash", { command: "npm run dev" }, opcoes());
+    expect(negado).toMatchObject({ behavior: "deny" });
+    expect(chamadas).toBe(1); // dev server nem chega ao base
+  });
+});
+
+describe("ferramentas do Inhouse (mcp__inhouse__*)", () => {
+  it("auto-aprova sem criar pedido humano e registra desfecho 'auto'", async () => {
+    mocks.permissoesEval.length = 0;
+    const gate = createPermissionGate("task-mcp");
+    const res = await gate("mcp__inhouse__preview_status", {}, opcoes());
+    expect(res).toMatchObject({ behavior: "allow" });
+    expect(mocks.added.length).toBe(0); // sem porteira
+    expect(mocks.permissoesEval.at(-1)).toMatchObject({ tool: "mcp__inhouse__preview_status", desfecho: "auto" });
+  });
+
+  it("também passa direto pelo gate de preview (delegação ao base)", async () => {
+    const gate = createPreviewSetupGate("task-mcp");
+    const res = await gate("mcp__inhouse__preview_reiniciar", { motivo: "env mudou" }, opcoes());
+    expect(res).toMatchObject({ behavior: "allow" });
+    expect(mocks.added.length).toBe(0);
+  });
+
+  it("tool DESCONHECIDA no namespace inhouse NÃO é auto-aprovada (lista exata, não prefixo)", async () => {
+    // Um servidor MCP externo chamado "inhouse" não pode vestir o namespace com
+    // uma tool nova (ex.: exec) e furar a porteira.
+    const gate = createPermissionGate("task-mcp");
+    const promessa = gate("mcp__inhouse__exec", { cmd: "qualquer" }, opcoes());
+    const pedido = mocks.added.at(-1)!;
+    expect(pedido.toolName).toBe("mcp__inhouse__exec"); // virou pedido humano
+    resolvePermission(pedido.id, false);
+    await promessa;
+  });
 });

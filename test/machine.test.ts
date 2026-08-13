@@ -39,6 +39,10 @@ const h = vi.hoisted(() => {
     releaseExec: undefined as undefined | (() => void),
     // Porteiras do workflow ativo (todas ligadas por padrão; um teste desliga uma).
     gates: { aprovacao: true, aprovacao_prototipo: true, teste: true },
+    // Preview (mock): URL "viva" vista pelo previewStatus + registro de chamadas.
+    previewUrlAtual: undefined as string | undefined,
+    restartPreviewCalls: [] as string[],
+    healthPathsAdicionados: [] as string[],
   };
   return {
     state,
@@ -151,6 +155,28 @@ vi.mock("../server/services/preview.js", () => ({
   stopPreview: h.stopPreview,
   startPreview: async () => "",
   stopAllPreviews: () => {},
+  // Superfície nova usada pela máquina (preview 10x) — defaults inertes; os
+  // testes que exercitam o conserto/estado sobrescrevem via h.state.
+  attemptStart: async () => "",
+  aprenderReceita: () => null,
+  resolvePreviewConfig: () => null,
+  verificarSaude: async () => ({ ok: true }),
+  previewStatus: () => ({
+    status: h.state.previewUrlAtual ? "no_ar" : "parado",
+    url: h.state.previewUrlAtual || undefined,
+    porta: undefined,
+    healthPaths: [],
+    aviso: "",
+  }),
+  previewLogs: () => "",
+  restartPreview: async (taskId: string) => {
+    h.state.restartPreviewCalls?.push(taskId);
+    return { url: "http://localhost:4501/" };
+  },
+  adicionarHealthPath: (_projectId: string, rota: string) => {
+    h.state.healthPathsAdicionados?.push(rota);
+    return true;
+  },
 }));
 vi.mock("../server/services/publish.js", () => ({ publishTask: h.publishTask }));
 vi.mock("../server/events.js", () => ({ broadcast: () => {}, addClient: () => {} }));
@@ -702,5 +728,133 @@ describe("machine: porteiras do workflow (ligar/desligar)", () => {
     await applyAction(t.id, { action: "approve_plan" });
     // detalhamento → protótipo → (aprovação automática) → execução → teste
     await esperaStep(t.id, "teste");
+  });
+});
+
+describe("machine: preview 10x (conserto automático e steer honesto)", () => {
+  it("fix_preview dispara o conserto, registra a rota e devolve a tarefa ao teste", async () => {
+    const t = await ateTeste();
+    h.state.calls.length = 0;
+    h.state.restartPreviewCalls.length = 0;
+    h.state.healthPathsAdicionados.length = 0;
+
+    await applyAction(t.id, { action: "fix_preview", rota: "/admin", descricao: "a tela de admin quebrou" });
+    await esperaStep(t.id, "teste");
+    await esperaStatus(t.id, "aguardando");
+
+    // A fase de conserto rodou com o prompt certo, o preview foi reerguido e a
+    // rota reportada entrou nos health-checks futuros do projeto.
+    expect(h.state.calls.some((c) => /Diagnostique e conserte/.test(c.prompt))).toBe(true);
+    expect(h.state.restartPreviewCalls).toContain(t.id);
+    expect(h.state.healthPathsAdicionados).toContain("/admin");
+    // Conserto bem-sucedido zera o contador (um crash futuro ganha tentativas novas).
+    expect(store.getTask(t.id)?.previewFixRounds ?? 0).toBe(0);
+  });
+
+  it("crash do preview com a tarefa parada no teste dispara o conserto automático", async () => {
+    const t = await ateTeste();
+    h.state.calls.length = 0;
+    const { previewEvents } = await import("../server/services/previewState.js");
+    previewEvents.emit("crash", { taskId: t.id, logsTail: "Error: boom" });
+    await vi.waitFor(() => {
+      expect(h.state.calls.some((c) => /Diagnostique e conserte/.test(c.prompt))).toBe(true);
+    }, { timeout: 3000 });
+    await esperaStep(t.id, "teste");
+    await esperaStatus(t.id, "aguardando");
+  });
+
+  it("cap de tentativas: com previewFixRounds esgotado, o crash NÃO dispara conserto", async () => {
+    const t = await ateTeste();
+    store.updateTask(t.id, { previewFixRounds: 2 });
+    h.state.calls.length = 0;
+    const { previewEvents } = await import("../server/services/previewState.js");
+    previewEvents.emit("crash", { taskId: t.id, logsTail: "Error: boom" });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(h.state.calls.some((c) => /Diagnostique e conserte/.test(c.prompt))).toBe(false);
+    // A tarefa continua utilizável, parada no teste.
+    expect(store.getTask(t.id)?.step).toBe("teste");
+    expect(store.getTask(t.id)?.status).toBe("aguardando");
+  });
+
+  it("crash com fase RODANDO não dispara nada (o estado entra no próximo prompt)", async () => {
+    const t = await ateTeste();
+    store.updateTask(t.id, { status: "rodando" });
+    h.state.calls.length = 0;
+    const { previewEvents } = await import("../server/services/previewState.js");
+    previewEvents.emit("crash", { taskId: t.id, logsTail: "" });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(h.state.calls.length).toBe(0);
+    store.updateTask(t.id, { status: "aguardando" });
+  });
+
+  it("steer fora da execução enfileira e entrega no próximo passo (não descarta em silêncio)", async () => {
+    const t = await ateTeste();
+    await steer(t.id, "prefiro o botão em azul");
+    // O próximo trabalho do Claude (request_changes → execução) recebe a mensagem enfileirada.
+    await applyAction(t.id, { action: "request_changes", message: "ajuste o rodapé" });
+    await esperaStep(t.id, "teste");
+    const call = h.state.calls.find((c) => /Mensagens que o usuário enviou/.test(c.prompt));
+    expect(call?.prompt).toContain("prefiro o botão em azul");
+  });
+
+  it("request_changes no teste passa o contexto do preview quando ele está no ar", async () => {
+    h.state.previewUrlAtual = "http://localhost:4501/";
+    const t = await ateTeste();
+    h.state.calls.length = 0;
+    await applyAction(t.id, { action: "request_changes", message: "o título sumiu" });
+    await esperaStep(t.id, "teste");
+    const call = h.state.calls.find((c) => /pediu as seguintes mudanças/.test(c.prompt));
+    expect(call?.prompt).toContain("http://localhost:4501/");
+    h.state.previewUrlAtual = undefined;
+  });
+});
+
+describe("machine: esforço e troca de modo", () => {
+  it("set_esforco grava o nível na tarefa (e rejeita nível inválido)", async () => {
+    const t = await criaTaskEmAprovacao();
+    await applyAction(t.id, { action: "set_esforco", nivel: "xhigh" });
+    expect(store.getTask(t.id)?.esforco).toBe("xhigh");
+    await expect(
+      applyAction(t.id, { action: "set_esforco", nivel: "turbo" as never }),
+    ).rejects.toThrow(/inválido/);
+  });
+
+  it("set_modo bloqueia com o Claude trabalhando", async () => {
+    h.state.execHang = true;
+    const t = await criaTaskEmAprovacao();
+    await applyAction(t.id, { action: "approve_plan" });
+    await esperaStatus(t.id, "rodando");
+    await expect(applyAction(t.id, { action: "set_modo", modo: "livre" })).rejects.toThrow(/Espere/);
+    h.state.abortReturns = true;
+    await applyAction(t.id, { action: "cancel" });
+    h.state.execHang = false;
+    h.state.abortReturns = false;
+  });
+
+  it("esteira → livre em qualquer etapa parada: porteira vira conversa livre", async () => {
+    const t = await criaTaskEmAprovacao(); // parada na aprovação do plano
+    await applyAction(t.id, { action: "set_modo", modo: "livre" });
+    const depois = store.getTask(t.id)!;
+    expect(depois.modo).toBe("livre");
+    expect(depois.step).toBe("execucao");
+    expect(depois.status).toBe("aguardando");
+  });
+
+  it("livre → etapas: nada roda até o próximo pedido; o pedido vira espec → plano → aprovação", async () => {
+    const t = await startTask("p1", "Tarefa livre", "Descrição inicial", undefined, "livre");
+    await esperaStatus(t.id, "aguardando"); // o turno inicial do livre terminou
+    await applyAction(t.id, { action: "set_modo", modo: "esteira" });
+    const parada = store.getTask(t.id)!;
+    expect(parada.aguardandoPedido).toBe(true);
+    expect(parada.status).toBe("aguardando");
+
+    h.state.calls.length = 0;
+    await steer(t.id, "Agora quero uma tela de relatórios");
+    const emAprovacao = await esperaStep(t.id, "aprovacao");
+    expect(emAprovacao.aguardandoPedido).toBeUndefined();
+    expect(emAprovacao.description).toBe("Agora quero uma tela de relatórios");
+    expect(emAprovacao.plan).toBeTruthy();
+    // Rodou espec (default) e plano (plan) — a esteira de verdade.
+    expect(h.state.calls.map((c) => c.permissionMode)).toEqual(["default", "plan"]);
   });
 });
