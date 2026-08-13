@@ -108,6 +108,39 @@ export interface GateResult {
 /** Porte da tarefa, julgado na espec (triagem): decide quais skills de plano rodam. */
 export type Porte = "simples" | "media" | "grande";
 
+/** Níveis de esforço do Claude (os mesmos que o Claude Code oferece). */
+export const ESFORCO_NIVEIS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type EsforcoNivel = (typeof ESFORCO_NIVEIS)[number];
+
+// ---------- Preview (estado de primeira classe) ----------
+
+/**
+ * Estado do preview gerenciado de uma tarefa — fonte única para UI e agente.
+ * "consertando" = o conserto automático está trabalhando; "problema" = quebrou e
+ * o conserto esgotou (ou não pôde agir); "sem_tela" = projeto sem preview de tela.
+ */
+export type PreviewStatus = "parado" | "preparando" | "no_ar" | "consertando" | "problema" | "sem_tela";
+
+export interface PreviewInfo {
+  status: PreviewStatus;
+  /** URL do dev server (só quando no_ar). */
+  url?: string;
+  /** Porta REAL (parseada da URL do stdout — pode diferir da reservada). */
+  porta?: number;
+  /** Tentativa atual do conserto automático (1..PREVIEW_FIX_MAX). */
+  tentativa?: number;
+  /** Erro amigável quando status = problema. */
+  erro?: { msg: string; detalhe?: string; status?: number; rota?: string; podeConfigurar?: boolean };
+  /**
+   * Suspeita de erro com o app NO AR: o detector de linhas de erro do Registro
+   * acendeu (Error/Unhandled/⨯/5xx). A UI destaca "Algo quebrou?" e mostra a
+   * faixa de conserto; limpa sozinho no próximo start/conserto.
+   */
+  alerta?: { rota?: string; detalhe?: string; quando: string };
+  /** ISO — quando entrou neste status. */
+  desde?: string;
+}
+
 /** Arquivo anexado pelo usuário a uma tarefa/mensagem (fica em ANEXOS_DIR, fora do worktree). */
 export interface TaskAnexo {
   /** Nome original do arquivo (exibição). */
@@ -147,7 +180,12 @@ export interface Task {
   gateFixRounds: number;
   /** Sessão do Claude Code para resume entre fases/steering. */
   claudeSessionId?: string;
+  /** Espelho de preview.url (compat com UI/testes antigos) — a fonte nova é `preview`. */
   previewUrl?: string;
+  /** Estado vivo do preview gerenciado (fonte única para UI e agente). */
+  preview?: PreviewInfo;
+  /** Rodadas de conserto automático do preview já usadas (zera ao pousar no teste). */
+  previewFixRounds?: number;
   prUrl?: string;
   /** Mensagem de erro amigável quando status=falhou. */
   error?: string;
@@ -171,6 +209,13 @@ export interface Task {
   skillsRodadas?: string[];
   /** Modo auto: permissões desta tarefa são concedidas sem perguntar (com registro no chat). */
   autoAprovar?: boolean;
+  /** Esforço escolhido para ESTA tarefa (ausente = configuração da máquina). */
+  esforco?: EsforcoNivel;
+  /**
+   * Acabou de trocar de Livre para Com etapas: a esteira espera o PRÓXIMO pedido
+   * do chat para virar espec/plano. Nada roda até a pessoa escrever.
+   */
+  aguardandoPedido?: boolean;
   /** Histórico de passos com início/fim — mostra quanto tempo cada etapa levou. */
   historico?: { step: Step; inicio: string; fim?: string }[];
   /** Medições acumuladas para o eval de experiência (custo/turnos por etapa). */
@@ -225,6 +270,7 @@ export type ServerEvent =
   | { type: "permission_request"; request: PermissionRequest }
   | { type: "permission_resolved"; requestId: string; allowed: boolean }
   | { type: "preview_ready"; taskId: string; url: string }
+  | { type: "preview_status"; taskId: string; preview: PreviewInfo }
   | { type: "claude_status"; ok: boolean; version?: string; detail?: string }
   | { type: "update_status"; update: UpdateInfo }
   | { type: "eval_relatorio"; status: "gerando" | "pronto" | "erro"; arquivo?: string; detalhe?: string };
@@ -249,6 +295,7 @@ export type ServerEvent =
 // POST /api/permissions/:id/decision    { allow, remember? } -> 200
 // POST /api/tasks/:id/preview/start     -> { url }
 // POST /api/tasks/:id/preview/stop      -> 200
+// POST /api/tasks/:id/preview/restart   -> { url } (reinício atômico; preserva os logs)
 // POST /api/tasks/:id/feedback          { nota, texto? } -> { ok: true }
 // GET  /api/eval/resumo?fonte=          -> EvalResumo (fonte: "todos" | "meus" | <rótulo>)
 // GET  /api/eval/relatorios             -> { relatorios: {ts, arquivo, tarefasAnalisadas, custoUsd?}[] }
@@ -265,7 +312,10 @@ export const TASK_ACTIONS = [
   "approve_prototype",
   "set_design",
   "request_changes",
+  "fix_preview",
   "approve_test",
+  "set_esforco",
+  "set_modo",
   "publish",
   "retry",
   "auto_mode",
@@ -281,7 +331,10 @@ export type TaskAction =
   | { action: "approve_prototype" } // aprova o protótipo -> execução
   | { action: "set_design"; valor: "auto" | "sim" | "nao" } // liga/desliga design+protótipo desta task
   | { action: "request_changes"; message: string } // volta pra fase de plano/detalhe/protótipo conforme a porteira
+  | { action: "fix_preview"; rota?: string; descricao?: string } // pede o conserto do preview ao agente
   | { action: "approve_test" } // teste -> publicar (fica aguardando o clique de publicar)
+  | { action: "set_esforco"; nivel: EsforcoNivel } // esforço desta tarefa (vale do próximo passo em diante)
+  | { action: "set_modo"; modo: "esteira" | "livre" } // troca o modo da tarefa (só com o Claude parado)
   | { action: "publish"; createPr?: boolean } // merge no main (+ PR opcional)
   | { action: "retry" } // re-roda o passo que falhou
   | { action: "auto_mode"; on: boolean } // permissões automáticas para esta tarefa

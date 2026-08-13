@@ -51,7 +51,7 @@ function stepsAtivos(t) {
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.24.0";
+const UI_VERSION = "0.25.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -87,9 +87,13 @@ const state = {
   progress: {}, // name -> { projectId?, message, pct? }
   transcripts: {}, // taskId -> { loaded, loading, items[], stream }
   busy: {}, // chaves de ações em andamento ("clone", "create", "preview:<id>", "publish:<id>")
-  previewErro: {}, // taskId -> { msg, podeConfigurar, detalhe?, status?, rota? } quando o preview não sobe
-  previewLogs: {}, // taskId -> string com os logs do dev server (buscados sob demanda)
-  previewLogsOpen: {}, // taskId -> bool: o painel de logs do preview está aberto
+  previewLogs: {}, // taskId -> string com o registro do dev server (buscado sob demanda)
+  previewLogsOpen: {}, // taskId -> bool: o painel de registro do preview está aberto
+  // View avançada do preview (URL/porta/registro/controles): preferência da
+  // PESSOA, não da tarefa — persiste no navegador, como o tema.
+  previewAvancado: localStorage.getItem("inhouse.previewAvancado") === "1",
+  alertaIgnorado: {}, // taskId -> `quando` do alerta de erro cuja faixa foi dispensada
+  falhaFechada: {}, // taskId -> chave da falha cujo aviso foi fechado (contorno pelo chat)
   anexosPendentes: {}, // alvo ("new-task" | "composer") -> TaskAnexo[] já enviados, aguardando o envio da mensagem
   artefatos: {}, // taskId -> { at, temPrototipo, docs[], loading } (barra de artefatos do editor)
   showArquivadas: false, // mostrar as tarefas arquivadas no quadro
@@ -366,6 +370,8 @@ function handleEvent(ev) {
         const c = state.transcripts[ev.task.id];
         if (c) c.stream = "";
       }
+      // Saiu do estado de falha: uma PRÓXIMA falha volta a mostrar o aviso.
+      if (ev.task.status !== "falhou") delete state.falhaFechada[ev.task.id];
       render();
       break;
     }
@@ -424,9 +430,25 @@ function handleEvent(ev) {
       }
       break;
     case "preview_ready": {
+      // Compat: a fonte nova é preview_status; este só espelha a URL.
       const t = getTask(ev.taskId);
-      delete state.previewErro[ev.taskId];
       if (t) { t.previewUrl = ev.url; render(); }
+      break;
+    }
+    case "preview_status": {
+      const t = getTask(ev.taskId);
+      if (t) {
+        const antes = t.preview?.status;
+        t.preview = ev.preview;
+        t.previewUrl = ev.preview.url || undefined;
+        render();
+        // Consertado: um reload ÚNICO do iframe (o processo renasceu na mesma URL).
+        if (antes === "consertando" && ev.preview.status === "no_ar") {
+          const f = document.querySelector("#preview-frame");
+          if (f) f.src = f.src;
+        }
+      }
+      maybeToastPreview(ev);
       break;
     }
     case "claude_status": {
@@ -444,6 +466,16 @@ function handleEvent(ev) {
       break;
     }
   }
+}
+
+/**
+ * Toast do preview: só quando algo acontece FORA do campo de visão da pessoa
+ * (noutra tela). Na tela da tarefa, o painel + chat já mostram tudo.
+ */
+function maybeToastPreview(ev) {
+  if (ev.preview.status !== "problema" || isEditorOf(ev.taskId)) return;
+  const t = getTask(ev.taskId);
+  toast(`O preview de "${t?.title ?? "uma tarefa"}" quebrou — o Claude não conseguiu consertar sozinho.`);
 }
 
 function clearProgressFor(project) {
@@ -1737,8 +1769,10 @@ function renderEditor(id) {
       : "",
   ].join("");
   $("#ed-flowstrip", root).innerHTML = t.modo === "livre"
-    ? `<span>⚡ <b>Modo livre</b> — você conduz o Claude direto: sem plano nem porteiras. Peça <code>/review</code>, <code>/qa</code> etc. no chat e publique quando quiser.</span>${modeloChip(t)}${custoChip(t, false)}`
-    : `<span>Onde essa tarefa está: <b>${esc(STEP_LABELS[t.step] ?? t.step)}</b></span>${flowHtml(t)}${nextGateChip(t)}${modeloChip(t)}${custoChip(t, false)}`;
+    ? `<span>⚡ <b>Modo livre</b> — você conduz o Claude direto: sem plano nem porteiras. Peça <code>/review</code>, <code>/qa</code> etc. no chat e publique quando quiser.</span>${modoChipHtml(t)}${modeloChip(t)}${custoChip(t, false)}`
+    : t.aguardandoPedido
+      ? `<span>Com etapas — <b>esperando o seu pedido</b> para começar o plano</span>${modoChipHtml(t)}${modeloChip(t)}${custoChip(t, false)}`
+      : `<span>Onde essa tarefa está: <b>${esc(STEP_LABELS[t.step] ?? t.step)}</b></span>${flowHtml(t)}${modoChipHtml(t)}${nextGateChip(t)}${modeloChip(t)}${custoChip(t, false)}`;
   renderArtefatos(root, t);
   loadArtefatos(id);
   renderChat(id);
@@ -1769,8 +1803,10 @@ function editorShellHtml(t, p) {
           <div class="composer-box">
             <button type="button" class="attach-btn icon" id="composer-attach" data-act="attach" data-target="composer" title="Anexar arquivos (imagem, PDF)" aria-label="Anexar arquivos">📎</button>
             <textarea id="composer-input" class="grow-area" rows="1" autocomplete="off" data-enter-submit placeholder="" aria-label="Mensagem para o Claude"></textarea>
+            <button type="button" class="effort-chip" id="composer-effort" data-act="toggle-effort" title="Esforço do Claude nesta tarefa"></button>
             <button class="send" id="composer-send" type="submit" title="Enviar">↑</button>
           </div>
+          <div class="mini-pop effort-pop" id="effort-pop"></div>
         </form>
       </div>
       <div class="preview" id="preview-pane"></div>
@@ -1807,25 +1843,60 @@ function nomeModelo(id) {
   return ver ? `${fam} ${ver}` : fam || String(id);
 }
 
-/* Chip com o(s) modelo(s) e o effort que o Claude usou na tarefa (Task.uso.porEtapa). */
-function modeloChip(t) {
+/** Chip do Modo (Com etapas ↔ Livre) na barra das etapas, com o popover. */
+function modoChipHtml(t) {
+  if (t.kind === "preparacao") return "";
+  const terminal = t.status === "concluida" || t.status === "cancelada" || t.arquivadaEm;
+  if (terminal) return "";
+  const livre = t.modo === "livre";
+  const rodando = t.status === "rodando";
+  return `<span class="modo-wrap"><button type="button" class="chip chip-btn" data-act="toggle-modo-pop" data-task="${esc(t.id)}" ${
+    rodando
+      ? `disabled title="Espere o Claude terminar este passo (ou clique em ■ para parar) antes de mudar o modo"`
+      : `title="Como o Claude trabalha nesta tarefa"`
+  }>⚙︎ Modo: <span class="v">${livre ? "Livre" : "Com etapas"}</span> <span class="car">▾</span></button><div class="mini-pop modo-pop" id="modo-pop-${esc(t.id)}"></div></span>`;
+}
+
+/** Rótulos pt-BR dos níveis de esforço (os mesmos que o Claude oferece). */
+const EFFORT_LABEL = { low: "Baixo", medium: "Médio", high: "Alto", xhigh: "Extra alto", max: "Máximo" };
+const EFFORT_DESC = {
+  low: "Mais rápido e econômico — ajustes simples.",
+  medium: "Equilíbrio entre rapidez e profundidade.",
+  high: "Pensa com calma — o dia a dia.",
+  xhigh: "Pensa muito mais fundo — tarefas difíceis; demora e consome mais.",
+  max: "O máximo que o modelo consegue — casos excepcionais.",
+};
+
+/** Esforço observado da máquina (último visto nas fases desta tarefa). */
+function effortMaquina(t) {
+  const uso = t.uso && t.uso.porEtapa;
+  let effort = "";
+  if (uso) {
+    for (const st of Object.keys(uso)) {
+      if (uso[st] && uso[st].effort) effort = uso[st].effort;
+    }
+    if (uso[t.step] && uso[t.step].effort) effort = uso[t.step].effort;
+  }
+  return effort;
+}
+
+/** Nome curto do(s) modelo(s) usados na tarefa (para o chip do composer). */
+function modeloDaTask(t) {
   const uso = t.uso && t.uso.porEtapa;
   if (!uso) return "";
   const modelos = new Set();
-  let effort = "";
   for (const st of Object.keys(uso)) {
-    const u = uso[st];
-    (u && u.modelos ? u.modelos : []).forEach((m) => modelos.add(m));
-    if (u && u.effort) effort = u.effort; // último visto
+    (uso[st] && uso[st].modelos ? uso[st].modelos : []).forEach((m) => modelos.add(m));
   }
-  if (uso[t.step] && uso[t.step].effort) effort = uso[t.step].effort; // etapa atual tem prioridade
   const nomes = [...modelos].map(nomeModelo).filter(Boolean);
-  const partes = [
-    nomes.length ? `Modelo: ${nomes.join(" + ")}` : "",
-    effort ? `Effort: ${effort}` : "",
-  ].filter(Boolean).join(" · ");
-  return partes
-    ? `<span class="chip model-chip" title="Modelo(s) e esforço de raciocínio que o Claude usou nesta tarefa">${esc(partes)}</span>`
+  return nomes.join(" + ");
+}
+
+/* Chip com o(s) modelo(s) da tarefa (o esforço agora é o seletor do composer). */
+function modeloChip(t) {
+  const nomes = modeloDaTask(t);
+  return nomes
+    ? `<span class="chip model-chip" title="Modelo(s) que o Claude usou nesta tarefa">${esc(`Modelo: ${nomes}`)}</span>`
     : "";
 }
 
@@ -1910,10 +1981,25 @@ function transcriptItemHtml(item) {
   return "";
 }
 
+/** Identidade desta falha (o × fecha ESTE aviso; uma falha nova reabre). */
+function chaveFalha(t) {
+  return `${t.step}|${t.pausadaManual ? "pm" : t.pausadaPorTempo ? "pt" : "f"}|${t.error ?? ""}`;
+}
+
+/** O aviso de falha pode ser fechado? Sim, em toda falha real — o chat sempre
+ *  oferece o contorno agora (as pausas ficam de fora: têm o botão de retomar). */
+function falhaFechavel(t) {
+  return !t.pausadaManual && !t.pausadaPorTempo;
+}
+
 function chatCardsHtml(t) {
   const parts = state.permissions.filter((p) => p.taskId === t.id).map(permCardHtml);
-  if (t.status === "falhou") parts.push(failCardHtml(t));
+  if (t.status === "falhou" && state.falhaFechada[t.id] !== chaveFalha(t)) parts.push(failCardHtml(t));
   if (t.status === "aguardando") {
+    // Preview com problema (conserto automático esgotou): um card com UMA ação.
+    if (t.preview?.status === "problema" && (t.step === "teste" || t.step === "publicar" || t.modo === "livre")) {
+      parts.push(previewProblemaCardHtml(t));
+    }
     if (t.step === "aprovacao") parts.push(planCardHtml(t));
     if (t.step === "aprovacao_prototipo") parts.push(prototipoCardHtml(t));
     if (t.step === "teste") parts.push(testCardHtml(t));
@@ -1998,14 +2084,40 @@ function prototipoCardHtml(t) {
 }
 
 function testCardHtml(t) {
+  // O card SABE o estado real do preview ao lado — as duas metades da tela
+  // nunca mais se contradizem ("abra o preview" com o preview morto).
+  const s = t.preview?.status;
+  const frase =
+    s === "consertando"
+      ? "O preview teve um problema e <b>o Claude já está consertando</b> — assim que voltar, você testa."
+      : s === "problema"
+        ? "O preview está com problema. Peça o conserto no painel ao lado — ou descreva aqui o que aconteceu."
+        : s === "sem_tela"
+          ? "Este projeto não tem tela — teste pedindo verificações no chat (ex.: \"confira a rota de cadastro\")."
+          : !t.previewUrl && s !== "no_ar"
+            ? "O preview está desligado — clique em <b>Ligar preview</b> no painel ao lado antes de testar."
+            : "Abra o preview ao lado, confira se ficou como você queria e aprove — ou peça mudanças.";
+  const consertando = s === "consertando";
   return `<div class="approval">
     <div class="head"><span class="pulse"></span> Sua vez de testar</div>
-    <p>Abra o preview ao lado, confira se ficou como você queria e aprove — ou peça mudanças.</p>
+    <p>${frase}</p>
     <div class="gates-row">${gateChips(t)}</div>
     <div class="acts">
-      <button class="btn sm primary" data-act="approve-test" data-task="${esc(t.id)}">Aprovar</button>
+      <button class="btn sm primary" data-act="approve-test" data-task="${esc(t.id)}" ${consertando ? 'disabled title="Espere o preview voltar"' : ""}>Aprovar</button>
       <button class="btn sm ghost" data-act="request-changes" data-task="${esc(t.id)}">Pedir mudanças</button>
     </div>
+  </div>`;
+}
+
+/** Card no chat quando o preview está com problema (conserto esgotou/indisponível). */
+function previewProblemaCardHtml(t) {
+  return `<div class="approval fail">
+    <div class="head"><span class="pulse"></span> ⚠ O preview não conseguiu ficar no ar</div>
+    <p>${esc(t.preview?.erro?.msg || "O app do preview está com problema.")}</p>
+    <div class="acts">
+      <button class="btn sm primary" data-act="fix-preview" data-task="${esc(t.id)}">Pedir para o Claude consertar</button>
+    </div>
+    <p class="preview-hint">Se preferir, descreva na caixa abaixo o que você estava fazendo quando quebrou.</p>
   </div>`;
 }
 
@@ -2049,7 +2161,12 @@ function failCardHtml(t) {
     </div>`;
   }
   const hasBadGate = (t.gates ?? []).some((g) => !g.ok);
+  // × só quando o chat oferece o contorno — fechar sem saída seria beco.
+  const fechar = falhaFechavel(t)
+    ? `<button class="card-x" data-act="fechar-falha" data-task="${esc(t.id)}" title="Fechar este aviso — você pode escrever um contorno na caixa abaixo" aria-label="Fechar aviso">×</button>`
+    : "";
   return `<div class="approval fail">
+    ${fechar}
     <div class="head"><span class="pulse"></span> Este passo falhou</div>
     <p>${esc(t.error || "Algo deu errado. Tentar de novo costuma resolver.")}</p>
     ${hasBadGate ? `<div class="gates-row">${gateChips(t)}</div>` : ""}
@@ -2057,6 +2174,7 @@ function failCardHtml(t) {
       <button class="btn sm primary" data-act="retry" data-task="${esc(t.id)}">Tentar de novo</button>
       <button class="btn sm ghost" data-act="cancel" data-task="${esc(t.id)}">Cancelar tarefa</button>
     </div>
+    ${falhaFechavel(t) ? `<p class="preview-hint" style="margin:6px 0 0">Ou feche este aviso e descreva um contorno na caixa abaixo — o Claude retoma com a sua instrução.</p>` : ""}
   </div>`;
 }
 
@@ -2072,7 +2190,7 @@ function appendChatDom(taskId, item) {
   if (stick) scroller.scrollTop = scroller.scrollHeight;
 }
 
-// HTML do painel de logs do dev server (escondido até abrir em "Logs"). É um
+// HTML do painel de registro do app (escondido até abrir em "Registro"). É um
 // elemento próprio, alternado por DOM direto — nunca reconstruímos o pane ao
 // abrir/atualizar, senão o iframe (o app rodando) recarregaria e perderia estado.
 function previewLogsHtml(t) {
@@ -2080,12 +2198,12 @@ function previewLogsHtml(t) {
   const txt = state.previewLogs[t.id];
   return `
       <div class="preview-logs-wrap" id="preview-logs-wrap"${aberto ? "" : " hidden"}>
-        <div class="preview-logs-head"><span>Logs do dev server</span><button class="btn ghost sm" data-act="refresh-preview-logs" data-task="${esc(t.id)}">Atualizar</button></div>
-        <pre id="preview-logs" class="preview-logs">${esc(txt || "carregando logs…")}</pre>
+        <div class="preview-logs-head"><span>Registro do app (técnico) — é isto que o Claude lê quando conserta</span><button class="btn ghost sm" data-act="refresh-preview-logs" data-task="${esc(t.id)}">Atualizar</button></div>
+        <pre id="preview-logs" class="preview-logs">${esc(txt || "carregando o registro…")}</pre>
       </div>`;
 }
 
-// Busca os logs do preview e preenche o <pre> sem re-renderizar o pane.
+// Busca o registro do preview e preenche o <pre> sem re-renderizar o pane.
 async function carregarPreviewLogs(id) {
   try {
     const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/preview/logs`);
@@ -2094,88 +2212,235 @@ async function carregarPreviewLogs(id) {
     state.previewLogs[id] = body && typeof body.logs === "string" ? body.logs : "";
   } catch {
     setOnline(false);
-    state.previewLogs[id] = "(não deu para carregar os logs agora)";
+    state.previewLogs[id] = "(não deu para carregar o registro agora)";
   }
   const el = document.querySelector("#preview-logs");
-  if (el) el.textContent = state.previewLogs[id] || "(sem logs ainda — o preview talvez não tenha subido)";
+  if (el) el.textContent = state.previewLogs[id] || "(sem registro ainda — o app talvez não tenha ligado)";
+}
+
+/**
+ * Estado VISUAL do painel de preview — derivado do estado vivo do servidor
+ * (t.preview, via SSE preview_status) + etapa da tarefa + ações em curso.
+ */
+function previewEstadoVisual(t) {
+  const naEtapa = t.step === "teste" || t.step === "publicar" || t.modo === "livre";
+  if (!naEtapa) return "antes";
+  if (state.busy[`preview-config:${t.id}`] || state.busy[`preview:${t.id}`]) return "preparando";
+  const s = t.preview?.status;
+  if (s === "preparando" || s === "consertando" || s === "problema" || s === "sem_tela") return s;
+  const url = t.previewUrl || t.preview?.url;
+  return url ? "no_ar" : "parado";
+}
+
+/** Alerta de erro em runtime ativo (detector do Registro) para esta tarefa? */
+function previewAlertaAtivo(t) {
+  return t.preview?.status !== "problema" ? t.preview?.alerta : undefined;
+}
+
+/** Dot + rótulo do estado (a dot agora É o estado — nada decorativo). */
+function previewStatusHtml(estado, alerta) {
+  if (estado === "no_ar" && alerta) {
+    return `<span class="preview-status"><span class="dot busy"></span> No ar · com erro</span>`;
+  }
+  const cfg = {
+    antes: { cls: "off", rotulo: "Antes do teste" },
+    preparando: { cls: "busy", rotulo: "Preparando…" },
+    no_ar: { cls: "ok", rotulo: "No ar" },
+    consertando: { cls: "busy", rotulo: "Consertando…" },
+    problema: { cls: "err", rotulo: "Com problema" },
+    parado: { cls: "off", rotulo: "Desligado" },
+    sem_tela: { cls: "off", rotulo: "Sem tela" },
+  }[estado] ?? { cls: "off", rotulo: estado };
+  return `<span class="preview-status"><span class="dot ${cfg.cls}"></span> ${cfg.rotulo}</span>`;
+}
+
+/** A tarefa está num ponto em que dá para pedir o conserto do preview? */
+function podeConsertarPreview(t) {
+  return (
+    t.status === "aguardando" && (t.step === "teste" || t.step === "publicar" || t.modo === "livre")
+  );
+}
+
+/**
+ * Barra do preview. View SIMPLES: status + "Algo quebrou?" + ação primária.
+ * View AVANÇADA: layout de NAVEGADOR — ⟳/⌂ à esquerda da barra de endereço
+ * (posição que o usuário já conhece) e os controles do Inhouse à direita,
+ * cada um com tooltip.
+ */
+function previewBarHtml(t, estado, url) {
+  const alerta = previewAlertaAtivo(t);
+  const status = previewStatusHtml(estado, alerta);
+  // Erros que só aparecem NAVEGANDO (ex.: uma rota com env faltando) não mudam o
+  // estado — o app segue "no ar". Este botão é a saída rápida (e acende quando o
+  // detector do Registro vê um erro).
+  const reportar =
+    estado === "no_ar" && podeConsertarPreview(t)
+      ? `<button class="btn sm ${alerta ? "alerta" : "ghost"}" data-act="fix-preview" data-task="${esc(t.id)}"${alerta?.rota ? ` data-rota="${esc(alerta.rota)}"` : ""}${alerta?.detalhe ? ` data-desc="${esc(alerta.detalhe)}"` : ""} title="Viu um erro numa tela? O Claude lê o registro do app e conserta — a tela onde você está vai junto">${alerta ? "⚠ " : ""}Algo quebrou?</button>`
+      : "";
+  if (!state.previewAvancado) {
+    return `
+      <div class="preview-bar simples">
+        ${status}
+        <span class="gap"></span>
+        ${reportar}
+        ${estado === "no_ar" ? `<a class="btn sm primary" id="preview-open" href="${esc(url)}" target="_blank" rel="noreferrer" title="Abre o app numa aba normal do seu navegador">Abrir no navegador</a>` : ""}
+        <button class="btn sm ghost" data-act="toggle-preview-avancado" title="Ver endereço, registro e controles técnicos">Detalhes</button>
+      </div>`;
+  }
+  const porta = t.preview?.porta;
+  const navegador =
+    estado === "no_ar"
+      ? `<span class="vsep"></span>
+        <button class="btn sm icon" data-act="reload-preview" title="Atualiza só a página, como o F5 do navegador">⟳</button>
+        <button class="btn sm icon" data-act="home-preview" data-task="${esc(t.id)}" title="Volta para a tela inicial do app">⌂</button>
+        <div class="url"><input class="url-input" id="preview-url" data-task="${esc(t.id)}" value="${esc(url)}" spellcheck="false" autocomplete="off" aria-label="Endereço do preview (digite e Enter para navegar)"></div>
+        ${porta ? `<span class="chip mono" title="Porta em que o app desta tarefa está rodando">porta ${porta}</span>` : ""}`
+      : `<span class="gap"></span>${porta ? `<span class="chip mono" title="Porta em que o app desta tarefa está rodando">porta ${porta}</span>` : ""}`;
+  return `
+      <div class="preview-bar avancada">
+        ${status}
+        ${navegador}
+        <span class="vsep"></span>
+        ${reportar}
+        <button class="btn sm ghost" data-act="restart-preview" data-task="${esc(t.id)}" title="Desliga e liga o app do zero — use se ele travou. Demora alguns segundos; o registro é preservado.">Reiniciar app</button>
+        <button class="btn sm ghost${state.previewLogsOpen[t.id] ? " active" : ""}" data-act="toggle-preview-logs" data-task="${esc(t.id)}" title="O diário técnico do app — é isto que o Claude lê quando conserta">Registro</button>
+        ${estado === "no_ar" ? `<a class="btn sm" id="preview-open" href="${esc(url)}" target="_blank" rel="noreferrer" title="Abre o app numa aba normal do seu navegador">Abrir ↗</a>` : ""}
+        <button class="btn sm ghost" data-act="toggle-preview-avancado" title="Esconde os controles técnicos e volta à visão simples">Simplificar</button>
+      </div>`;
+}
+
+/** Faixa âmbar do alerta: erro detectado no Registro com o app no ar. */
+function previewStripHtml(t) {
+  const alerta = previewAlertaAtivo(t);
+  if (!alerta || state.alertaIgnorado[t.id] === alerta.quando) return "";
+  return `
+      <div class="preview-strip" id="preview-strip">
+        <span class="msg">O app registrou um erro agora há pouco${alerta.rota ? ` na tela <code>${esc(alerta.rota)}</code>` : ""}.</span>
+        ${podeConsertarPreview(t) ? `<button class="btn sm primary" data-act="fix-preview" data-task="${esc(t.id)}"${alerta.rota ? ` data-rota="${esc(alerta.rota)}"` : ""}${alerta.detalhe ? ` data-desc="${esc(alerta.detalhe)}"` : ""}>Pedir para o Claude consertar</button>` : ""}
+        <button class="btn sm ghost" data-act="ignorar-alerta" data-task="${esc(t.id)}">Ignorar</button>
+      </div>`;
 }
 
 function updatePreview(root, t) {
   const pane = $("#preview-pane", root);
   if (!pane) return;
-  const url = t.previewUrl || "";
-  const busy = !!state.busy[`preview:${t.id}`];
-  const config = !!state.busy[`preview-config:${t.id}`];
-  const erro = state.previewErro[t.id];
-  // O preview só aparece quando a task chega no "Seu teste" (ou Publicar): o
-  // agente já subiu e conferiu o app. Antes disso, não mostramos preview cru.
-  // Modo livre pode subir/ver o preview a qualquer momento (o usuário conduz).
-  const naEtapaDeTeste = t.step === "teste" || t.step === "publicar" || t.modo === "livre";
-  const mostra = url && naEtapaDeTeste;
-  const key = `${url}|${naEtapaDeTeste}|${busy}|${config}|${erro ? erro.msg + erro.podeConfigurar + (erro.detalhe || "") + (erro.status || "") + (erro.rota || "") : ""}`;
-  if (pane.dataset.key === key) return; // não recarregar o iframe à toa
+  const url = t.previewUrl || t.preview?.url || "";
+  const estado = previewEstadoVisual(t);
+  const erro = t.preview?.erro;
+  // A `key` decide quando reconstruir o pane (e recarregar o iframe). Com o app
+  // NO AR, a view (simples/avançada) e o ALERTA de erro ficam FORA da key:
+  // alternar "Detalhes" ou acender a faixa troca só barra/faixa/rodapé por DOM
+  // direto — o iframe não recarrega.
+  const av = state.previewAvancado ? "1" : "0";
+  const alerta = previewAlertaAtivo(t);
+  const alertaKey = alerta
+    ? `${alerta.quando}|${alerta.rota ?? ""}|${state.alertaIgnorado[t.id] === alerta.quando ? 1 : 0}`
+    : "";
+  const key = `${estado}|${url}|${estado === "no_ar" ? "" : av}|${erro ? (erro.msg ?? "") + (erro.detalhe ?? "") + (erro.podeConfigurar ? 1 : 0) : ""}`;
+  if (pane.dataset.key === key) {
+    atualizarOverlayConserto(t, estado);
+    if (estado === "no_ar" && (pane.dataset.avancado !== av || pane.dataset.alerta !== alertaKey)) {
+      pane.dataset.avancado = av;
+      pane.dataset.alerta = alertaKey;
+      const barEl = pane.querySelector(".preview-bar");
+      if (barEl) {
+        barEl.outerHTML = previewBarHtml(t, estado, url);
+        document.querySelector("#preview-strip")?.remove();
+        const strip = previewStripHtml(t);
+        if (strip) pane.querySelector(".preview-bar")?.insertAdjacentHTML("afterend", strip);
+      }
+      const footEl = pane.querySelector(".preview-foot");
+      if (footEl) footEl.outerHTML = previewFootHtml(t);
+    }
+    return; // não recarregar o iframe à toa
+  }
   pane.dataset.key = key;
-  if (mostra) {
+  pane.dataset.avancado = av;
+  pane.dataset.alerta = alertaKey;
+  const bar = previewBarHtml(t, estado, url);
+
+  if (estado === "no_ar") {
     pane.innerHTML = `
-      <div class="preview-bar">
-        <div class="url"><span class="dot"></span><input class="url-input" id="preview-url" data-task="${esc(t.id)}" value="${esc(url)}" spellcheck="false" autocomplete="off" aria-label="Endereço do preview (digite e Enter para navegar)"></div>
-        <button class="btn sm ghost" data-act="reload-preview">Recarregar</button>
-        <button class="btn sm ghost" data-act="restart-preview" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>${busy ? "Reiniciando…" : "Reiniciar"}</button>
-        <button class="btn sm ghost" data-act="toggle-preview-logs" data-task="${esc(t.id)}">Logs</button>
-        <a class="btn sm" id="preview-open" href="${esc(url)}" target="_blank" rel="noreferrer">Abrir no navegador</a>
-      </div>
+      ${bar}
+      ${previewStripHtml(t)}
       <iframe id="preview-frame" src="${esc(url)}" title="Preview do app"></iframe>
       ${previewLogsHtml(t)}
-      <div class="preview-foot"><span class="dot"></span> Preview gerenciado pelo Inhouse · espaço ${t.espaco} · digite um endereço e Enter para navegar</div>`;
-  } else if (config) {
-    // Agente preparando o preview — o progresso aparece no chat da tarefa.
+      ${previewFootHtml(t)}`;
+  } else if (estado === "antes") {
     pane.innerHTML = `
-      <div class="preview-bar"><div class="url muted">preparando…</div></div>
-      <div class="preview-empty">
-        <p><span class="spinner"></span> O Claude está preparando o preview deste projeto. Acompanhe no chat ao lado.</p>
-      </div>`;
-  } else if (!naEtapaDeTeste) {
-    // Antes do "Seu teste": o agente ainda vai subir e conferir o app.
-    pane.innerHTML = `
-      <div class="preview-bar"><div class="url muted">preview em breve</div></div>
+      ${bar}
       <div class="preview-empty">
         <p>O preview fica pronto na etapa <b>Seu teste</b>.</p>
         <p class="preview-hint">O Claude sobe o app e confere as telas antes de você abrir — assim você testa algo que já funciona.</p>
       </div>`;
-  } else if (erro) {
-    // No teste, uma tentativa manual não subiu: sem susto, com uma saída — e agora
-    // com o erro técnico real (status HTTP + rota + trecho do corpo) e os logs.
-    const cab = (erro.status ? `HTTP ${erro.status}` : "") + (erro.rota ? `${erro.status ? " " : ""}em ${erro.rota}` : "");
-    const tec = erro.detalhe || cab
-      ? `<pre class="preview-detalhe">${esc((cab ? cab + "\n" : "") + (erro.detalhe || ""))}</pre>`
-      : "";
+  } else if (estado === "preparando") {
     pane.innerHTML = `
-      <div class="preview-bar">
-        <div class="url muted">sem preview</div>
-        <button class="btn sm ghost" data-act="toggle-preview-logs" data-task="${esc(t.id)}">Logs</button>
-      </div>
+      ${bar}
       <div class="preview-empty">
-        <p>${esc(erro.msg)}</p>
+        <p><span class="spinner"></span> O Claude está deixando o app pronto para você. Acompanhe no chat ao lado.</p>
+      </div>`;
+  } else if (estado === "consertando") {
+    pane.innerHTML = `
+      ${bar}
+      <div class="preview-empty conserto" id="preview-overlay">
+        <p>⚙️ O app teve um problema — <b>o Claude já está consertando</b>${t.preview?.tentativa ? ` (tentativa ${t.preview.tentativa} de 2)` : ""}.</p>
+        <p class="preview-hint">Você não precisa fazer nada. Acompanhe no chat ao lado.</p>
+      </div>
+      ${previewLogsHtml(t)}`;
+  } else if (estado === "problema") {
+    const cab = (erro?.status ? `HTTP ${erro.status}` : "") + (erro?.rota ? `${erro?.status ? " " : ""}em ${erro.rota}` : "");
+    const tec =
+      state.previewAvancado && (erro?.detalhe || cab)
+        ? `<pre class="preview-detalhe">${esc((cab ? cab + "\n" : "") + (erro?.detalhe || ""))}</pre>`
+        : "";
+    pane.innerHTML = `
+      ${bar}
+      <div class="preview-empty">
+        <p>O app não conseguiu ficar no ar.</p>
+        ${erro?.msg ? `<p class="preview-hint">${esc(erro.msg)}</p>` : ""}
         ${tec}
-        ${erro.podeConfigurar
-          ? `<p class="preview-hint">Posso pedir ao Claude para preparar e abrir o preview deste projeto.</p>
-             <button class="btn primary" data-act="configure-preview" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>Pedir ao Claude para configurar o preview</button>
-             <button class="btn ghost sm" data-act="start-preview" data-task="${esc(t.id)}">Tentar de novo</button>`
-          : `<button class="btn primary" data-act="start-preview" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>${busy ? `<span class="spinner"></span> Iniciando…` : "Tentar de novo"}</button>`}
+        <button class="btn primary" data-act="fix-preview" data-task="${esc(t.id)}">Pedir para o Claude consertar</button>
+        ${erro?.podeConfigurar ? `<button class="btn ghost sm" data-act="configure-preview" data-task="${esc(t.id)}">Pedir para o Claude preparar o preview</button>` : ""}
+        ${state.previewAvancado ? `<button class="btn ghost sm" data-act="start-preview" data-task="${esc(t.id)}">Tentar de novo</button>` : ""}
       </div>
       ${previewLogsHtml(t)}`;
-  } else {
-    // No teste, mas sem preview no ar (ex.: server reiniciou): fallback manual.
+  } else if (estado === "sem_tela") {
     pane.innerHTML = `
-      <div class="preview-bar">
-        <div class="url muted">preview parado</div>
-        <button class="btn sm ghost" data-act="toggle-preview-logs" data-task="${esc(t.id)}">Logs</button>
-      </div>
+      ${bar}
       <div class="preview-empty">
-        <p>O preview roda o app deste espaço isolado, sem afetar as outras tarefas.</p>
-        <button class="btn primary" data-act="start-preview" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>${busy ? `<span class="spinner"></span> Iniciando…` : "Iniciar preview"}</button>
+        <p>Este projeto não tem uma tela para mostrar (ele funciona por dentro, como um serviço).</p>
+        <p class="preview-hint">Você ainda pode testar pedindo verificações no chat.</p>
+        ${erro?.podeConfigurar ? `<button class="btn ghost sm" data-act="configure-preview" data-task="${esc(t.id)}">Pedir para o Claude preparar o preview</button>` : ""}
+      </div>`;
+  } else {
+    // "parado": no teste/modo livre, preview desligado (ex.: o Inhouse reiniciou).
+    pane.innerHTML = `
+      ${bar}
+      <div class="preview-empty">
+        <p>O preview está desligado.</p>
+        <p class="preview-hint">É seguro ligar — ele roda só neste espaço isolado, sem afetar o resto.</p>
+        <button class="btn primary" data-act="start-preview" data-task="${esc(t.id)}">Ligar preview</button>
       </div>
       ${previewLogsHtml(t)}`;
+  }
+}
+
+/** Rodapé do preview (varia com a view — trocado por DOM direto no toggle). */
+function previewFootHtml(t) {
+  return `<div class="preview-foot"><span class="dot ok"></span> ${
+    state.previewAvancado
+      ? `Preview gerenciado pelo Inhouse · espaço ${t.espaco} · digite um endereço e Enter para navegar`
+      : "O Inhouse cuida deste preview para você"
+  }</div>`;
+}
+
+/** Atualiza o contador de tentativa do conserto por DOM direto (sem rebuild). */
+function atualizarOverlayConserto(t, estado) {
+  if (estado !== "consertando") return;
+  const el = document.querySelector("#preview-overlay p b");
+  const p = el?.parentElement;
+  if (p && t.preview?.tentativa) {
+    p.innerHTML = `⚙️ O app teve um problema — <b>o Claude já está consertando</b> (tentativa ${t.preview.tentativa} de 2).`;
   }
 }
 
@@ -2197,7 +2462,9 @@ function updateComposer(root, t) {
           ? "Mande outra instrução — entra assim que ele terminar…"
           : t.status === "falhou" && t.pausadaManual
             ? "Escreva um ajuste e envie (ou clique em Retomar acima)…"
-            : "Diga o que fazer… (pode pedir /review, /qa — ou Publicar acima)";
+            : t.status === "falhou"
+              ? "O passo falhou — descreva um contorno e envie (ou Tentar de novo no aviso)…"
+              : "Diga o que fazer… (pode pedir /review, /qa — ou Publicar acima)";
     }
   } else if (t.status === "aguardando" && t.step === "aprovacao") {
     enabled = true;
@@ -2205,6 +2472,10 @@ function updateComposer(root, t) {
   } else if (t.status === "aguardando" && t.step === "teste") {
     enabled = true;
     ph = "Escreva o que ajustar — enviar devolve a tarefa pro Claude";
+  } else if (t.aguardandoPedido && t.status === "aguardando") {
+    // Acabou de mudar de Livre para Com etapas: o próximo pedido inicia a esteira.
+    enabled = true;
+    ph = "Escreva o próximo pedido — ele vira o plano para a sua aprovação";
   } else if (t.step === "execucao" && (t.status === "rodando" || t.status === "aguardando")) {
     // Só na execução o servidor enfileira mensagens de steering.
     enabled = true;
@@ -2220,14 +2491,44 @@ function updateComposer(root, t) {
     ph = enabled
       ? "Escreva um ajuste (opcional) e clique em Retomar acima…"
       : "Pausado — clique em “Retomar” acima para continuar.";
-  } else if (t.status === "falhou") ph = "O passo falhou — use “Tentar de novo” acima.";
-  else if (t.step === "publicar") ph = "Tudo pronto — é só clicar em Publicar.";
+  } else if (t.status === "falhou") {
+    // Contorno pelo chat em QUALQUER falha: enviar re-roda o passo certo com a
+    // sua instrução — você nunca fica refém do "Tentar de novo".
+    enabled = true;
+    ph = "O passo falhou — descreva um contorno e envie (o Claude retoma com a sua instrução)…";
+  } else if (t.step === "publicar") ph = "Tudo pronto — é só clicar em Publicar.";
   else ph = "A tarefa está parada.";
   input.disabled = !enabled;
   input.placeholder = ph;
-  if (btn) btn.disabled = !enabled;
+  // UM botão que se transforma (padrão dos chats de IA): ↑ envia; enquanto o
+  // Claude trabalha num passo automático vira ■ Parar — interrompe na hora
+  // (retomável). Enter no teclado continua ENVIANDO a mensagem (steering).
+  if (btn) {
+    const podePausar =
+      t.status === "rodando" && !HUMAN_STEPS.includes(t.step) && t.step !== "publicar";
+    btn.classList.toggle("stop", podePausar);
+    btn.type = podePausar ? "button" : "submit";
+    btn.textContent = podePausar ? "" : "↑"; // no modo parar, o quadradinho é desenhado pelo CSS
+    btn.title = podePausar
+      ? "Parar o Claude agora — dá para retomar depois (Enter ainda envia a mensagem)"
+      : "Enviar";
+    btn.dataset.task = t.id;
+    if (podePausar) btn.dataset.act = "pause";
+    else delete btn.dataset.act;
+    btn.disabled = podePausar ? false : !enabled;
+  }
   const attach = $("#composer-attach", root);
   if (attach) attach.disabled = !enabled;
+  // Chip de esforço (padrão dos chats): modelo (informativo) + nível atual.
+  const eff = $("#composer-effort", root);
+  if (eff) {
+    const ativo = t.esforco || effortMaquina(t);
+    const modelo = modeloDaTask(t);
+    eff.dataset.task = t.id;
+    eff.innerHTML = `${modelo ? `<b>${esc(modelo)}</b> ` : ""}${esc(EFFORT_LABEL[ativo] || "Esforço")} <span class="car">▾</span>`;
+    const terminal = t.status === "concluida" || t.status === "cancelada";
+    eff.disabled = terminal;
+  }
   renderAnexos("composer");
   autoGrow(input);
 }
@@ -2285,6 +2586,76 @@ const actions = {
   "approve-test": (btn) => taskAction(btn.dataset.task, { action: "approve_test" }),
   "retry": (btn) => taskAction(btn.dataset.task, { action: "retry" }),
   "pause": (btn) => taskAction(btn.dataset.task, { action: "pause" }),
+  // Seletor de esforço no composer: os mesmos níveis do Claude, com tradução.
+  "toggle-effort": (btn) => {
+    const t = getTask(btn.dataset.task);
+    const pop = document.querySelector("#effort-pop");
+    if (!t || !pop) return;
+    if (pop.classList.contains("open")) { pop.classList.remove("open"); return; }
+    const maquina = effortMaquina(t);
+    const ativo = t.esforco || maquina;
+    const niveis = ["low", "medium", "high", "xhigh", ...(ativo === "max" || maquina === "max" ? ["max"] : [])];
+    pop.innerHTML = `
+      <div class="tit">Esforço do Claude nesta tarefa</div>
+      ${niveis.map((n) => `
+        <button type="button" class="opt${n === ativo ? " sel" : ""}" data-act="set-esforco" data-task="${esc(t.id)}" data-nivel="${n}">
+          <span><span class="t">${EFFORT_LABEL[n]}${n === maquina ? ` <span class="tag">padrão da sua máquina</span>` : ""}</span>
+          <span class="d">${EFFORT_DESC[n]}</span></span>
+          ${n === ativo ? `<span class="check">✓</span>` : ""}
+        </button>`).join("")}
+      <div class="foot">Vale para os próximos passos <b>desta tarefa</b> · não muda a configuração da sua máquina</div>`;
+    pop.classList.add("open");
+  },
+  "set-esforco": (btn) => {
+    document.querySelector("#effort-pop")?.classList.remove("open");
+    taskAction(btn.dataset.task, { action: "set_esforco", nivel: btn.dataset.nivel });
+  },
+  // Chip do Modo na barra das etapas: menu com as duas opções + confirmação.
+  "toggle-modo-pop": (btn) => {
+    const t = getTask(btn.dataset.task);
+    const pop = document.querySelector(`#modo-pop-${CSS.escape(btn.dataset.task)}`);
+    if (!t || !pop) return;
+    if (pop.classList.contains("open")) { pop.classList.remove("open"); return; }
+    const livre = t.modo === "livre";
+    const opt = (modo, sel, titulo, desc) => `
+      <button type="button" class="opt${sel ? " sel" : ""}" data-act="escolher-modo" data-task="${esc(t.id)}" data-modo="${modo}">
+        <span><span class="t">${titulo}</span><span class="d">${desc}</span></span>
+        ${sel ? `<span class="check">✓</span>` : ""}
+      </button>`;
+    pop.innerHTML = `
+      <div class="tit">Como o Claude trabalha nesta tarefa</div>
+      ${opt("esteira", !livre, "🛤️ Com etapas", "Plano → sua aprovação → execução → verificações → seu teste. Mais seguro para mudanças grandes.")}
+      ${opt("livre", livre, "⚡ Livre", "Você conduz direto pelo chat, sem plano nem porteiras. Mais ágil para ajustes e exploração.")}
+      <div class="foot">Publicar <b>sempre</b> pede a sua confirmação, em qualquer modo.</div>`;
+    pop.classList.add("open");
+  },
+  "escolher-modo": async (btn) => {
+    document.querySelectorAll(".modo-pop.open").forEach((p) => p.classList.remove("open"));
+    const t = getTask(btn.dataset.task);
+    const modo = btn.dataset.modo;
+    if (!t || (t.modo === "livre" ? "livre" : "esteira") === modo) return;
+    const ok = await confirmar(
+      modo === "livre"
+        ? {
+            titulo: "Mudar para o modo Livre?",
+            corpo:
+              "As etapas desta tarefa deixam de valer — você passa a conduzir o Claude direto pelo chat. Tudo o que já foi feito fica (mesmo espaço, mesma conversa). Publicar continua pedindo a sua confirmação.",
+            textoConfirmar: "Mudar para Livre",
+          }
+        : {
+            titulo: "Mudar para o modo Com etapas?",
+            corpo:
+              "O seu próximo pedido vira uma tarefa organizada: o Claude escreve o plano, você aprova, ele executa e verifica tudo antes do seu teste. Tudo o que já foi feito fica (mesmo espaço, mesma conversa).",
+            textoConfirmar: "Mudar para Com etapas",
+          },
+    );
+    if (ok) taskAction(t.id, { action: "set_modo", modo });
+  },
+  "fechar-falha": (btn) => {
+    const t = getTask(btn.dataset.task);
+    if (t) state.falhaFechada[t.id] = chaveFalha(t);
+    render();
+  },
   "set-modo": (btn) => { state.novaTarefaModo = btn.dataset.modo === "livre" ? "livre" : "esteira"; render(); },
   "wf-ativar": async (btn) => {
     const pid = selectedProjectId();
@@ -2529,29 +2900,20 @@ const actions = {
     const id = btn.dataset.task;
     if (state.busy[`preview:${id}`]) return;
     state.busy[`preview:${id}`] = true;
-    delete state.previewErro[id];
     render();
-    // Fetch direto (não o api()): precisamos do corpo mesmo em erro para saber
-    // se dá para oferecer a configuração pelo agente (degradação graciosa).
-    let body = null;
+    // Fetch direto (não o api()): o estado de erro chega pelo SSE preview_status
+    // (fonte única) — aqui só tratamos rede fora do ar.
     try {
       const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/preview/start`, { method: "POST" });
       setOnline(true);
-      body = await res.json().catch(() => null);
+      const body = await res.json().catch(() => null);
       if (res.ok && body?.url) {
         const t = getTask(id);
         if (t) t.previewUrl = body.url;
-      } else {
-        state.previewErro[id] = {
-          msg: body?.error || "Não foi possível abrir o preview.",
-          podeConfigurar: !!body?.podeConfigurarComAgente,
-          detalhe: body?.detalhe,
-          status: body?.status,
-          rota: body?.rota,
-        };
       }
     } catch {
       setOnline(false);
+      toast("Sem conexão com o Inhouse — verifique se ele está rodando.");
     }
     delete state.busy[`preview:${id}`];
     render();
@@ -2560,30 +2922,19 @@ const actions = {
     const id = btn.dataset.task;
     if (state.busy[`preview:${id}`] || state.busy[`preview-config:${id}`]) return;
     state.busy[`preview-config:${id}`] = true;
-    delete state.previewErro[id];
     render();
-    // Fetch direto (não o api()): pode demorar (o agente lê o projeto) e precisamos
-    // do corpo mesmo em erro — se o agente concluir "não há preview", paramos de oferecer.
-    let body = null;
+    // Pode demorar (o agente lê o projeto); o desfecho chega pelo SSE preview_status.
     try {
       const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/preview/configure`, { method: "POST" });
       setOnline(true);
-      body = await res.json().catch(() => null);
+      const body = await res.json().catch(() => null);
       if (res.ok && body?.url) {
         const t = getTask(id);
         if (t) t.previewUrl = body.url;
-      } else {
-        state.previewErro[id] = {
-          msg: body?.error || "O preview ainda não subiu.",
-          podeConfigurar: !!body?.podeConfigurarComAgente,
-          detalhe: body?.detalhe,
-          status: body?.status,
-          rota: body?.rota,
-        };
       }
     } catch {
       setOnline(false);
-      state.previewErro[id] = { msg: "Não deu para configurar o preview agora.", podeConfigurar: true };
+      toast("Sem conexão com o Inhouse — verifique se ele está rodando.");
     }
     delete state.busy[`preview-config:${id}`];
     render();
@@ -2596,31 +2947,76 @@ const actions = {
     const id = btn.dataset.task;
     if (state.busy[`preview:${id}`]) return;
     state.busy[`preview:${id}`] = true;
-    delete state.previewErro[id];
     render();
-    let body = null;
     try {
-      // Derruba o que estiver no ar e sobe fresco (o start reaproveitaria um vivo).
-      await fetch(`/api/tasks/${encodeURIComponent(id)}/preview/stop`, { method: "POST" });
-      const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/preview/start`, { method: "POST" });
+      // Reinício ATÔMICO no server: preserva o registro e tenta manter a porta.
+      const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/preview/restart`, { method: "POST" });
       setOnline(true);
-      body = await res.json().catch(() => null);
+      const body = await res.json().catch(() => null);
       if (res.ok && body?.url) {
         const t = getTask(id);
         if (t) t.previewUrl = body.url;
-      } else {
-        state.previewErro[id] = {
-          msg: body?.error || "Não foi possível reiniciar o preview.",
-          podeConfigurar: !!body?.podeConfigurarComAgente,
-          detalhe: body?.detalhe,
-          status: body?.status,
-          rota: body?.rota,
-        };
       }
     } catch {
       setOnline(false);
+      toast("Sem conexão com o Inhouse — verifique se ele está rodando.");
     }
     delete state.busy[`preview:${id}`];
+    render();
+  },
+  // "Algo quebrou?" / cards / faixa de alerta: pede o conserto do preview.
+  // A rota vem do alerta detectado (data-rota) ou da barra de endereço — o
+  // Claude confere exatamente a tela onde você estava.
+  "fix-preview": async (btn) => {
+    const id = btn.dataset.task;
+    if (state.busy[`fix-preview:${id}`]) return;
+    const t = getTask(id);
+    let rota = btn.dataset.rota;
+    const descricao = btn.dataset.desc;
+    if (!rota) {
+      const input = document.querySelector("#preview-url");
+      if (input && t?.previewUrl) {
+        try {
+          const u = new URL(input.value.trim(), t.previewUrl);
+          if (u.pathname && u.pathname !== "/") rota = u.pathname;
+        } catch {
+          // endereço malformado: segue sem rota (o Claude acha pelo registro)
+        }
+      }
+    }
+    state.busy[`fix-preview:${id}`] = true;
+    try {
+      await taskAction(id, {
+        action: "fix_preview",
+        ...(rota ? { rota } : {}),
+        ...(descricao ? { descricao } : {}),
+      });
+    } finally {
+      delete state.busy[`fix-preview:${id}`];
+    }
+  },
+  // ⌂ da view avançada: volta o iframe para a tela inicial do app.
+  "home-preview": (btn) => {
+    const t = getTask(btn.dataset.task);
+    const f = $("#preview-frame");
+    if (!t?.previewUrl || !f) return;
+    f.src = t.previewUrl;
+    const input = document.querySelector("#preview-url");
+    if (input) input.value = t.previewUrl;
+    const link = document.querySelector("#preview-open");
+    if (link) link.href = t.previewUrl;
+  },
+  // "Ignorar" da faixa de alerta: recolhe a faixa (o botão continua âmbar até
+  // o próximo start limpo do preview).
+  "ignorar-alerta": (btn) => {
+    const t = getTask(btn.dataset.task);
+    if (t?.preview?.alerta) state.alertaIgnorado[t.id] = t.preview.alerta.quando;
+    render();
+  },
+  "toggle-preview-avancado": () => {
+    state.previewAvancado = !state.previewAvancado;
+    if (state.previewAvancado) localStorage.setItem("inhouse.previewAvancado", "1");
+    else localStorage.removeItem("inhouse.previewAvancado");
     render();
   },
   "toggle-preview-logs": async (btn) => {
@@ -2796,7 +3192,10 @@ document.addEventListener("submit", async (e) => {
     }
     input.value = "";
     autoGrow(input);
-    if (t.status === "aguardando" && (t.step === "aprovacao" || t.step === "teste")) {
+    // Contorno numa falha da esteira: enviar = "pedir mudanças" (o servidor
+    // roteia a mensagem para re-rodar o passo que falhou, com a sua orientação).
+    const contornoFalha = t.modo !== "livre" && t.status === "falhou" && !t.pausadaManual;
+    if ((t.status === "aguardando" && (t.step === "aprovacao" || t.step === "teste")) || contornoFalha) {
       pushLocalUser(t.id, text);
       taskAction(t.id, { action: "request_changes", message: text, ...(anexos.length ? { anexos } : {}) });
     } else {
@@ -2871,6 +3270,17 @@ document.addEventListener("click", (e) => {
 document.addEventListener("click", (e) => {
   if (e.target.closest?.('[data-act="proj-menu"]') || e.target.closest?.(".proj-menu-pop")) return;
   document.querySelectorAll(".proj-menu-pop.open").forEach((p) => p.classList.remove("open"));
+});
+// Fecha os popovers de esforço/modo ao clicar fora deles.
+document.addEventListener("click", (e) => {
+  if (
+    e.target.closest?.('[data-act="toggle-effort"]') ||
+    e.target.closest?.('[data-act="toggle-modo-pop"]') ||
+    e.target.closest?.(".mini-pop")
+  ) {
+    return;
+  }
+  document.querySelectorAll(".mini-pop.open").forEach((p) => p.classList.remove("open"));
 });
 // Arrastar-e-soltar arquivos direto na caixa de nova tarefa ou no compositor.
 document.addEventListener("dragover", (e) => {

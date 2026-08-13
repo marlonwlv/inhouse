@@ -8,26 +8,34 @@
  * (Agente B). Toda transição atualiza o store e faz broadcast de task_updated.
  */
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
-import type { GateResult, Step, Task, TaskAction, TaskAnexo, TranscriptItem } from "../../shared/types.js";
-import { STEP_LABELS, isHumanStep, proximoStep, rodaDesign } from "../../shared/types.js";
+import type { EsforcoNivel, GateResult, Step, Task, TaskAction, TaskAnexo, TranscriptItem } from "../../shared/types.js";
+import { ESFORCO_NIVEIS, STEP_LABELS, isHumanStep, proximoStep, rodaDesign } from "../../shared/types.js";
 import {
   createPermissionGate,
   createPreviewSetupGate,
   finishAllForTask,
   resolvePermission,
 } from "../claude/permissions.js";
+import { createPreviewMcp } from "../claude/previewMcp.js";
 import { abortPhase, runPhase } from "../claude/runner.js";
 import { GATE_FIX_SAFETY_ROUNDS } from "../config.js";
+import { isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
 import { runGates } from "../services/gates.js";
 import {
+  adicionarHealthPath,
   aprenderReceita,
   attemptStart,
+  previewLogs,
+  previewStatus,
   resolvePreviewConfig,
+  restartPreview,
   startPreview,
   stopPreview,
   verificarSaude,
 } from "../services/preview.js";
+import { previewEvents, setPreviewInfo } from "../services/previewState.js";
+import { lastLines } from "../services/proc.js";
 import { publishTask } from "../services/publish.js";
 import { createEspaco, removeEspaco, slugify } from "../services/worktrees.js";
 import * as store from "../store.js";
@@ -38,6 +46,7 @@ import { activeConfig, activeGates } from "./library.js";
 import {
   anexosBloco,
   changesPrompt,
+  consertoPreviewPrompt,
   consolidarPlanoPrompt,
   consolidarProdutoPrompt,
   especPrompt,
@@ -58,6 +67,7 @@ import {
   prototipoPrompt,
   skillGatePrompt,
   skillPlanoPrompt,
+  systemAppend,
 } from "./phases.js";
 
 /**
@@ -72,6 +82,35 @@ const SKILL_PHASE_OPTS = {
 
 /** Mensagens de steering enfileiradas por tarefa (entram no próximo resume da execução). */
 const steerQueue = new Map<string, string[]>();
+
+/** Rótulos pt-BR dos níveis de esforço (mesmos do Claude). */
+const ESFORCO_LABEL: Record<EsforcoNivel, string> = {
+  low: "Baixo",
+  medium: "Médio",
+  high: "Alto",
+  xhigh: "Extra alto",
+  max: "Máximo",
+};
+
+/**
+ * Opções de fase "mão na massa": ferramentas de preview (MCP in-process) +
+ * system prompt com identidade/regras/bloco de estado. `reiniciar: false` nas
+ * fases em que o ciclo MECÂNICO da esteira comanda o preview (runPreviewCheck).
+ * Fases de planejamento (espec/plano/protótipo) e juiz/gerar NÃO usam isto.
+ */
+function previewPhaseOpts(
+  taskId: string,
+  opts: { reiniciar?: boolean } = {},
+): { mcpServers?: Record<string, ReturnType<typeof createPreviewMcp>>; systemPromptAppend?: string } {
+  // Modo fake: o fakeRunPhase nem monta Options — não instancie o MCP à toa.
+  if (isFakeModelActive()) return {};
+  const task = store.getTask(taskId);
+  if (!task) return {};
+  return {
+    mcpServers: { inhouse: createPreviewMcp(taskId, { permitirReiniciar: opts.reiniciar !== false }) },
+    systemPromptAppend: systemAppend(task, previewStatus(taskId)),
+  };
+}
 
 /** Tarefas cujo usuário pediu "ir direto ao plano" (pula a cadeia de reviews). */
 const planoDireto = new Set<string>();
@@ -211,6 +250,11 @@ function drainSteer(taskId: string): string[] {
 function gateComStatus(taskId: string): CanUseTool {
   const gate = createPermissionGate(taskId);
   return async (toolName, input, options) => {
+    // Ferramentas do próprio Inhouse são auto-aprovadas na hora — sem flip de
+    // status (senão cada preview_status piscaria "aguardando" na UI).
+    if (toolName.startsWith("mcp__inhouse__")) {
+      return gate(toolName, input, options);
+    }
     if (store.getTask(taskId)?.status === "rodando") {
       patch(taskId, { status: "aguardando" });
     }
@@ -515,7 +559,16 @@ async function runPrototipo(taskId: string, feedback?: string): Promise<boolean>
 async function runExecucao(
   taskId: string,
   prompt: string,
-  opts?: { pularVerificacaoSemEdicao?: boolean },
+  opts?: {
+    pularVerificacaoSemEdicao?: boolean;
+    /** Gate custom (ex.: o de preview no conserto do teste — curl localhost sem porteira). */
+    gate?: CanUseTool;
+    /**
+     * Mudança pequena vinda do "Seu teste": em vez de re-rodar a esteira inteira,
+     * roda só os gates do projeto + health-check no preview VIVO (sem stop/start).
+     */
+    verificacaoLeve?: boolean;
+  },
 ): Promise<boolean> {
   const task = store.getTask(taskId);
   if (!task) return false;
@@ -536,7 +589,8 @@ async function runExecucao(
     prompt: promptFinal,
     permissionMode: "acceptEdits",
     resume: store.getTask(taskId)?.claudeSessionId,
-    canUseTool: gateComStatus(taskId),
+    canUseTool: opts?.gate ?? gateComStatus(taskId),
+    ...previewPhaseOpts(taskId),
   });
 
   if (cancelada(taskId)) return false;
@@ -557,8 +611,240 @@ async function runExecucao(
     pousarTeste(taskId);
     return true;
   }
+  // Caminho LEVE (mudança pequena no teste): gates do projeto + preview vivo.
+  if (opts?.verificacaoLeve) {
+    return runVerificacaoLeve(taskId);
+  }
   return runVerificacoes(taskId);
 }
+
+/**
+ * Verificação LEVE pós-conserto no "Seu teste": roda só os gates do PROJETO
+ * (TS/Lint/Testes — baratos) e confere a saúde do preview VIVO, sem derrubar
+ * o iframe nem re-rodar skill-gates caros. Gates reprovando → cai no caminho
+ * completo (aí a re-verificação pesada se justifica).
+ */
+async function runVerificacaoLeve(taskId: string): Promise<boolean> {
+  const task = store.getTask(taskId);
+  if (!task || cancelada(taskId)) return false;
+  const project = store.getProject(task.projectId);
+
+  sistema(taskId, "Conferindo a mudança (verificação rápida, sem derrubar o preview)…");
+  patch(taskId, { step: "verificacoes", status: "rodando", error: undefined });
+  const results = await runGates(taskId, task.worktreePath);
+  if (cancelada(taskId)) return false;
+  const anteriores = (store.getTask(taskId)?.gates ?? []).filter((g) => !results.some((r) => r.name === g.name));
+  patch(taskId, { gates: [...results, ...anteriores] });
+  if (results.some((g) => !g.ok)) {
+    sistema(taskId, "A mudança quebrou uma verificação do projeto — indo para a verificação completa.");
+    return runVerificacoes(taskId);
+  }
+
+  // Preview vivo: health-check sem stop/start; se caiu, tenta UM reinício.
+  if (project && (task.temUi ?? temUi(task.worktreePath))) {
+    const cfg = resolvePreviewConfig(project, task.worktreePath);
+    let url = store.getTask(taskId)?.previewUrl;
+    if (!url) {
+      try {
+        url = (await restartPreview(taskId)).url;
+      } catch {
+        url = undefined;
+      }
+    }
+    if (url) {
+      let saude = await verificarSaude(url, cfg);
+      if (cancelada(taskId)) return false;
+      if (!saude.ok) {
+        try {
+          url = (await restartPreview(taskId)).url;
+          saude = await verificarSaude(url, cfg);
+        } catch {
+          // reinício falhou: cai no conserto abaixo
+        }
+      }
+      if (!saude.ok) {
+        // Conserto automático contra o preview vivo; se não der, fallback humano.
+        return runConsertoPreview(taskId, {
+          origem: "saude",
+          detalhe: saude.detalhe ?? `A tela ${saude.rota ?? "/"} respondeu com erro${saude.status ? ` ${saude.status}` : ""}.`,
+          rota: saude.rota,
+        });
+      }
+    }
+  }
+  sistema(taskId, "Tudo certo — de volta pro seu teste.");
+  // Verificação leve saudável também rearma o conserto automático e limpa o alerta.
+  patch(taskId, { previewFixRounds: 0 });
+  const stOk = previewStatus(taskId);
+  if (stOk.status === "no_ar" && stOk.url) {
+    setPreviewInfo(taskId, { status: "no_ar", url: stOk.url, porta: stOk.porta });
+  }
+  pousarTeste(taskId);
+  return true;
+}
+
+/** Máximo de consertos AUTOMÁTICOS de preview em sequência (zera quando um dá certo). */
+const PREVIEW_FIX_MAX = 2;
+/** Último conserto automático por tarefa (debounce — evita rajada de crashes). */
+const ultimoConsertoPreview = new Map<string, number>();
+/**
+ * Janela de custo: timestamps dos consertos AUTOMÁTICOS recentes por tarefa.
+ * Mesmo quando cada conserto "dá certo" (app que serve `/` e morre segundos
+ * depois), no máximo PREVIEW_FIX_JANELA_MAX disparos por janela — teto de
+ * tokens contra crash-loop com sucesso aparente.
+ */
+const consertosAutoRecentes = new Map<string, number[]>();
+const PREVIEW_FIX_JANELA_MS = 15 * 60 * 1000;
+const PREVIEW_FIX_JANELA_MAX = 3;
+
+/**
+ * Conserto do preview pelo agente (crash, rota 5xx ou reporte da pessoa):
+ * erro+logs vão inline no prompt, o gate de preview auto-aprova curl localhost,
+ * as tools de preview ficam disponíveis (reiniciar ON) e o próprio conserto é
+ * VERIFICADO contra o preview vivo antes de devolver a tarefa à pessoa.
+ * `voltarPara`: passo a restaurar ao final (default: pousarTeste / livre ocioso).
+ */
+async function runConsertoPreview(
+  taskId: string,
+  causa: { origem: "crash" | "saude" | "usuario"; detalhe: string; rota?: string },
+  opts: { voltarPara?: Step } = {},
+): Promise<boolean> {
+  const task = store.getTask(taskId);
+  if (!task || cancelada(taskId)) return false;
+  const rounds = (task.previewFixRounds ?? 0) + 1;
+  patch(taskId, { status: "rodando", previewFixRounds: rounds, error: undefined });
+  sistema(
+    taskId,
+    causa.origem === "usuario"
+      ? "Pedido recebido — vou consertar o preview…"
+      : `O preview apresentou um problema — vou tentar consertar sozinho (tentativa ${rounds} de ${PREVIEW_FIX_MAX})…`,
+  );
+  // Preview ainda VIVO (ex.: fix_preview com o server no ar): preserva URL/porta
+  // na transição — sem isto o espelho previewUrl era apagado e o agente ficava
+  // cego (preview_status sem URL) num server que continuava rodando.
+  const vivoAntes = previewStatus(taskId);
+  setPreviewInfo(taskId, {
+    status: "consertando",
+    tentativa: rounds,
+    ...(vivoAntes.status === "no_ar" ? { url: vivoAntes.url, porta: vivoAntes.porta } : {}),
+  });
+  // A rota afetada entra nos health-checks futuros (a tela quebrada nunca mais
+  // passa despercebida) — pendência antiga do plano de transparência.
+  if (causa.rota) adicionarHealthPath(task.projectId, causa.rota);
+
+  // NÃO drena o steer aqui: o conserto tem escopo estreito ("não mude nada além
+  // do necessário") — mensagens da pessoa esperam o próximo passo de trabalho
+  // normal, em vez de serem consumidas (e perdidas) por um conserto que pode falhar.
+  const r = await runPhase({
+    taskId,
+    cwd: task.worktreePath,
+    prompt: consertoPreviewPrompt(causa, lastLines(previewLogs(taskId), 80)),
+    permissionMode: "acceptEdits",
+    resume: store.getTask(taskId)?.claudeSessionId,
+    canUseTool: createPreviewSetupGate(taskId, gateComStatus(taskId)),
+    maxTurns: 30,
+    ...previewPhaseOpts(taskId),
+  });
+  if (cancelada(taskId)) return false;
+  if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
+  const veredito = r.success ? parseConserto(r.finalText) : { desistiu: true, motivo: r.errorMessage };
+
+  // Confirmação determinística: preview vivo (re-sobe se morreu) + saúde nas
+  // rotas que importam (healthPaths ∪ rota afetada).
+  const project = store.getProject(task.projectId);
+  let saudavel = false;
+  if (!veredito.desistiu && project) {
+    try {
+      const st = previewStatus(taskId);
+      const url = st.status === "no_ar" && st.url ? st.url : (await restartPreview(taskId)).url;
+      const cfg = resolvePreviewConfig(project, task.worktreePath);
+      const rotas = new Set(cfg?.healthPaths?.length ? cfg.healthPaths : ["/"]);
+      if (causa.rota) rotas.add(causa.rota);
+      saudavel = (await verificarSaude(url, { ...cfg, healthPaths: [...rotas] })).ok;
+    } catch {
+      saudavel = false;
+    }
+  }
+  if (cancelada(taskId)) return false;
+
+  const voltar = (): void => {
+    const t = store.getTask(taskId);
+    if (!t) return;
+    if (t.modo === "livre") patch(taskId, { status: "aguardando" });
+    else if (opts.voltarPara) patch(taskId, { step: opts.voltarPara, status: "aguardando" });
+    else pousarTeste(taskId);
+  };
+
+  if (saudavel) {
+    sistema(taskId, "Pronto — o preview voltou ao ar.");
+    patch(taskId, { previewFixRounds: 0 }); // deu certo: um crash futuro ganha tentativas novas
+    const st = previewStatus(taskId);
+    if (st.url) setPreviewInfo(taskId, { status: "no_ar", url: st.url, porta: st.porta });
+    voltar();
+    return true;
+  }
+  sistema(
+    taskId,
+    veredito.desistiu && veredito.motivo
+      ? `Não consegui consertar sozinho: ${veredito.motivo}`
+      : "Tentei consertar, mas o preview ainda não ficou saudável.",
+  );
+  setPreviewInfo(taskId, {
+    status: "problema",
+    erro: {
+      msg: "O preview continua com problema mesmo após o conserto automático. Veja o Registro (visão avançada) ou peça o conserto descrevendo o que aconteceu.",
+      rota: causa.rota,
+    },
+  });
+  voltar(); // a tarefa segue utilizável — sem fail()
+  return false;
+}
+
+/**
+ * Crash do dev server (previewEvents "crash"): dispara o conserto automático
+ * quando a tarefa está PARADA numa porteira (teste/publicar/livre "aguardando").
+ * Com uma fase rodando, não age — o [ESTADO] do próximo prompt já reflete a queda.
+ * Guardas anti-loop: cap de tentativas + debounce de 60s.
+ */
+function aoCrashDoPreview(taskId: string): void {
+  const task = store.getTask(taskId);
+  if (!task || isFakeModelActive() || cancelada(taskId)) return;
+  const emPorteira =
+    (task.step === "teste" || task.step === "publicar") && task.status === "aguardando";
+  const livreOcioso = task.modo === "livre" && task.status === "aguardando";
+  if (!emPorteira && !livreOcioso) return;
+
+  const agora = Date.now();
+  // Janela de custo: mesmo consertos "bem-sucedidos" contam — um app que sobe,
+  // passa no health-check e morre segundos depois não pode virar um loop de
+  // conserto de 30 turnos a cada 60s (teto: 3 disparos por 15 min).
+  const janela = (consertosAutoRecentes.get(taskId) ?? []).filter((t) => agora - t < PREVIEW_FIX_JANELA_MS);
+  if (
+    (task.previewFixRounds ?? 0) >= PREVIEW_FIX_MAX ||
+    agora - (ultimoConsertoPreview.get(taskId) ?? 0) < 60_000 ||
+    janela.length >= PREVIEW_FIX_JANELA_MAX
+  ) {
+    consertosAutoRecentes.set(taskId, janela);
+    sistema(
+      taskId,
+      'O preview caiu de novo e não vou insistir sozinho — veja o Registro na visão avançada ou clique em "Pedir para o Claude consertar".',
+    );
+    return;
+  }
+  ultimoConsertoPreview.set(taskId, agora);
+  janela.push(agora);
+  consertosAutoRecentes.set(taskId, janela);
+  const voltarPara = task.step;
+  fireAndForget(taskId, () =>
+    runConsertoPreview(
+      taskId,
+      { origem: "crash", detalhe: "O dev server do preview morreu sozinho." },
+      task.modo === "livre" ? {} : { voltarPara },
+    ),
+  );
+}
+
+previewEvents.on("crash", ({ taskId }: { taskId: string }) => aoCrashDoPreview(taskId));
 
 /**
  * Roda os skill-gates configurados (ex.: /review, /qa) que ainda NÃO passaram,
@@ -610,6 +896,7 @@ async function rodarSkillGates(taskId: string, passados: Map<string, GateResult>
       resume: atual.claudeSessionId,
       canUseTool: gateComStatus(taskId),
       ...SKILL_PHASE_OPTS,
+      ...previewPhaseOpts(taskId),
     });
     if (cancelada(taskId)) return false;
     if (rg.sessionId) store.updateTask(taskId, { claudeSessionId: rg.sessionId });
@@ -664,6 +951,7 @@ async function runGateFix(taskId: string, falhas: GateResult[]): Promise<{ desis
     permissionMode: "acceptEdits",
     resume: store.getTask(taskId)?.claudeSessionId,
     canUseTool: gateComStatus(taskId),
+    ...previewPhaseOpts(taskId),
   });
   if (cancelada(taskId)) return null;
   if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
@@ -807,6 +1095,8 @@ async function runPreviewCheck(taskId: string): Promise<boolean> {
       resume: atual.claudeSessionId,
       canUseTool: gate,
       maxTurns: 40,
+      // Ciclo MECÂNICO da esteira no comando do preview: reiniciar fica OFF.
+      ...previewPhaseOpts(taskId, { reiniciar: false }),
     });
     if (cancelada(taskId)) return false;
     if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
@@ -845,6 +1135,14 @@ async function runPreviewCheck(taskId: string): Promise<boolean> {
     if (cancelada(taskId)) return false;
     if (saude.ok) {
       sistema(taskId, "Preview no ar e conferido nas telas principais.");
+      // Ciclo de verificação saudável REARMA o conserto automático (sem isto,
+      // duas falhas antigas desligariam o conserto para o resto da vida da task)
+      // e LIMPA o alerta de erro (500 provocados pelo próprio exercício).
+      patch(taskId, { previewFixRounds: 0 });
+      const stOk = previewStatus(taskId);
+      if (stOk.status === "no_ar" && stOk.url) {
+        setPreviewInfo(taskId, { status: "no_ar", url: stOk.url, porta: stOk.porta });
+      }
       pousarTeste(taskId);
       return true;
     }
@@ -906,6 +1204,8 @@ async function runLivre(taskId: string, prompt: string): Promise<boolean> {
     canUseTool: gateComStatus(taskId),
     // settingSources [user, project] → o usuário pode invocar /review, /qa, etc. direto no chat.
     ...SKILL_PHASE_OPTS,
+    // "Roda a aplicação" no modo livre = as tools de preview (reiniciar liberado).
+    ...previewPhaseOpts(taskId),
   });
 
   if (cancelada(taskId)) return false;
@@ -1101,10 +1401,17 @@ async function runPreparacao(taskId: string): Promise<boolean> {
   const r = await runPhase({
     taskId,
     cwd: task.worktreePath,
-    prompt: preparacaoPrompt(),
+    // Orientações da pessoa (ex.: contorno após uma falha) entram no prompt.
+    prompt: (() => {
+      const extras = drainSteer(taskId);
+      return extras.length > 0
+        ? `${preparacaoPrompt()}\n\nMensagens que o usuário enviou (leve em conta):\n${extras.map((m) => `- ${m}`).join("\n")}`
+        : preparacaoPrompt();
+    })(),
     permissionMode: "acceptEdits",
     resume: store.getTask(taskId)?.claudeSessionId,
     canUseTool: gateComStatus(taskId),
+    ...previewPhaseOpts(taskId),
   });
 
   if (cancelada(taskId)) return false;
@@ -1181,16 +1488,65 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
         patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
         // Recado no Seu teste = conversa/steering: se o agente não mexer em código,
         // volta pro teste sem re-rodar as verificações (não perde a resposta, não gasta minutos).
-        fireAndForget(taskId, () => runExecucao(taskId, changesPrompt(msg), { pularVerificacaoSemEdicao: true }));
-      } else if (
-        (task.step === "execucao" || task.step === "verificacoes") &&
-        task.status === "falhou"
-      ) {
-        // A mensagem de falha das verificações sugere "pedir mudanças" — aceita
-        // aqui, voltando para a execução com a orientação do usuário.
+        // O agente recebe o estado do preview (URL/logs) e o gate de preview
+        // (curl localhost auto-aprovado); mudança pequena → verificação LEVE
+        // (gates do projeto + saúde do preview vivo, sem derrubar o iframe).
+        const st = previewStatus(taskId);
+        const ctx = {
+          url: st.url,
+          status: st.status,
+          ...(st.status === "problema" ? { logsTail: lastLines(previewLogs(taskId), 40) } : {}),
+        };
+        fireAndForget(taskId, () =>
+          runExecucao(taskId, changesPrompt(msg, ctx), {
+            pularVerificacaoSemEdicao: true,
+            verificacaoLeve: true,
+            gate: createPreviewSetupGate(taskId, gateComStatus(taskId)),
+          }),
+        );
+      } else if (task.status === "falhou" && !task.pausadaManual) {
+        // CONTORNO em QUALQUER falha: a mensagem re-roda o passo certo com a
+        // orientação da pessoa — ninguém fica refém do "Tentar de novo".
         usuario(taskId, msg);
-        patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined });
-        fireAndForget(taskId, () => runExecucao(taskId, changesPrompt(msg)));
+        if (task.step === "espec") {
+          // A espec nasce da descrição: a observação vira parte do pedido.
+          store.updateTask(taskId, {
+            description: `${task.description}\n\n[Observação do usuário após uma falha]: ${msg}`,
+          });
+          patch(taskId, { step: "espec", status: "rodando", error: undefined, pausadaPorTempo: undefined });
+          fireAndForget(taskId, () => pipelineFromEspec(taskId));
+        } else if (task.step === "plano") {
+          patch(taskId, { step: "plano", status: "rodando", error: undefined, pausadaPorTempo: undefined });
+          fireAndForget(taskId, () => runPlano(taskId, msg));
+        } else if (task.step === "detalhamento") {
+          // O detalhamento não recebe feedback direto: a orientação entra na fila
+          // e é consumida na execução (o passo re-roda agora).
+          const q = steerQueue.get(taskId) ?? [];
+          q.push(msg);
+          steerQueue.set(taskId, q);
+          patch(taskId, { step: "detalhamento", status: "rodando", error: undefined, pausadaPorTempo: undefined });
+          fireAndForget(taskId, () => runDetalhamento(taskId));
+        } else if (task.step === "prototipo") {
+          patch(taskId, { step: "prototipo", status: "rodando", error: undefined, pausadaPorTempo: undefined });
+          fireAndForget(taskId, () => runPrototipo(taskId, msg));
+        } else if (task.kind === "preparacao") {
+          // Preparação roda no checkout PRINCIPAL com prompt próprio — a
+          // orientação entra na fila e o passo re-roda agora.
+          const q = steerQueue.get(taskId) ?? [];
+          q.push(msg);
+          steerQueue.set(taskId, q);
+          patch(taskId, { status: "rodando", error: undefined, pausadaPorTempo: undefined });
+          fireAndForget(taskId, () => runPreparacao(taskId));
+        } else {
+          // execução/verificações — e falhas em passos humanos (ex.: publicar com
+          // conflito): volta pra execução com a orientação; mudança pequena segue
+          // o caminho leve (sem derrubar preview nem re-rodar a esteira inteira).
+          const leve = isHumanStep(task.step);
+          patch(taskId, { step: "execucao", status: "rodando", gateFixRounds: 0, error: undefined, pausadaPorTempo: undefined });
+          fireAndForget(taskId, () =>
+            runExecucao(taskId, changesPrompt(msg), leve ? { pularVerificacaoSemEdicao: true, verificacaoLeve: true } : {}),
+          );
+        }
       } else {
         throw new Error("Esta tarefa não está num ponto em que dá para pedir mudanças.");
       }
@@ -1203,6 +1559,97 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       }
       sistema(taskId, "Teste aprovado.");
       avancarAposTeste(taskId);
+      break;
+    }
+
+    case "set_esforco": {
+      const nivel = action.nivel as EsforcoNivel;
+      if (!ESFORCO_NIVEIS.includes(nivel)) throw new Error("Nível de esforço inválido.");
+      if (task.esforco === nivel) break;
+      patch(taskId, { esforco: nivel });
+      sistema(taskId, `Esforço desta tarefa: ${ESFORCO_LABEL[nivel]} — vale a partir do próximo passo.`);
+      break;
+    }
+
+    case "set_modo": {
+      if (action.modo !== "esteira" && action.modo !== "livre") throw new Error("Modo inválido.");
+      if (task.kind === "preparacao") throw new Error("A preparação do projeto não muda de modo.");
+      if (task.status === "concluida" || task.status === "cancelada" || task.arquivadaEm) {
+        throw new Error("Esta tarefa já foi finalizada.");
+      }
+      if (task.status === "rodando") {
+        throw new Error("Espere o Claude terminar este passo (ou clique em ■ para parar) antes de mudar o modo.");
+      }
+      const atualModo = task.modo ?? "esteira";
+      if (atualModo === action.modo) break;
+
+      pausaManual.delete(taskId);
+      steerQueue.delete(taskId);
+      if (action.modo === "livre") {
+        // Esteira → Livre: as etapas deixam de valer; a pessoa conduz pelo chat.
+        // Funciona em qualquer etapa PARADA — inclusive numa falha (contorno) e
+        // nas porteiras. Espaço, sessão e trabalho feito ficam.
+        patch(taskId, {
+          modo: "livre",
+          step: "execucao",
+          status: "aguardando",
+          error: undefined,
+          pausadaManual: undefined,
+          pausadaPorTempo: undefined,
+          aguardandoPedido: undefined,
+        });
+        sistema(
+          taskId,
+          "Você mudou esta tarefa para o modo Livre. As etapas deixaram de valer — é só dizer o que fazer. O plano e o que já foi executado continuam valendo como contexto.",
+        );
+      } else {
+        // Livre → Com etapas: NADA roda agora — o próximo pedido do chat vira a
+        // descrição e entra em espec → plano → aprovação (mesmo espaço/sessão).
+        patch(taskId, {
+          modo: "esteira",
+          step: "execucao",
+          status: "aguardando",
+          error: undefined,
+          pausadaManual: undefined,
+          pausadaPorTempo: undefined,
+          aguardandoPedido: true,
+        });
+        sistema(
+          taskId,
+          "Você mudou esta tarefa para o modo Com etapas. Escreva o próximo pedido — ele vira o plano para a sua aprovação.",
+        );
+      }
+      break;
+    }
+
+    case "fix_preview": {
+      // Conserto do preview pedido pela PESSOA (botão da UI): sem cap/debounce —
+      // é um pedido explícito. Vale nas porteiras de teste/publicar e no modo livre.
+      const emPorteira =
+        (task.step === "teste" || task.step === "publicar") && task.status === "aguardando";
+      const livreOcioso = task.modo === "livre" && task.status === "aguardando";
+      if (!emPorteira && !livreOcioso) {
+        throw new Error("Espere a tarefa parar (no seu teste ou no modo livre) para pedir o conserto do preview.");
+      }
+      // `descricao` pode vir do detector (linha de log) ou do alerta — vai como
+      // CAUSA do conserto, nunca como balão de "usuário" no chat (a pessoa não
+      // digitou aquilo).
+      const alerta = store.getTask(taskId)?.preview?.alerta;
+      const rota = action.rota?.trim() || alerta?.rota || store.getTask(taskId)?.preview?.erro?.rota;
+      const detalhe =
+        action.descricao?.trim() ||
+        alerta?.detalhe ||
+        store.getTask(taskId)?.preview?.erro?.detalhe ||
+        store.getTask(taskId)?.preview?.erro?.msg ||
+        "A pessoa reportou que o preview está com problema.";
+      const voltarPara = task.step;
+      fireAndForget(taskId, () =>
+        runConsertoPreview(
+          taskId,
+          { origem: "usuario", detalhe, ...(rota ? { rota } : {}) },
+          task.modo === "livre" ? {} : { voltarPara },
+        ),
+      );
       break;
     }
 
@@ -1427,12 +1874,41 @@ export async function steer(taskId: string, text: string, anexos?: TaskAnexo[]):
     return;
   }
 
-  // Esteira: enfileira quando a execução está em andamento OU pausada (retoma com o ajuste junto).
+  // Trocou de Livre para Com etapas: o PRÓXIMO pedido é este — vira a descrição
+  // e inicia a esteira (espec → plano → aprovação), no mesmo espaço e sessão.
+  if (task.aguardandoPedido) {
+    patch(taskId, {
+      aguardandoPedido: undefined,
+      description: msg,
+      step: "espec",
+      status: "rodando",
+      error: undefined,
+      gates: [],
+      gateFixRounds: 0,
+    });
+    fireAndForget(taskId, async () => {
+      if (!(await ensureEspaco(taskId))) return;
+      if (!(await runEspec(taskId))) return;
+      await runPlano(taskId);
+    });
+    return;
+  }
+
+  // Esteira: a mensagem SEMPRE entra na fila (consumida no próximo passo em que
+  // o Claude trabalhar — execução, correção de gates, conserto de preview).
+  // Antes, fora da execução ela era gravada no transcript e descartada em
+  // silêncio — a pessoa via a mensagem no chat e achava que foi entregue.
+  const q = steerQueue.get(taskId) ?? [];
+  q.push(msgFila);
+  steerQueue.set(taskId, q);
+
   const naExecucao = task.step === "execucao" && (task.status === "rodando" || task.status === "aguardando");
   const pausadaNaExecucao = task.step === "execucao" && task.status === "falhou" && !!task.pausadaManual;
-  if (naExecucao || pausadaNaExecucao) {
-    const q = steerQueue.get(taskId) ?? [];
-    q.push(msgFila);
-    steerQueue.set(taskId, q);
+  if (!naExecucao && !pausadaNaExecucao) {
+    // Honestidade: avisa que a mensagem espera o próximo passo (não some mais).
+    sistema(
+      taskId,
+      "Recebi — levo em conta no próximo passo em que o Claude trabalhar. Para mudar o plano/protótipo agora, use \"Pedir mudanças\" quando a tarefa parar numa porteira.",
+    );
   }
 }

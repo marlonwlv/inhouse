@@ -12,6 +12,7 @@ import { HOST, PORT, ensureDirs } from "./config.js";
 import { broadcast } from "./events.js";
 import { killBackgroundInstalls } from "./services/projects.js";
 import { stopAllPreviews } from "./services/preview.js";
+import { setPreviewInfo } from "./services/previewState.js";
 import { killInstallsDeEspaco } from "./services/worktrees.js";
 import { checarUpdate } from "./services/update.js";
 import { backfillSeVazio } from "./eval/coleta.js";
@@ -21,6 +22,16 @@ load();
 // Primeira subida com eval: tarefas históricas viram dados (backfill idempotente).
 backfillSeVazio();
 ensureDirs();
+
+// Reconciliação do preview no boot: o registry de processos nasce vazio, então
+// TODO preview persistido no state.json é necessariamente órfão (o server caiu
+// ou foi reiniciado) — sem isto a UI mostraria um iframe apontando para um
+// processo morto e o agente "saberia" uma URL antiga.
+for (const t of listTasks()) {
+  if (t.previewUrl || (t.preview && t.preview.status !== "parado" && t.preview.status !== "sem_tela")) {
+    setPreviewInfo(t.id, { status: "parado" });
+  }
+}
 
 const app = express();
 app.use(buildRouter());

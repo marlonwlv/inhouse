@@ -95,11 +95,39 @@ export function finishAllForTask(taskId: string, denyMessage = "A tarefa foi can
 }
 
 /**
+ * Ferramentas de preview do Inhouse (MCP in-process): seguras por construção —
+ * só leem estado/logs ou operam o processo que o PRÓPRIO Inhouse gerencia.
+ * Auto-aprovadas por LISTA EXATA de nomes (nunca por prefixo: um servidor MCP
+ * externo não pode "vestir" o namespace inhouse com uma tool nova). Defesa em
+ * profundidade com o strictMcpConfig do runner, que impede o carregamento de
+ * servidores externos por completo.
+ */
+const FERRAMENTAS_INHOUSE = new Set([
+  "mcp__inhouse__preview_status",
+  "mcp__inhouse__preview_logs",
+  "mcp__inhouse__preview_reiniciar",
+  "mcp__inhouse__preview_reportar_rota",
+]);
+
+function ehFerramentaInhouse(toolName: string): boolean {
+  return FERRAMENTAS_INHOUSE.has(toolName);
+}
+
+/**
  * Cria o callback canUseTool de uma tarefa: cada pedido do Claude vira um
  * PermissionRequest na UI e fica aguardando até decisão, timeout ou aborto.
  */
 export function createPermissionGate(taskId: string): CanUseTool {
   return async (toolName, input, options): Promise<PermissionResult> => {
+    // Ferramentas do próprio Inhouse: sem porteira (seguras por construção).
+    if (ehFerramentaInhouse(toolName)) {
+      registrarPermissao({ taskId, requestId: newId(), tool: toolName, esperaMs: 0, desfecho: "auto" });
+      return {
+        behavior: "allow",
+        updatedInput: input,
+        ...(options.toolUseID ? { toolUseID: options.toolUseID } : {}),
+      };
+    }
     // Modo auto da tarefa: concede sem perguntar, registrando no chat.
     if (getTask(taskId)?.autoAprovar) {
       const item = {
@@ -246,10 +274,11 @@ function sistemaChat(taskId: string, text: string): void {
  * Gate da fase de preview: o agente pode preparar o ambiente (env, docker,
  * migrations) com o setup seguro AUTO-APROVADO e o servidor de dev AUTO-NEGADO
  * (a guarda concreta da regra de ouro — quem sobe o preview é o Inhouse). O resto
- * cai no gate normal. NÃO mexe no step/status da esteira (roda dentro das verificações).
+ * cai no gate `base` (default: o gate normal; a esteira injeta gateComStatus para
+ * o status "aguardando" aparecer na UI). NÃO mexe no step/status da esteira.
  */
-export function createPreviewSetupGate(taskId: string): CanUseTool {
-  const base = createPermissionGate(taskId);
+export function createPreviewSetupGate(taskId: string, baseGate?: CanUseTool): CanUseTool {
+  const base = baseGate ?? createPermissionGate(taskId);
   return async (toolName, input, options): Promise<PermissionResult | null> => {
     if (toolName === "Bash") {
       const cmd = String((input as Record<string, unknown>)["command"] ?? "");

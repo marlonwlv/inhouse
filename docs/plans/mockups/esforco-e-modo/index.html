@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Protótipo v2 — Esforço no chat e Modo na esteira</title>
+<style>
+  :root{
+    --ground:#FAFAFA; --surface:#FFF; --surface-2:#F4F4F5; --ink:#18181B; --muted:#52525B;
+    --faint:#8E8E97; --line:#EAEAEC; --line-2:#DCDCE0; --brand:#18181B; --brand-ink:#FFF;
+    --amber:#8A4E06; --amber-soft:#FCF3E3; --amber-line:#F0E2C4;
+    --r:9px; --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    --shadow:0 4px 12px -4px rgba(24,24,27,.10),0 15px 40px -12px rgba(24,24,27,.14);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);font:14px/1.55 "Onest",system-ui,-apple-system,sans-serif;padding:34px 40px 90px}
+  h1{font-size:21px;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 28px;max-width:76ch}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin:40px 0 10px}
+  h2 .n{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:50%;background:var(--brand);color:#fff;font-size:11px;margin-right:6px}
+  .note{font-size:13px;color:var(--muted);margin:8px 0 0;max-width:82ch}
+  .note b{color:var(--ink)}
+  .frame{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:0 1px 2px rgba(24,24,27,.04)}
+
+  /* ---- faixa da tarefa (strip) ---- */
+  .strip{display:flex;align-items:center;gap:12px;padding:10px 16px;font-size:13px;flex-wrap:wrap;position:relative}
+  .pins{display:flex;align-items:center;gap:4px}
+  .pin{width:9px;height:9px;border-radius:50%;background:var(--line-2)}
+  .pin.done{background:var(--brand)}
+  .pin.now{background:var(--brand);box-shadow:0 0 0 4px rgba(24,24,27,.12)}
+  .pin.human{transform:rotate(45deg);border-radius:2px;background:var(--amber)}
+  .gap{flex:1}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);background:var(--surface-2);
+    border:1px solid transparent;border-radius:999px;padding:4px 11px;cursor:pointer;white-space:nowrap}
+  .chip:hover{border-color:var(--line-2)}
+  .chip .v{color:var(--ink);font-weight:600}
+  .chip .car{font-size:10px;color:var(--faint)}
+  .chip.static{cursor:default}
+  .chip.static:hover{border-color:transparent}
+
+  /* ---- composer ---- */
+  .composer{border:1px solid var(--line-2);border-radius:16px;background:var(--surface);padding:12px 14px 10px;max-width:640px;position:relative}
+  .composer .ta{color:var(--faint);padding:2px 2px 14px}
+  .composer .row{display:flex;align-items:center;gap:10px}
+  .icbtn{border:none;background:transparent;font-size:15px;color:var(--muted);cursor:pointer;padding:4px 6px;border-radius:7px}
+  .icbtn:hover{background:var(--surface-2)}
+  .effort{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted);cursor:pointer;padding:4px 8px;border-radius:8px}
+  .effort:hover{background:var(--surface-2)}
+  .effort .m{color:var(--ink);font-weight:600}
+  .send{width:34px;height:34px;border:none;border-radius:9px;background:var(--brand);color:#fff;display:grid;place-items:center;font-size:15px;cursor:pointer}
+
+  /* ---- popover ---- */
+  .pop{position:absolute;z-index:5;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:8px;width:330px}
+  .pop .tit{font-size:12px;color:var(--faint);padding:6px 10px 4px}
+  .opt{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;cursor:pointer}
+  .opt:hover{background:var(--surface-2)}
+  .opt.sel{background:var(--surface-2)}
+  .opt .t{font-weight:600;font-size:13px}
+  .opt .t .tag{font-weight:500;font-size:11px;color:var(--faint);margin-left:6px}
+  .opt .d{font-size:12px;color:var(--muted);line-height:1.45}
+  .opt .check{margin-left:auto;color:var(--brand);font-weight:700}
+  .pop .foot{font-size:11.5px;color:var(--faint);padding:7px 10px 4px;border-top:1px solid var(--line);margin-top:6px}
+  .pop .foot b{color:var(--muted)}
+
+  /* ---- chat / diálogo ---- */
+  .sysline{font-size:12.5px;color:var(--muted);background:var(--surface-2);border-radius:8px;padding:7px 12px;max-width:560px}
+  .userline{font-size:13px;background:var(--brand);color:#fff;border-radius:12px;padding:8px 13px;max-width:380px;margin-left:auto}
+  .chatcol{display:grid;gap:8px;padding:14px 16px}
+  .dialog{max-width:470px;background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:20px 22px}
+  .dialog h3{margin:0 0 8px;font-size:15px}
+  .dialog p{margin:0 0 8px;font-size:13.5px;color:var(--muted)}
+  .dialog p b{color:var(--ink)}
+  .dialog .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+  .btn{border:none;background:transparent;color:var(--ink);font:inherit;font-size:13px;padding:7px 13px;border-radius:8px;cursor:pointer}
+  .btn:hover{background:var(--surface-2)}
+  .btn.primary{background:var(--brand);color:var(--brand-ink)}
+
+  .story{display:grid;gap:10px}
+  .story .step-lbl{font-size:11.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;margin-top:8px}
+  .arrow{color:var(--faint);text-align:center;font-size:16px;margin:-2px 0}
+  .livre-banner{display:flex;align-items:center;gap:8px}
+  .livre-banner code{font-family:var(--mono);font-size:11.5px;background:var(--surface-2);padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+
+<h1>Esforço no chat + Modo na esteira — v2</h1>
+<p class="sub">Ajustes do seu feedback: o esforço vira um seletor <b>dentro do composer</b> (como no app da Claude), com <b>os mesmos níveis que o Claude oferece</b>; o Modo fica na <b>barra das etapas</b>, e o storyboard abaixo mostra a troca completa nas duas direções.</p>
+
+<h2><span class="n">1</span> Esforço no composer — onde você digita</h2>
+<div class="frame" style="max-width:680px;padding:16px">
+  <div class="composer">
+    <div class="ta">Diga o que fazer… (pode pedir /review, /qa — ou Publicar acima)</div>
+    <div class="row">
+      <button class="icbtn" title="Anexar arquivos">📎</button>
+      <span class="gap"></span>
+      <span class="effort" title="Modelo e esforço desta tarefa"><span class="m">Fable 5</span> Alto <span style="font-size:10px;color:var(--faint)">▾</span></span>
+      <button class="send">↑</button>
+    </div>
+  </div>
+</div>
+<p class="note">Igual ao padrão que você já usa: modelo (informativo) + nível atual, discreto, no canto do composer.</p>
+
+<h2><span class="n">2</span> Menu do esforço — os níveis do Claude, com uma linha de tradução</h2>
+<div class="frame" style="max-width:680px;padding:16px 16px 200px;position:relative">
+  <div class="composer">
+    <div class="ta">Diga o que fazer…</div>
+    <div class="row">
+      <button class="icbtn">📎</button>
+      <span class="gap"></span>
+      <span class="effort"><span class="m">Fable 5</span> Alto <span style="font-size:10px;color:var(--faint)">▾</span></span>
+      <button class="send">↑</button>
+    </div>
+    <div class="pop" style="right:10px;top:calc(100% - 6px)">
+      <div class="tit">Esforço do Claude nesta tarefa</div>
+      <div class="opt"><div><div class="t">Baixo</div><div class="d">Mais rápido e econômico — ajustes simples.</div></div></div>
+      <div class="opt"><div><div class="t">Médio</div><div class="d">Equilíbrio entre rapidez e profundidade.</div></div></div>
+      <div class="opt sel"><div><div class="t">Alto <span class="tag">padrão da sua máquina</span></div><div class="d">Pensa com calma — o dia a dia.</div></div><span class="check">✓</span></div>
+      <div class="opt"><div><div class="t">Extra alto</div><div class="d">Pensa muito mais fundo — tarefas difíceis; demora e consome mais.</div></div></div>
+      <div class="pop foot" style="border:none;box-shadow:none;position:static;width:auto;padding:7px 10px 2px">Vale para os próximos passos <b>desta tarefa</b> · não muda a configuração da sua máquina</div>
+    </div>
+  </div>
+</div>
+<p class="note"><b>Mesmos níveis do Claude</b> (Baixo/Médio/Alto/Extra alto — e Máximo aparece só se o modelo da máquina suportar). O nível atual da máquina vem marcado como "padrão"; escolher outro vale só para esta tarefa. Sem opção-jargão, só uma linha de tradução por nível.</p>
+
+<h2><span class="n">3</span> Modo na barra das etapas</h2>
+<div class="frame">
+  <div class="strip">
+    <span>Onde essa tarefa está: <b>Execução</b></span>
+    <span class="pins">
+      <span class="pin done"></span><span class="pin done"></span><span class="pin human"></span>
+      <span class="pin now"></span><span class="pin"></span><span class="pin human"></span><span class="pin human"></span>
+    </span>
+    <span class="chip">⚙︎ Modo: <span class="v">Com etapas</span> <span class="car">▾</span></span>
+    <span class="gap"></span>
+    <span class="chip static">~$1.61 · 180k tokens</span>
+  </div>
+</div>
+<p class="note">O chip do Modo mora colado nas etapas (é sobre <b>como</b> a tarefa anda). O menu tem as duas opções com uma linha de explicação cada — igual à v1 — e o rodapé fixo: <b>"Publicar sempre pede a sua confirmação, em qualquer modo."</b></p>
+
+<h2><span class="n">4</span> A troca, passo a passo — Com etapas → Livre</h2>
+<div class="story">
+  <div class="step-lbl">① Você clica no chip e escolhe "Livre" → confirmação</div>
+  <div class="dialog">
+    <h3>Mudar para o modo Livre?</h3>
+    <p>As etapas desta tarefa <b>deixam de valer</b> — você passa a conduzir o Claude direto pelo chat.</p>
+    <p>Tudo o que já foi feito <b>fica</b> (mesmo espaço, mesma conversa). Publicar continua pedindo a sua confirmação.</p>
+    <div class="acts"><button class="btn">Cancelar</button><button class="btn primary">Mudar para Livre</button></div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="step-lbl">② A barra troca na hora: os pinos somem, entra a faixa do Livre (o chip continua lá para voltar)</div>
+  <div class="frame">
+    <div class="strip livre-banner">
+      <span>⚡ <b>Modo livre</b> — você conduz o Claude direto: sem plano nem porteiras. Peça <code>/review</code>, <code>/qa</code> no chat e publique quando quiser.</span>
+      <span class="chip">⚙︎ Modo: <span class="v">Livre</span> <span class="car">▾</span></span>
+      <span class="gap"></span>
+      <span class="chip static">~$1.61 · 180k tokens</span>
+    </div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="step-lbl">③ E o chat registra a mudança — a conversa conta a história</div>
+  <div class="frame chatcol">
+    <div class="sysline">Você mudou esta tarefa para o modo <b>Livre</b>. As etapas deixaram de valer — é só dizer o que fazer. O plano e o que já foi executado continuam valendo como contexto.</div>
+  </div>
+</div>
+
+<h2><span class="n">5</span> A troca, passo a passo — Livre → Com etapas</h2>
+<div class="story">
+  <div class="step-lbl">① Confirmação</div>
+  <div class="dialog">
+    <h3>Mudar para o modo Com etapas?</h3>
+    <p>O seu <b>próximo pedido</b> vira uma tarefa organizada: o Claude escreve o plano, você aprova, ele executa e verifica tudo antes do seu teste.</p>
+    <p>Tudo o que já foi feito <b>fica</b> (mesmo espaço, mesma conversa).</p>
+    <div class="acts"><button class="btn">Cancelar</button><button class="btn primary">Mudar para Com etapas</button></div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="step-lbl">② A barra mostra as etapas em "esperando o pedido" (pinos apagados) — nada roda ainda</div>
+  <div class="frame">
+    <div class="strip">
+      <span>Com etapas — <b>esperando o seu pedido</b> para começar o plano</span>
+      <span class="pins">
+        <span class="pin"></span><span class="pin"></span><span class="pin human"></span>
+        <span class="pin"></span><span class="pin"></span><span class="pin human"></span><span class="pin human"></span>
+      </span>
+      <span class="chip">⚙︎ Modo: <span class="v">Com etapas</span> <span class="car">▾</span></span>
+      <span class="gap"></span>
+      <span class="chip static">~$1.61 · 180k tokens</span>
+    </div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="step-lbl">③ Você escreve o pedido no chat, como sempre — e ele entra na etapa 1 (o Claude começa a espec/plano)</div>
+  <div class="frame chatcol">
+    <div class="sysline">Você mudou esta tarefa para o modo <b>Com etapas</b>. Escreva o próximo pedido — ele vira o plano para a sua aprovação.</div>
+    <div class="userline">Agora quero uma tela de relatórios mensais com exportação em PDF</div>
+    <div class="sysline">Montando a especificação e o plano… (as etapas acima acenderam: o primeiro pino está pulsando)</div>
+  </div>
+</div>
+
+<h2>Regras e detalhes (para aprovação)</h2>
+<p class="note">
+<b>Troca só com o Claude parado</b> — trabalhando, o chip fica desabilitado com a dica "espere terminar ou clique em ■ para parar".<br>
+<b>Etapas→Livre em qualquer etapa parada</b>, inclusive numa falha (é o contorno definitivo) e nas porteiras (aprovação/teste viram conversa livre).<br>
+<b>Livre→Etapas nunca perde nada</b>: mesmo espaço, mesma sessão; o próximo pedido do chat entra como descrição da tarefa e roda espec → plano → aprovação normalmente. Se não houver pedido novo, nada roda — a barra fica "esperando o seu pedido".<br>
+<b>Esforço</b>: seletor no composer com os níveis reais do modelo da máquina (o SDK informa quais são suportados); a escolha fica gravada na tarefa e vale a partir do próximo passo; não altera a configuração global do Claude.
+</p>
+
+</body>
+</html>

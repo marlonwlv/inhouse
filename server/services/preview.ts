@@ -2,22 +2,26 @@
  * Preview: sobe o dev server do worktree numa porta própria por espaço
  * (PREVIEW_PORT_BASE + espaço) e devolve a URL para o iframe da UI.
  */
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import type { PreviewConfig, Project, Task } from "../../shared/types.js";
+import type { PreviewConfig, PreviewStatus, Project, Task } from "../../shared/types.js";
 import { DATA_DIR, PREVIEW_PORT_BASE, claudeEnv } from "../config.js";
 import { createPreviewSetupGate } from "../claude/permissions.js";
+// Ciclo intencional preview ⇄ previewMcp: só declarações de função dos dois
+// lados, usadas de forma adiada (dentro de handlers) — seguro em ESM.
+import { createPreviewMcp } from "../claude/previewMcp.js";
 import { runPhase } from "../claude/runner.js";
 import { startFakePreview, stopAllFakePreviews, stopFakePreview } from "../debug/fakePreview.js";
 import { isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
 import * as store from "../store.js";
 import { loadConfigCascata, sanitizePreview } from "../workflow/config.js";
-import { previewSetupPrompt } from "../workflow/phases.js";
+import { previewSetupPrompt, systemAppend } from "../workflow/phases.js";
 import { lastLines } from "./proc.js";
+import { previewEvents, setPreviewInfo } from "./previewState.js";
 import { copiarEnvFiles } from "./worktrees.js";
 
 /** Dev servers ativos, por tarefa. */
@@ -43,8 +47,55 @@ const RECEITAS_DIR = join(DATA_DIR, "previews");
 function pushLog(taskId: string, chunk: string): void {
   const buf = logs.get(taskId);
   if (!buf) return;
-  for (const l of chunk.replace(ANSI_RE, "").split("\n")) buf.push(l);
+  const limpo = chunk.replace(ANSI_RE, "");
+  for (const l of limpo.split("\n")) buf.push(l);
   if (buf.length > LOG_MAX_LINHAS) buf.splice(0, buf.length - LOG_MAX_LINHAS);
+  detectarErroNoLog(taskId, limpo);
+}
+
+/**
+ * Detector de erro em runtime (app NO AR): linhas fortes de erro no registro
+ * (Error:/Unhandled/Uncaught/⨯) e linhas de acesso HTTP com 5xx — destas dá
+ * para extrair a ROTA. Sem proxy e sem IA: só acende `preview.alerta`, que a
+ * UI transforma em "Algo quebrou?" destacado + faixa de conserto.
+ */
+const RE_LOG_ERRO = /(?:^|\s)⨯|\bError:|\bUnhandled|\bUncaught/;
+const RE_LOG_5XX = /\b(?:GET|POST|PUT|PATCH|DELETE)\s+(\/\S*)\s+5\d\d\b/;
+
+function detectarErroNoLog(taskId: string, texto: string): void {
+  const task = store.getTask(taskId);
+  const preview = task?.preview;
+  if (!task || preview?.status !== "no_ar") return;
+
+  let rota: string | undefined;
+  let linhaErro: string | undefined;
+  for (const linha of texto.split("\n")) {
+    const acesso = RE_LOG_5XX.exec(linha);
+    if (acesso?.[1] && !rota) {
+      rota = acesso[1];
+      linhaErro ??= linha.trim();
+    } else if (!linhaErro && RE_LOG_ERRO.test(linha)) {
+      linhaErro = linha.trim();
+    }
+    if (rota && linhaErro) break;
+  }
+
+  const atual = preview.alerta;
+  if (atual) {
+    // Alerta já aceso sem rota: uma linha de acesso 5xx posterior a completa
+    // (o "Error:" do Next vem antes do "GET /rota 500" correspondente).
+    if (!atual.rota && rota) setPreviewInfo(taskId, { ...preview, alerta: { ...atual, rota } });
+    return;
+  }
+  if (!linhaErro && !rota) return;
+  setPreviewInfo(taskId, {
+    ...preview,
+    alerta: {
+      ...(rota ? { rota } : {}),
+      detalhe: (linhaErro ?? "").slice(0, 300),
+      quando: new Date().toISOString(),
+    },
+  });
 }
 
 /** Logs capturados do dev server desta tarefa (a UI usa para diagnosticar falhas). */
@@ -113,11 +164,20 @@ function carregarReceita(projectId: string): PreviewConfig | null {
 /**
  * Config efetiva de preview: o bloco commitado no projeto (versionado, manda)
  * vence a receita aprendida pelo agente. Sem nenhum, cai na auto-detecção.
+ * Exceção deliberada: `healthPaths` é a UNIÃO dos dois — uma rota reportada
+ * (preview_reportar_rota) só ADICIONA verificações; ignorá-la porque existe
+ * config commitada deixaria a tela quebrada voltar despercebida.
  */
 function resolvePreview(project: Project, worktreePath: string): PreviewConfig | null {
   const commitada = loadConfigCascata(worktreePath, project.path)?.preview;
-  if (commitada) return commitada;
-  return carregarReceita(project.id);
+  const receita = carregarReceita(project.id);
+  if (commitada) {
+    const extras = receita?.healthPaths?.filter((r) => !(commitada.healthPaths ?? []).includes(r)) ?? [];
+    return extras.length > 0
+      ? { ...commitada, healthPaths: [...(commitada.healthPaths ?? []), ...extras] }
+      : commitada;
+  }
+  return receita;
 }
 
 /**
@@ -180,12 +240,72 @@ function matar(child: ChildProcess): void {
   timer.unref();
 }
 
-function limparUrl(taskId: string): void {
-  const t = store.getTask(taskId);
-  if (t && t.previewUrl) {
-    const atualizado = store.updateTask(taskId, { previewUrl: undefined });
-    broadcast({ type: "task_updated", task: atualizado });
+/**
+ * Marca o preview como parado (preserva "sem_tela": um projeto sem tela não
+ * vira "desligado" — a distinção importa para a UI oferecer a ação certa).
+ */
+function marcarParado(taskId: string): void {
+  const status = store.getTask(taskId)?.preview?.status;
+  if (status === "sem_tela") return;
+  setPreviewInfo(taskId, { status: "parado" });
+}
+
+/** Porta de uma URL de preview (undefined quando não dá para extrair). */
+function portaDaUrl(url: string | undefined): number | undefined {
+  if (!url) return undefined;
+  try {
+    return Number(new URL(url).port) || undefined;
+  } catch {
+    return undefined;
   }
+}
+
+/** PIDs escutando numa porta TCP (via lsof; melhor esforço — [] quando não dá). */
+function pidsNaPorta(porta: number): Promise<number[]> {
+  return new Promise((resolve) => {
+    execFile("lsof", ["-nP", `-iTCP:${porta}`, "-sTCP:LISTEN", "-t"], { timeout: 3000 }, (err, stdout) => {
+      if (err) return resolve([]);
+      resolve(
+        stdout
+          .split("\n")
+          .map((s) => Number(s.trim()))
+          .filter((n) => Number.isFinite(n) && n > 0),
+      );
+    });
+  });
+}
+
+/** `pid` é descendente de `ancestral`? Sobe a cadeia de ppids (via ps, máx. 12 níveis). */
+async function ehDescendente(pid: number, ancestral: number): Promise<boolean> {
+  let atual = pid;
+  for (let i = 0; i < 12; i++) {
+    if (atual === ancestral) return true;
+    const ppid = await new Promise<number>((resolve) => {
+      execFile("ps", ["-o", "ppid=", "-p", String(atual)], { timeout: 2000 }, (err, stdout) => {
+        resolve(err ? 0 : Number(stdout.trim()) || 0);
+      });
+    });
+    if (!ppid || ppid <= 1) return false;
+    atual = ppid;
+  }
+  return false;
+}
+
+/**
+ * A porta é servida pela ÁRVORE do dev server que nós subimos? Protege contra o
+ * caso "o app anunciou uma URL cuja porta pertence a OUTRO servidor da máquina"
+ * (ex.: dev script com porta fixa que já está em uso por outra instância) — sem
+ * esta checagem, o preview mostraria o app errado com cara de sucesso.
+ * Devolve null quando não dá para verificar (lsof indisponível) — não bloqueia.
+ */
+async function portaServidaPeloPreview(porta: number, childPid: number | undefined): Promise<boolean | null> {
+  if (!childPid) return null;
+  const pids = await pidsNaPorta(porta);
+  if (pids.length === 0) return null;
+  for (const pid of pids) {
+    if (await ehDescendente(pid, childPid)) return true;
+  }
+  return false;
 }
 
 /** Bind de teste numa família (host). IPv6 indisponível na máquina não conta como
@@ -367,16 +487,46 @@ export function startPreview(
  * dá stop/start várias vezes; cair no auto-await do dedupe travaria).
  * Com `opts.verificarSaude` (default true) faz um health-check por rota antes de
  * marcar pronto e lança PreviewQuebradoError se o app subiu mas está quebrado.
+ * `opts.portaPreferida` (reinício) tenta manter a porta anterior — a URL do
+ * iframe não muda à toa.
  */
 export async function attemptStart(
   task: Task,
   project: Project,
-  opts: { verificarSaude?: boolean } = {},
+  opts: { verificarSaude?: boolean; portaPreferida?: number } = {},
 ): Promise<string> {
   // Modo debug: preview fake multi-rota (mesmo atalho do startPreview). Cobre o
   // runPreviewCheck, que chama attemptStart direto — sem `vite`, sempre saudável.
   if (isFakeModelActive()) return startFakePreview(task);
 
+  setPreviewInfo(task.id, { status: "preparando" });
+  try {
+    return await iniciarDevServer(task, project, opts);
+  } catch (err) {
+    // O estado espelha o erro (a UI e o agente enxergam o mesmo problema).
+    if (err instanceof PreviewIndisponivelError) {
+      setPreviewInfo(task.id, { status: "sem_tela" });
+    } else if (err instanceof PreviewQuebradoError) {
+      setPreviewInfo(task.id, {
+        status: "problema",
+        erro: { msg: err.message, detalhe: err.detalhe, status: err.status, rota: err.rota },
+      });
+    } else {
+      setPreviewInfo(task.id, {
+        status: "problema",
+        erro: { msg: err instanceof Error ? err.message : String(err) },
+      });
+    }
+    throw err;
+  }
+}
+
+/** Miolo do attemptStart (separado para o try/catch de estado não virar pirâmide). */
+async function iniciarDevServer(
+  task: Task,
+  project: Project,
+  opts: { verificarSaude?: boolean; portaPreferida?: number },
+): Promise<string> {
   const cfg = resolvePreview(project, task.worktreePath);
   const cwd = cfg?.cwd ? join(task.worktreePath, cfg.cwd) : task.worktreePath;
 
@@ -386,7 +536,7 @@ export async function attemptStart(
     await copiarEnvFiles(project, task.worktreePath, cfg.envFiles);
   }
 
-  const porta = await portaLivre(cfg?.port ?? PREVIEW_PORT_BASE + task.espaco);
+  const porta = await portaLivre(opts.portaPreferida ?? cfg?.port ?? PREVIEW_PORT_BASE + task.espaco);
   // claudeEnv(): o dev server roda código arbitrário do projeto (vite.config,
   // plugins, etc.) — não pode ver ANTHROPIC_API_KEY/AUTH_TOKEN (decisão 1 da arquitetura).
   const baseEnv = { ...claudeEnv(), PORT: String(porta) };
@@ -432,9 +582,15 @@ export async function attemptStart(
   child.on("exit", () => todos.delete(child));
 
   // Buffer de logs persistente (separado do `olhar`, que para no "ready"): é o que
-  // captura o erro de runtime que só aparece ao navegar para outra rota. Resetado
-  // a cada attemptStart desta tarefa; preservado num crash para diagnóstico.
-  logs.set(task.id, []);
+  // captura o erro de runtime que só aparece ao navegar para outra rota. Num
+  // reinício o buffer é PRESERVADO com um separador — a evidência do crash
+  // anterior não some quando alguém clica em "Reiniciar".
+  const bufAnterior = logs.get(task.id);
+  if (bufAnterior && bufAnterior.length > 0) {
+    pushLog(task.id, `\n— reinício do preview (${new Date().toLocaleTimeString("pt-BR")}) —\n`);
+  } else {
+    logs.set(task.id, []);
+  }
   const registrarLog = (d: Buffer) => pushLog(task.id, String(d));
   child.stdout?.on("data", registrarLog);
   child.stderr?.on("data", registrarLog);
@@ -496,17 +652,46 @@ export async function attemptStart(
   }
 
   registry.set(task.id, child);
-  // Se o dev server morrer sozinho depois, limpa o estado para a UI não mostrar preview morto.
+  // Dev server morreu sozinho (não foi stop): estado vira "problema", o chat é
+  // avisado e o evento "crash" dispara o conserto automático (machine.ts escuta).
   child.on("exit", () => {
     if (registry.get(task.id) === child) {
       registry.delete(task.id);
-      limparUrl(task.id);
+      const logsTail = lastLines((logs.get(task.id) ?? []).join("\n"), 30);
+      sistema(task.id, "O preview caiu sozinho.");
+      setPreviewInfo(task.id, {
+        status: "problema",
+        erro: { msg: "O app do preview parou sozinho." },
+      });
+      previewEvents.emit("crash", { taskId: task.id, logsTail });
     }
   });
 
-  const atualizado = store.updateTask(task.id, { previewUrl: url });
-  broadcast({ type: "preview_ready", taskId: task.id, url });
-  broadcast({ type: "task_updated", task: atualizado });
+  // Porta REAL vem da URL do stdout — pode divergir da reservada (app com porta
+  // hardcoded no script). Nesse caso, CONFERE que a porta anunciada é servida
+  // pelo processo que NÓS subimos: se pertence a outro programa, o preview
+  // mostraria o app errado com cara de sucesso — melhor falhar com explicação.
+  const portaReal = portaDaUrl(url);
+  if (portaReal && portaReal !== porta) {
+    pushLog(task.id, `\n[inhouse] atenção: porta reservada era ${porta}, mas o app subiu em ${portaReal}.\n`);
+    const nossa = await portaServidaPeloPreview(portaReal, child.pid);
+    if (nossa === false) {
+      matar(child);
+      throw new PreviewQuebradoError(
+        `O app anunciou o endereço ${url}, mas essa porta pertence a OUTRO programa que já roda na sua máquina — mostrar esse endereço seria mostrar o app errado. Feche o programa que usa a porta ${portaReal} ou configure a porta deste projeto.`,
+        undefined,
+        undefined,
+        `porta reservada: ${porta}; o app anunciou ${portaReal}, servida por um processo fora da árvore do preview`,
+      );
+    }
+    // É dele mesmo (dev script com porta própria): avisa no CHAT, não só no Registro.
+    sistema(
+      task.id,
+      `Atenção: este app ignora a porta que o Inhouse reservou (${porta}) e sobe sempre na ${portaReal}. Vou usar a ${portaReal} — mas dois espaços deste projeto não vão conseguir rodar ao mesmo tempo.`,
+    );
+  }
+  setPreviewInfo(task.id, { status: "no_ar", url, porta: portaReal ?? porta });
+  broadcast({ type: "preview_ready", taskId: task.id, url }); // compat: a UI antiga escuta este
   return url;
 }
 
@@ -526,7 +711,7 @@ export async function stopPreview(taskId: string): Promise<void> {
         const c = registry.get(taskId);
         registry.delete(taskId);
         if (c) matar(c);
-        limparUrl(taskId);
+        marcarParado(taskId);
       })
       .catch(() => {
         // start falhou: não subiu nada para derrubar
@@ -535,7 +720,111 @@ export async function stopPreview(taskId: string): Promise<void> {
   const child = registry.get(taskId);
   registry.delete(taskId);
   if (child) matar(child);
-  limparUrl(taskId);
+  marcarParado(taskId);
+}
+
+/**
+ * Estado do preview para o agente (tool preview_status) e para a UI avançada.
+ * Fonte da verdade AGORA: vivacidade real do processo + URL do store — corrige
+ * o agente que "lembra" de uma URL antiga da sessão resumida.
+ */
+export function previewStatus(taskId: string): {
+  status: PreviewStatus;
+  url?: string;
+  porta?: number;
+  healthPaths: string[];
+  /** Erro em runtime detectado no registro com o app no ar (rota + linha). */
+  alerta?: { rota?: string; detalhe?: string; quando: string };
+  aviso: string;
+} {
+  const task = store.getTask(taskId);
+  const url = task?.previewUrl || task?.preview?.url;
+  const child = registry.get(taskId);
+  const vivo = isFakeModelActive()
+    ? Boolean(url)
+    : Boolean(child && child.exitCode === null && !child.killed);
+  const status: PreviewStatus =
+    vivo && url
+      ? "no_ar"
+      : task?.preview?.status && task.preview.status !== "no_ar"
+        ? task.preview.status
+        : "parado";
+  const project = task ? store.getProject(task.projectId) : null;
+  const healthPaths =
+    task && project ? (resolvePreview(project, task.worktreePath)?.healthPaths ?? []) : [];
+  return {
+    status,
+    url: vivo ? url : undefined,
+    porta: vivo ? portaDaUrl(url) : undefined,
+    healthPaths,
+    ...(task?.preview?.alerta ? { alerta: task.preview.alerta } : {}),
+    aviso:
+      "Esta é a fonte da verdade AGORA — ignore URLs/portas citadas em mensagens anteriores da conversa.",
+  };
+}
+
+/** Reinícios em andamento, por tarefa (dedupe: dois pedidos = um reinício). */
+const reiniciando = new Map<string, Promise<{ url: string; aviso?: string }>>();
+
+/**
+ * Reinício atômico do preview gerenciado (tool preview_reiniciar + POST
+ * /preview/restart). Serializado por tarefa; se um start já está subindo,
+ * reaproveita em vez de derrubar; tenta manter a MESMA porta (a URL do iframe
+ * não muda à toa). Preserva o buffer de logs (separador em iniciarDevServer).
+ */
+export function restartPreview(taskId: string): Promise<{ url: string; aviso?: string }> {
+  const task = store.getTask(taskId);
+  if (!task) return Promise.reject(new Error("Tarefa não encontrada."));
+  if (isFakeModelActive()) return startFakePreview(task).then((url) => ({ url }));
+
+  const emCurso = reiniciando.get(taskId);
+  if (emCurso) return emCurso;
+  const pendente = emAndamento.get(taskId);
+  if (pendente) {
+    return pendente.then((url) => ({ url, aviso: "O preview já estava subindo — reaproveitei, sem reiniciar." }));
+  }
+  const project = store.getProject(task.projectId);
+  if (!project) return Promise.reject(new Error("O projeto desta tarefa não foi encontrado."));
+
+  const portaAnterior = portaDaUrl(task.previewUrl ?? task.preview?.url);
+  const p = (async () => {
+    await stopPreview(taskId);
+    // Espera a porta anterior LIBERAR de fato (o kill é assíncrono): sem isto o
+    // novo start quase sempre acharia a porta ocupada e subiria na seguinte —
+    // trocando a URL do iframe, que é justamente o que o reinício quer evitar.
+    if (portaAnterior) {
+      for (let i = 0; i < 25 && !(await portaDisponivel(portaAnterior)); i++) {
+        await espera(200);
+      }
+    }
+    const atual = store.getTask(taskId) ?? task;
+    const startP = attemptStart(atual, project, {
+      verificarSaude: false,
+      portaPreferida: portaAnterior,
+    }).finally(() => emAndamento.delete(taskId));
+    emAndamento.set(taskId, startP);
+    return { url: await startP };
+  })().finally(() => reiniciando.delete(taskId));
+  reiniciando.set(taskId, p);
+  return p;
+}
+
+/**
+ * Acrescenta uma rota aos healthPaths da receita aprendida do projeto (tool
+ * preview_reportar_rota e conserto por rota): a tela que quebrou passa a ser
+ * conferida em todo health-check futuro. Devolve false para rota inválida.
+ */
+export function adicionarHealthPath(projectId: string, rota: string): boolean {
+  const r = rota.trim();
+  if (!r.startsWith("/") || r.includes("..") || /\s/.test(r) || r.length > 200) return false;
+  const atual = carregarReceita(projectId) ?? {};
+  const paths = new Set(atual.healthPaths ?? []);
+  if (paths.has(r)) return true;
+  paths.add(r);
+  const nova = sanitizePreview({ ...atual, healthPaths: [...paths] });
+  if (!nova) return false;
+  salvarReceita(projectId, nova);
+  return true;
 }
 
 /** Para todos os previews (shutdown do servidor) — inclusive starts em andamento. */
@@ -627,6 +916,13 @@ export async function configurarPreviewComAgente(task: Task, project: Project): 
     resume: task.claudeSessionId,
     canUseTool: createPreviewSetupGate(task.id),
     maxTurns: 40,
+    // Tools de preview com reiniciar OFF (este fluxo sobe o preview ele mesmo ao final).
+    ...(isFakeModelActive()
+      ? {}
+      : {
+          mcpServers: { inhouse: createPreviewMcp(task.id, { permitirReiniciar: false }) },
+          systemPromptAppend: systemAppend(task, previewStatus(task.id)),
+        }),
   });
   if (r.sessionId) store.updateTask(task.id, { claudeSessionId: r.sessionId });
 

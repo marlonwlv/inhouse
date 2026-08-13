@@ -8,6 +8,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Task } from "../../shared/types.js";
 import { broadcast } from "../events.js";
+import { setPreviewInfo } from "../services/previewState.js";
 import * as store from "../store.js";
 
 /** Um servidor de preview por tarefa (fechado no stop / shutdown). */
@@ -100,10 +101,11 @@ export function startFakePreview(task: Task): Promise<string> {
     // Porta 0 = o SO escolhe uma livre (sem colisão entre espaços).
     server.listen(0, "127.0.0.1", () => {
       servers.set(task.id, server);
-      const url = urlDe(portaDe(server));
-      const atualizado = store.updateTask(task.id, { previewUrl: url });
-      broadcast({ type: "preview_ready", taskId: task.id, url });
-      broadcast({ type: "task_updated", task: atualizado });
+      const porta = portaDe(server);
+      const url = urlDe(porta);
+      // setPreviewInfo espelha previewUrl e emite preview_status + task_updated.
+      setPreviewInfo(task.id, { status: "no_ar", url, porta });
+      broadcast({ type: "preview_ready", taskId: task.id, url }); // compat
       resolve(url);
     });
   });
@@ -117,8 +119,7 @@ export function stopFakePreview(taskId: string): void {
     servers.delete(taskId);
   }
   if (store.getTask(taskId)?.previewUrl) {
-    const atualizado = store.updateTask(taskId, { previewUrl: undefined });
-    broadcast({ type: "task_updated", task: atualizado });
+    setPreviewInfo(taskId, { status: "parado" });
   }
 }
 
