@@ -153,6 +153,14 @@ export async function fakeRunPhase(opts: RunPhaseOpts): Promise<PhaseResult> {
   const prompt = opts.prompt;
   const comecaComBarra = prompt.trimStart().startsWith("/");
 
+  // Porteira viva: turno de conversa (qualquer permissionMode) — responde no
+  // chat sem tocar em nada; a esteira restaura o estado (transição por ação
+  // nunca dispara no fake).
+  if (/CONVERSA DA PORTEIRA/.test(prompt)) {
+    emit(opts.taskId, { kind: "assistant", text: "Resposta da conversa (debug).", at: now() });
+    return { sessionId, success: true, finalText: "Resposta da conversa (debug)." };
+  }
+
   if (mode === "default") {
     emit(opts.taskId, { kind: "assistant", text: "Especificação estruturada (debug).", at: now() });
     return { sessionId, success: true, finalText: especText(s) };

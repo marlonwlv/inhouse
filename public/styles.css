@@ -1127,6 +1127,21 @@ input::placeholder { color: var(--faint); }
 .chip-btn .v { color: var(--ink); font-weight: 600; }
 .chip-btn .car { font-size: 9px; color: var(--faint); }
 
+/* Revisão da engenharia: comentários do time no card + festa do merge. */
+.rev-pendencias { display: grid; gap: 8px; }
+.rev-coment {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: 13px;
+}
+.rev-arq { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-bottom: 3px; }
+.festa-card { text-align: left; }
+.festa-card .head { font-size: 14px; }
+.festa-who { font-size: 12.5px; color: var(--faint); }
+.confetti-overlay { position: fixed; inset: 0; z-index: 9999; pointer-events: none; }
+
 /* × de fechar um aviso de falha (libera o contorno pelo chat). */
 .card-x {
   position: absolute;

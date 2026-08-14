@@ -102,6 +102,95 @@ async function doPublish(
   return {};
 }
 
+/**
+ * Etapa Revisão: commit final + push + PR — e SÓ isso. O espaço e o preview
+ * ficam VIVOS: o loop de ajustes da revisão (o Claude corrigindo apontamentos
+ * do time) precisa da branch checked-out, e a pessoa pode seguir testando.
+ * A limpeza acontece no merge (mergeRevisao/limparAposMerge).
+ */
+export function enviarParaRevisao(task: Task, project: Project): Promise<{ prUrl?: string }> {
+  if (isFakeModelActive()) {
+    return Promise.resolve({ prUrl: "https://github.com/fake/app/pull/1" });
+  }
+  return withProjectLock(project.id, async () => {
+    const pendente = await git(task.worktreePath, "status", "--porcelain");
+    if (pendente.length > 0) {
+      await git(task.worktreePath, "add", "-A");
+      await gitCommit(task.worktreePath, `Tarefa: ${task.title}`);
+    }
+    const prUrl = await publicarComoPR(task, project);
+    return prUrl ? { prUrl } : {};
+  });
+}
+
+/** Publica com a revisão aprovada: merge do PR via gh + limpeza do espaço. */
+export function mergeRevisao(task: Task, project: Project): Promise<void> {
+  if (isFakeModelActive()) {
+    return stopPreview(task.id);
+  }
+  return withProjectLock(project.id, async () => {
+    if (!task.prUrl) throw new Error("Esta tarefa não tem um Pull Request aberto.");
+    try {
+      await run("gh", ["pr", "merge", task.prUrl, "--merge"], { cwd: project.path });
+    } catch (err) {
+      const detalhe = err instanceof RunError ? err.stderr.trim() || err.message : String(err);
+      throw new Error(
+        `O GitHub recusou o merge (talvez a revisão não esteja aprovada ou a branch precise de atualização). Detalhe: ${detalhe}`,
+      );
+    }
+    await stopPreview(task.id);
+    try {
+      await removeEspaco(project, task.worktreePath);
+    } catch {
+      // melhor esforço — o espaço pode ser limpo depois (arquivar)
+    }
+  });
+}
+
+/**
+ * Empurra os AJUSTES da revisão para o PR: commit (se houver mudança), push e
+ * um comentário avisando o time. Usado pelo "Pedir para o Claude ajustar" e
+ * pelo trabalho feito na conversa durante a Revisão.
+ */
+export function empurrarAjustesRevisao(task: Task, project: Project): Promise<void> {
+  if (isFakeModelActive()) return Promise.resolve();
+  return withProjectLock(project.id, async () => {
+    const pendente = await git(task.worktreePath, "status", "--porcelain");
+    if (pendente.length > 0) {
+      await git(task.worktreePath, "add", "-A");
+      await gitCommit(task.worktreePath, "Ajustes da revisão (via Inhouse)");
+    }
+    try {
+      await git(task.worktreePath, "push");
+    } catch (err) {
+      const detalhe = err instanceof RunError ? err.stderr.trim() || err.message : String(err);
+      throw new Error(`Não foi possível enviar os ajustes para o GitHub: ${detalhe}`);
+    }
+    if (task.prUrl) {
+      try {
+        await run(
+          "gh",
+          ["pr", "comment", task.prUrl, "--body", "🤖 Ajustes da revisão aplicados pelo Inhouse — pronto para olhar de novo."],
+          { cwd: task.worktreePath },
+        );
+      } catch {
+        // comentário é cortesia; o push é o que importa
+      }
+    }
+  });
+}
+
+/** Limpeza quando o TIME mergeou direto no GitHub (detectado pela sondagem). */
+export async function limparAposMerge(task: Task, project: Project): Promise<void> {
+  await stopPreview(task.id);
+  if (isFakeModelActive()) return;
+  try {
+    await withProjectLock(project.id, () => removeEspaco(project, task.worktreePath));
+  } catch {
+    // melhor esforço
+  }
+}
+
 /** Empurra a branch da tarefa (do próprio espaço) e abre um PR — sem tocar o main. */
 async function publicarComoPR(task: Task, project: Project): Promise<string | undefined> {
   try {

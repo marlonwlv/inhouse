@@ -58,6 +58,7 @@ export const STEPS = [
   "execucao",
   "verificacoes",
   "teste",
+  "revisao", // o time de engenharia revisa o PR (só em projetos com GitHub)
   "publicar",
   "concluida",
 ] as const;
@@ -111,6 +112,30 @@ export type Porte = "simples" | "media" | "grande";
 /** Níveis de esforço do Claude (os mesmos que o Claude Code oferece). */
 export const ESFORCO_NIVEIS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type EsforcoNivel = (typeof ESFORCO_NIVEIS)[number];
+
+// ---------- Revisão da engenharia (PR no GitHub) ----------
+
+/** Um apontamento aberto da revisão (comentário/pedido de mudança do time). */
+export interface RevisaoPendencia {
+  autor: string;
+  /** Arquivo do comentário (comentários de linha); ausente em reviews gerais. */
+  arquivo?: string;
+  texto: string;
+}
+
+/** Estado vivo da revisão do time (acompanhado por sondagem do PR via gh). */
+export interface RevisaoInfo {
+  estado: "aguardando" | "em_revisao" | "mudancas_pedidas" | "aprovada";
+  /** Apontamentos abertos — alimentam o "Pedir para o Claude ajustar". */
+  pendencias?: RevisaoPendencia[];
+  /** Assinaturas de eventos já noticiados no chat (dedupe da sondagem). */
+  vistos?: string[];
+  /** ISO do último lote de ajustes enviado (filtra pendências antigas). */
+  ajustadoEm?: string;
+  /** Quem publicou (merge) e quando — a celebração conta a história. */
+  mergePor?: string;
+  mergeEm?: string;
+}
 
 // ---------- Preview (estado de primeira classe) ----------
 
@@ -216,6 +241,16 @@ export interface Task {
    * do chat para virar espec/plano. Nada roda até a pessoa escrever.
    */
   aguardandoPedido?: boolean;
+  /**
+   * Mudanças feitas na CONVERSA do "Seu teste" ainda não verificadas: a pessoa
+   * testa primeiro (preview vivo); as verificações rodam quando ela pedir ou,
+   * no mais tardar, ao clicar Aprovar (a porteira de segurança continua).
+   */
+  verificacoesPendentes?: boolean;
+  /** A esteira DESTA task tem a etapa Revisão (projeto com GitHub). */
+  temRevisao?: boolean;
+  /** Estado vivo da revisão do time (após "Enviar para revisão"). */
+  revisao?: RevisaoInfo;
   /** Histórico de passos com início/fim — mostra quanto tempo cada etapa levou. */
   historico?: { step: Step; inicio: string; fim?: string }[];
   /** Medições acumuladas para o eval de experiência (custo/turnos por etapa). */
@@ -316,6 +351,9 @@ export const TASK_ACTIONS = [
   "approve_test",
   "set_esforco",
   "set_modo",
+  "rodar_verificacoes",
+  "enviar_revisao",
+  "ajustar_revisao",
   "publish",
   "retry",
   "auto_mode",
@@ -335,6 +373,9 @@ export type TaskAction =
   | { action: "approve_test" } // teste -> publicar (fica aguardando o clique de publicar)
   | { action: "set_esforco"; nivel: EsforcoNivel } // esforço desta tarefa (vale do próximo passo em diante)
   | { action: "set_modo"; modo: "esteira" | "livre" } // troca o modo da tarefa (só com o Claude parado)
+  | { action: "rodar_verificacoes" } // roda agora as verificações pendentes da conversa do teste
+  | { action: "enviar_revisao" } // abre o PR e começa o acompanhamento da revisão do time
+  | { action: "ajustar_revisao" } // o Claude aplica os apontamentos do time e reenvia
   | { action: "publish"; createPr?: boolean } // merge no main (+ PR opcional)
   | { action: "retry" } // re-roda o passo que falhou
   | { action: "auto_mode"; on: boolean } // permissões automáticas para esta tarefa
@@ -499,6 +540,7 @@ export const STEP_LABELS: Record<Step, string> = {
   execucao: "Execução",
   verificacoes: "Verificações",
   teste: "Seu teste",
+  revisao: "Revisão",
   publicar: "Publicar",
   concluida: "Concluída",
 };
@@ -517,17 +559,24 @@ export function rodaDesign(t: Pick<Task, "design" | "precisaDesign">): boolean {
  * adaptativo: simples pula detalhamento/protótipo; sem design, pula protótipo.
  * A UI e a máquina usam isto em vez do STEPS global.
  */
-export function stepsAtivos(t: Pick<Task, "porte" | "design" | "precisaDesign">): Step[] {
+export function stepsAtivos(
+  t: Pick<Task, "porte" | "design" | "precisaDesign" | "temRevisao">,
+): Step[] {
   const simples = (t.porte ?? "media") === "simples";
   const out: Step[] = ["espec", "plano", "aprovacao"];
   if (!simples) out.push("detalhamento");
   if (!simples && rodaDesign(t)) out.push("prototipo", "aprovacao_prototipo");
-  out.push("execucao", "verificacoes", "teste", "publicar", "concluida");
+  out.push("execucao", "verificacoes", "teste");
+  if (t.temRevisao) out.push("revisao"); // só projetos com GitHub têm revisão do time
+  out.push("publicar", "concluida");
   return out;
 }
 
 /** Próximo step ativo depois de `atual` (para as transições da máquina). */
-export function proximoStep(t: Pick<Task, "porte" | "design" | "precisaDesign">, atual: Step): Step {
+export function proximoStep(
+  t: Pick<Task, "porte" | "design" | "precisaDesign" | "temRevisao">,
+  atual: Step,
+): Step {
   const ativos = stepsAtivos(t);
   const i = ativos.indexOf(atual);
   return i >= 0 && i < ativos.length - 1 ? ativos[i + 1]! : "concluida";

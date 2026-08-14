@@ -3,7 +3,7 @@
    Rotas por hash: #/ (Início) · #/tarefas (quadro) · #/tarefa/<id> (editor). */
 
 // ---------- Constantes copiadas de shared/types.ts (manter em sincronia) ----------
-const STEPS = ["espec", "plano", "aprovacao", "detalhamento", "prototipo", "aprovacao_prototipo", "execucao", "verificacoes", "teste", "publicar", "concluida"];
+const STEPS = ["espec", "plano", "aprovacao", "detalhamento", "prototipo", "aprovacao_prototipo", "execucao", "verificacoes", "teste", "revisao", "publicar", "concluida"];
 const STEP_LABELS = {
   espec: "Espec",
   plano: "Plano",
@@ -14,6 +14,7 @@ const STEP_LABELS = {
   execucao: "Execução",
   verificacoes: "Verificações",
   teste: "Seu teste",
+  revisao: "Revisão",
   publicar: "Publicar",
   concluida: "Concluída",
 };
@@ -31,7 +32,8 @@ const STEP_INFO = {
   execucao: { desc: "Implementa a mudança de verdade no código.", skills: [] },
   verificacoes: { desc: "Roda as verificações automáticas antes de você testar.", skills: [{ n: "review" }, { n: "qa", q: "quando tem UI" }] },
   teste: { desc: "Você abre o preview, testa e aprova o resultado.", skills: [], human: true },
-  publicar: { desc: "Abre um Pull Request pro time revisar — nada vai direto pro ar.", skills: [], human: true },
+  revisao: { desc: "O time de engenharia revisa antes de publicar — você acompanha tudo por aqui.", skills: [] },
+  publicar: { desc: "Junta a mudança no app — nada vai pro ar sem você (ou o time) publicar.", skills: [], human: true },
   concluida: { desc: "Tudo pronto — mudança publicada no projeto.", skills: [] },
 };
 
@@ -44,7 +46,9 @@ function stepsAtivos(t) {
   const out = ["espec", "plano", "aprovacao"];
   if (!simples) out.push("detalhamento");
   if (!simples && rodaDesign(t)) out.push("prototipo", "aprovacao_prototipo");
-  out.push("execucao", "verificacoes", "teste", "publicar", "concluida");
+  out.push("execucao", "verificacoes", "teste");
+  if (t.temRevisao) out.push("revisao"); // só projetos com GitHub têm revisão do time
+  out.push("publicar", "concluida");
   return out;
 }
 
@@ -1772,7 +1776,7 @@ function renderEditor(id) {
     ? `<span>⚡ <b>Modo livre</b> — você conduz o Claude direto: sem plano nem porteiras. Peça <code>/review</code>, <code>/qa</code> etc. no chat e publique quando quiser.</span>${modoChipHtml(t)}${modeloChip(t)}${custoChip(t, false)}`
     : t.aguardandoPedido
       ? `<span>Com etapas — <b>esperando o seu pedido</b> para começar o plano</span>${modoChipHtml(t)}${modeloChip(t)}${custoChip(t, false)}`
-      : `<span>Onde essa tarefa está: <b>${esc(STEP_LABELS[t.step] ?? t.step)}</b></span>${flowHtml(t)}${modoChipHtml(t)}${nextGateChip(t)}${modeloChip(t)}${custoChip(t, false)}`;
+      : `<span>Onde essa tarefa está: <b>${esc(STEP_LABELS[t.step] ?? t.step)}</b></span>${flowHtml(t)}${bolaRevisaoChip(t)}${modoChipHtml(t)}${nextGateChip(t)}${modeloChip(t)}${custoChip(t, false)}`;
   renderArtefatos(root, t);
   loadArtefatos(id);
   renderChat(id);
@@ -2003,12 +2007,21 @@ function chatCardsHtml(t) {
     if (t.step === "aprovacao") parts.push(planCardHtml(t));
     if (t.step === "aprovacao_prototipo") parts.push(prototipoCardHtml(t));
     if (t.step === "teste") parts.push(testCardHtml(t));
+    if (t.step === "revisao") parts.push(revisaoCardHtml(t));
     if (t.step === "publicar") parts.push(publishCardHtml(t));
   }
   if (t.status === "concluida") {
     if (t.kind === "preparacao") {
       parts.push(`<div class="publish-card"><div class="head">✓ Preparação concluída</div>
         <p>Veja o resumo acima. Se ainda faltar algo do sistema, resolva e rode a preparação de novo.</p></div>`);
+    } else if (t.revisao?.mergeEm) {
+      // 🚀 A etapa mágica: a mudança da pessoa entrou no app.
+      agendarFesta(t);
+      const quando = new Date(t.revisao.mergeEm).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+      parts.push(`<div class="publish-card festa-card"><div class="head">🚀 Publicado!</div>
+        <p><b>A mudança que você criou está no app.</b></p>
+        <p class="festa-who">Publicado por ${esc(t.revisao.mergePor === "você" ? "você" : `${t.revisao.mergePor} (engenharia)`)} · ${esc(quando)}${t.prUrl ? ` · <a href="${esc(t.prUrl)}" target="_blank" rel="noreferrer">ver no GitHub</a>` : ""}</p>
+        ${feedbackWidgetHtml(t)}</div>`);
     } else {
       parts.push(`<div class="publish-card"><div class="head">✓ Tarefa concluída</div>
         <p>A mudança foi publicada no projeto.${t.prUrl ? ` <a href="${esc(t.prUrl)}" target="_blank" rel="noreferrer">Ver o PR no GitHub</a>` : ""}</p>
@@ -2016,6 +2029,108 @@ function chatCardsHtml(t) {
     }
   }
   return parts.join("");
+}
+
+/** Chip "com quem está a bola" durante a Revisão. */
+function bolaRevisaoChip(t) {
+  if (t.step !== "revisao" || !t.revisao) return "";
+  return t.revisao.estado === "mudancas_pedidas"
+    ? `<span class="chip wait">✋ com você</span>`
+    : `<span class="chip">⏳ com a engenharia</span>`;
+}
+
+/** Rótulo pt-BR do estado da revisão do time. */
+const REVISAO_ESTADO = {
+  aguardando: { chip: "wait", rotulo: "⏳ aguardando revisor" },
+  em_revisao: { chip: "wait", rotulo: "👀 em revisão" },
+  mudancas_pedidas: { chip: "bad", rotulo: "✋ ajustes pedidos" },
+  aprovada: { chip: "ok", rotulo: "✔ aprovada" },
+};
+
+/** Card da etapa Revisão: enviar → acompanhar → ajustar com o Claude. */
+function revisaoCardHtml(t) {
+  if (!t.revisao) {
+    return `<div class="approval">
+      <div class="head"><span class="pulse"></span> Pronto para a revisão</div>
+      <p>Verificações e o seu teste aprovados. Agora o trabalho vai para o <b>time de engenharia revisar</b> — nada muda no app até eles aprovarem.</p>
+      <p>Você acompanha tudo por aqui: quem está revisando, o que pediram e quando for publicado.</p>
+      <div class="acts">
+        <button class="btn sm primary" data-act="enviar-revisao" data-task="${esc(t.id)}">Enviar para revisão</button>
+      </div>
+    </div>`;
+  }
+  const est = REVISAO_ESTADO[t.revisao.estado] || REVISAO_ESTADO.aguardando;
+  const pend = t.revisao.pendencias || [];
+  const pendHtml = pend.length
+    ? `<div class="rev-pendencias">${pend
+        .map(
+          (p) => `<div class="rev-coment">${p.arquivo ? `<div class="rev-arq">${esc(p.arquivo)}</div>` : ""}<b>${esc(p.autor)}:</b> ${esc(p.texto)}</div>`,
+        )
+        .join("")}</div>`
+    : "";
+  return `<div class="approval">
+    <div class="head"><span class="pulse"></span> Revisão da engenharia <span class="chip ${est.chip}" style="margin-left:6px">${est.rotulo}</span></div>
+    <p>${
+      pend.length
+        ? "O time pediu ajustes — a bola voltou para você, mas o Claude resolve:"
+        : t.revisao.estado === "em_revisao"
+          ? "O time está revisando. Cada novidade aparece aqui e no chat."
+          : "Enviado — o time foi avisado. Cada novidade aparece aqui e no chat (o preview segue no ar, se quiser continuar testando)."
+    }</p>
+    ${pendHtml}
+    <div class="acts">
+      ${pend.length ? `<button class="btn sm primary" data-act="ajustar-revisao" data-task="${esc(t.id)}">Pedir para o Claude ajustar</button>` : ""}
+      ${t.prUrl ? `<a class="btn sm ghost" href="${esc(t.prUrl)}" target="_blank" rel="noreferrer">Ver no GitHub</a>` : ""}
+    </div>
+  </div>`;
+}
+
+/** Festa do merge: confete uma vez por navegador, quando a tarefa está aberta. */
+function agendarFesta(t) {
+  const chave = `inhouse.festa.${t.id}`;
+  if (localStorage.getItem(chave) || !isEditorOf(t.id)) return;
+  localStorage.setItem(chave, "1");
+  setTimeout(festaConfetti, 250);
+}
+
+function festaConfetti() {
+  const cv = document.createElement("canvas");
+  cv.className = "confetti-overlay";
+  document.body.appendChild(cv);
+  cv.width = innerWidth;
+  cv.height = innerHeight;
+  const cx = cv.getContext("2d");
+  const cores = ["#18181B", "#8A4E06", "#166534", "#DC2626", "#2563EB", "#D97706"];
+  const pcs = Array.from({ length: 180 }, () => ({
+    x: cv.width / 2 + (Math.random() - 0.5) * 160,
+    y: cv.height * 0.65,
+    vx: (Math.random() - 0.5) * 11,
+    vy: -(7 + Math.random() * 10),
+    s: 4 + Math.random() * 5,
+    c: cores[(Math.random() * cores.length) | 0],
+    a: Math.random() * Math.PI,
+    va: (Math.random() - 0.5) * 0.3,
+    vida: 150 + Math.random() * 60,
+  }));
+  const tick = () => {
+    cx.clearRect(0, 0, cv.width, cv.height);
+    let vivos = 0;
+    for (const p of pcs) {
+      if (p.vida <= 0) continue;
+      vivos++;
+      p.x += p.vx; p.y += p.vy; p.vy += 0.22; p.vx *= 0.99; p.a += p.va; p.vida--;
+      cx.save();
+      cx.translate(p.x, p.y);
+      cx.rotate(p.a);
+      cx.globalAlpha = Math.min(1, p.vida / 40);
+      cx.fillStyle = p.c;
+      cx.fillRect(-p.s / 2, -p.s / 2, p.s, p.s * 0.6);
+      cx.restore();
+    }
+    if (vivos > 0) requestAnimationFrame(tick);
+    else cv.remove();
+  };
+  requestAnimationFrame(tick);
 }
 
 function feedbackWidgetHtml(t) {
@@ -2098,12 +2213,19 @@ function testCardHtml(t) {
             ? "O preview está desligado — clique em <b>Ligar preview</b> no painel ao lado antes de testar."
             : "Abra o preview ao lado, confira se ficou como você queria e aprove — ou peça mudanças.";
   const consertando = s === "consertando";
+  // Mudanças da conversa ainda sem verificação: informa e oferece rodar agora
+  // — sem obrigar (elas rodam de qualquer jeito no Aprovar).
+  const pendentes = t.verificacoesPendentes
+    ? `<p class="preview-hint">As mudanças da conversa ainda não passaram pelas verificações — elas rodam quando você aprovar, com o preview no ar.</p>`
+    : "";
   return `<div class="approval">
     <div class="head"><span class="pulse"></span> Sua vez de testar</div>
     <p>${frase}</p>
+    ${pendentes}
     <div class="gates-row">${gateChips(t)}</div>
     <div class="acts">
       <button class="btn sm primary" data-act="approve-test" data-task="${esc(t.id)}" ${consertando ? 'disabled title="Espere o preview voltar"' : ""}>Aprovar</button>
+      ${t.verificacoesPendentes ? `<button class="btn sm" data-act="rodar-verificacoes" data-task="${esc(t.id)}" title="Roda TypeScript/testes agora, mantendo o preview no ar">Rodar verificações agora</button>` : ""}
       <button class="btn sm ghost" data-act="request-changes" data-task="${esc(t.id)}">Pedir mudanças</button>
     </div>
   </div>`;
@@ -2124,6 +2246,18 @@ function previewProblemaCardHtml(t) {
 function publishCardHtml(t) {
   const p = getProject(t.projectId);
   const busy = !!state.busy[`publish:${t.id}`];
+  // Revisão aprovada (projeto com GitHub): publicar = merge, com direito a 🚀.
+  if (t.revisao) {
+    return `<div class="publish-card">
+      <div class="head">✔ Revisão aprovada</div>
+      <p>O time aprovou o seu trabalho. Publicar junta a mudança no app.</p>
+      <div class="acts">
+        <button class="btn sm primary" data-act="publish" data-task="${esc(t.id)}" ${busy ? "disabled" : ""}>${busy ? `<span class="spinner"></span> Publicando…` : "Publicar 🚀"}</button>
+        ${t.prUrl ? `<a class="btn sm ghost" href="${esc(t.prUrl)}" target="_blank" rel="noreferrer">Ver no GitHub</a>` : ""}
+        <span style="font-size:12px;color:var(--faint)">ou aguarde — a engenharia também pode publicar por lá</span>
+      </div>
+    </div>`;
+  }
   return `<div class="publish-card">
     <div class="head">✓ Pronto para publicar</div>
     <p>Verificações e o seu teste aprovados. ${
@@ -2223,7 +2357,11 @@ async function carregarPreviewLogs(id) {
  * (t.preview, via SSE preview_status) + etapa da tarefa + ações em curso.
  */
 function previewEstadoVisual(t) {
-  const naEtapa = t.step === "teste" || t.step === "publicar" || t.modo === "livre";
+  // Depois que a tarefa chegou UMA vez no "Seu teste", o preview vira imortal:
+  // fica montado mesmo durante execução/verificações de ajustes (o iframe não
+  // pisca no meio do teste da pessoa). Antes do primeiro teste, segue oculto.
+  const jaTestou = (t.historico || []).some((h) => h.step === "teste");
+  const naEtapa = t.step === "teste" || t.step === "publicar" || t.modo === "livre" || jaTestou;
   if (!naEtapa) return "antes";
   if (state.busy[`preview-config:${t.id}`] || state.busy[`preview:${t.id}`]) return "preparando";
   const s = t.preview?.status;
@@ -2468,10 +2606,25 @@ function updateComposer(root, t) {
     }
   } else if (t.status === "aguardando" && t.step === "aprovacao") {
     enabled = true;
-    ph = "Escreva o que mudar no plano — enviar pede mudanças ao Claude";
+    ph = "Pergunte sobre o plano ou peça ajustes — eu respondo ou reviso aqui mesmo";
+  } else if (t.status === "aguardando" && t.step === "aprovacao_prototipo") {
+    enabled = true;
+    ph = "Pergunte sobre o protótipo ou peça ajustes — eu respondo ou atualizo";
   } else if (t.status === "aguardando" && t.step === "teste") {
     enabled = true;
-    ph = "Escreva o que ajustar — enviar devolve a tarefa pro Claude";
+    ph = "Converse, tire dúvidas ou peça mudanças — eu respondo ou aplico";
+  } else if (t.status === "aguardando" && t.step === "revisao") {
+    enabled = true;
+    ph = t.revisao
+      ? "Pergunte sobre a revisão ou peça ajustes — os ajustes vão direto pro PR"
+      : "Alguma dúvida antes de enviar para a revisão? Pergunte por aqui";
+  } else if (t.status === "aguardando" && t.step === "publicar") {
+    enabled = true;
+    ph = "Alguma dúvida antes de publicar? Pergunte ou peça um último ajuste";
+  } else if (t.status === "rodando" && (HUMAN_STEPS.includes(t.step) || t.step === "revisao")) {
+    // Turno de conversa da porteira em andamento (o step não saiu do lugar).
+    enabled = true;
+    ph = "O Claude está respondendo — pode complementar…";
   } else if (t.aguardandoPedido && t.status === "aguardando") {
     // Acabou de mudar de Livre para Com etapas: o próximo pedido inicia a esteira.
     enabled = true;
@@ -2492,10 +2645,9 @@ function updateComposer(root, t) {
       ? "Escreva um ajuste (opcional) e clique em Retomar acima…"
       : "Pausado — clique em “Retomar” acima para continuar.";
   } else if (t.status === "falhou") {
-    // Contorno pelo chat em QUALQUER falha: enviar re-roda o passo certo com a
-    // sua instrução — você nunca fica refém do "Tentar de novo".
+    // Porteira viva na falha: pergunta vira explicação; contorno vira retomada.
     enabled = true;
-    ph = "O passo falhou — descreva um contorno e envie (o Claude retoma com a sua instrução)…";
+    ph = "Pergunte o porquê ou descreva um contorno — eu descubro o que fazer";
   } else if (t.step === "publicar") ph = "Tudo pronto — é só clicar em Publicar.";
   else ph = "A tarefa está parada.";
   input.disabled = !enabled;
@@ -2586,6 +2738,9 @@ const actions = {
   "approve-test": (btn) => taskAction(btn.dataset.task, { action: "approve_test" }),
   "retry": (btn) => taskAction(btn.dataset.task, { action: "retry" }),
   "pause": (btn) => taskAction(btn.dataset.task, { action: "pause" }),
+  "rodar-verificacoes": (btn) => taskAction(btn.dataset.task, { action: "rodar_verificacoes" }),
+  "enviar-revisao": (btn) => taskAction(btn.dataset.task, { action: "enviar_revisao" }),
+  "ajustar-revisao": (btn) => taskAction(btn.dataset.task, { action: "ajustar_revisao" }),
   // Seletor de esforço no composer: os mesmos níveis do Claude, com tradução.
   "toggle-effort": (btn) => {
     const t = getTask(btn.dataset.task);
@@ -3192,16 +3347,12 @@ document.addEventListener("submit", async (e) => {
     }
     input.value = "";
     autoGrow(input);
-    // Contorno numa falha da esteira: enviar = "pedir mudanças" (o servidor
-    // roteia a mensagem para re-rodar o passo que falhou, com a sua orientação).
-    const contornoFalha = t.modo !== "livre" && t.status === "falhou" && !t.pausadaManual;
-    if ((t.status === "aguardando" && (t.step === "aprovacao" || t.step === "teste")) || contornoFalha) {
-      pushLocalUser(t.id, text);
-      taskAction(t.id, { action: "request_changes", message: text, ...(anexos.length ? { anexos } : {}) });
-    } else {
-      pushLocalUser(t.id, text);
-      api(`/api/tasks/${encodeURIComponent(t.id)}/message`, { text, ...(anexos.length ? { anexos } : {}) });
-    }
+    // PORTEIRA VIVA: a caixa é sempre CONVERSA — tudo vai para /message e o
+    // servidor decide (pergunta responde; trabalho de verdade move a esteira
+    // no momento em que acontece). O botão "Pedir mudanças" dos cards continua
+    // sendo o atalho explícito e direto.
+    pushLocalUser(t.id, text);
+    api(`/api/tasks/${encodeURIComponent(t.id)}/message`, { text, ...(anexos.length ? { anexos } : {}) });
     limparAnexos("composer");
   } else if (kind === "wf-ia") {
     const input = $("#wf-ia-input");

@@ -43,11 +43,29 @@ const h = vi.hoisted(() => {
     previewUrlAtual: undefined as string | undefined,
     restartPreviewCalls: [] as string[],
     healthPathsAdicionados: [] as string[],
+    // Porteira viva (mock da conversa): comportamento do turno de chat.
+    conversaTrabalha: false,
+    conversaPlanText: undefined as string | undefined,
+    conversaTaskId: undefined as string | undefined,
+    stepDuranteConversa: undefined as string | undefined,
+    // Revisão da engenharia (mock)
+    enviarRevisaoCalls: [] as string[],
+    mergeRevisaoCalls: [] as string[],
+    empurrarAjustesCalls: [] as string[],
   };
   return {
     state,
     activeGates: () => state.gates,
-    async runPhase(opts: { permissionMode: string; prompt: string; resume?: string }) {
+    async runPhase(opts: {
+      permissionMode: string;
+      prompt: string;
+      resume?: string;
+      canUseTool?: (
+        tool: string,
+        input: Record<string, unknown>,
+        options: { signal: AbortSignal; toolUseID?: string },
+      ) => Promise<unknown>;
+    }) {
       state.calls.push({
         permissionMode: opts.permissionMode,
         prompt: opts.prompt,
@@ -63,6 +81,22 @@ const h = vi.hoisted(() => {
           planText: state.planText,
           success: true,
         };
+      }
+      // Porteira viva: turno de conversa (prompt neutro com o literal).
+      if (/CONVERSA DA PORTEIRA/.test(opts.prompt)) {
+        if (state.conversaPlanText) {
+          return { sessionId: "sess-chat", finalText: "Plano revisado.", planText: state.conversaPlanText, success: true };
+        }
+        if (state.conversaTrabalha && opts.canUseTool) {
+          // Simula o agente agindo: a 1ª ferramenta de trabalho passa pelo gate.
+          await opts.canUseTool("Write", { file_path: "src/App.tsx" }, {
+            signal: new AbortController().signal,
+            toolUseID: "t1",
+          });
+          state.stepDuranteConversa = store.getTask(state.conversaTaskId ?? "")?.step;
+          return { sessionId: "sess-chat", finalText: "Mudança aplicada.", success: true, filesTouched: true };
+        }
+        return { sessionId: "sess-chat", finalText: "Resposta da conversa.", success: true };
       }
       if (opts.permissionMode === "acceptEdits") {
         // Simula fase em andamento sendo pausada: trava até o abort e volta como interrompida.
@@ -178,7 +212,20 @@ vi.mock("../server/services/preview.js", () => ({
     return true;
   },
 }));
-vi.mock("../server/services/publish.js", () => ({ publishTask: h.publishTask }));
+vi.mock("../server/services/publish.js", () => ({
+  publishTask: h.publishTask,
+  enviarParaRevisao: async (t: { id: string }) => {
+    h.state.enviarRevisaoCalls.push(t.id);
+    return { prUrl: "https://github.com/acme/app/pull/42" };
+  },
+  mergeRevisao: async (t: { id: string }) => {
+    h.state.mergeRevisaoCalls.push(t.id);
+  },
+  limparAposMerge: async () => {},
+  empurrarAjustesRevisao: async (t: { id: string }) => {
+    h.state.empurrarAjustesCalls.push(t.id);
+  },
+}));
 vi.mock("../server/events.js", () => ({ broadcast: () => {}, addClient: () => {} }));
 // A máquina resolve as skills pelo workflow ativo; aqui testamos as transições, não
 // as skills — então o workflow ativo é vazio (comportamento "sem config" original).
@@ -190,7 +237,7 @@ process.env.INHOUSE_DATA_DIR = join(TMP, "data");
 process.env.INHOUSE_PROJECTS_DIR = join(TMP, "projects");
 
 const store = await import("../server/store.js");
-const { applyAction, startPreparacao, startTask, steer } = await import("../server/workflow/machine.js");
+const { applyAction, aplicarSondagem, startPreparacao, startTask, steer } = await import("../server/workflow/machine.js");
 const { GATE_FIX_SAFETY_ROUNDS } = await import("../server/config.js");
 const coleta = await import("../server/eval/coleta.js");
 
@@ -203,9 +250,20 @@ const project: Project = {
   createdAt: new Date().toISOString(),
 };
 
+const projectGitHub: Project = {
+  id: "p2",
+  name: "demo-github",
+  kind: "repo",
+  path: join(TMP, "repo-gh"),
+  originUrl: "https://github.com/acme/app",
+  defaultBranch: "main",
+  createdAt: new Date().toISOString(),
+};
+
 beforeAll(() => {
   store.load();
   store.addProject(project);
+  store.addProject(projectGitHub);
 });
 
 beforeEach(() => {
@@ -787,11 +845,20 @@ describe("machine: preview 10x (conserto automático e steer honesto)", () => {
     store.updateTask(t.id, { status: "aguardando" });
   });
 
-  it("steer fora da execução enfileira e entrega no próximo passo (não descarta em silêncio)", async () => {
-    const t = await ateTeste();
-    await steer(t.id, "prefiro o botão em azul");
-    // O próximo trabalho do Claude (request_changes → execução) recebe a mensagem enfileirada.
-    await applyAction(t.id, { action: "request_changes", message: "ajuste o rodapé" });
+  it("steer com o Claude TRABALHANDO enfileira e entrega no próximo passo", async () => {
+    // Porteiras agora abrem conversa; a fila vale para fases em movimento.
+    // Simula: mensagem chega ENQUANTO a execução roda (execHang) e é drenada
+    // na rodada seguinte da execução.
+    h.state.execHang = true;
+    const t = await criaTaskEmAprovacao();
+    await applyAction(t.id, { action: "approve_plan", direto: true });
+    await esperaStatus(t.id, "rodando");
+    await steer(t.id, "prefiro o botão em azul"); // rodando → entra na fila
+    h.state.execHang = false;
+    h.state.releaseExec?.(); // fase atual termina (interrompida)
+    await esperaStatus(t.id, "falhou"); // interrompida vira falha
+    // Retomada consome a fila na próxima execução.
+    await applyAction(t.id, { action: "retry" });
     await esperaStep(t.id, "teste");
     const call = h.state.calls.find((c) => /Mensagens que o usuário enviou/.test(c.prompt));
     expect(call?.prompt).toContain("prefiro o botão em azul");
@@ -856,5 +923,231 @@ describe("machine: esforço e troca de modo", () => {
     expect(emAprovacao.plan).toBeTruthy();
     // Rodou espec (default) e plano (plan) — a esteira de verdade.
     expect(h.state.calls.map((c) => c.permissionMode)).toEqual(["default", "plan"]);
+  });
+});
+
+describe("machine: porteira viva (conversa sem sair da etapa)", () => {
+  it("pergunta no Seu teste: responde e RESTAURA o estado — etapa parada, preview intocado", async () => {
+    const t = await ateTeste();
+    const stops = h.state.stopPreviewCalls.length;
+    h.state.calls.length = 0;
+
+    await steer(t.id, "me dá um roteiro de testes");
+    await esperaStatus(t.id, "aguardando");
+
+    const depois = store.getTask(t.id)!;
+    expect(depois.step).toBe("teste"); // nunca saiu do lugar
+    const conversa = h.state.calls.find((c) => /CONVERSA DA PORTEIRA/.test(c.prompt));
+    expect(conversa?.prompt).toContain("me dá um roteiro de testes");
+    // Nenhuma execução/verificação disparou e o preview não foi tocado.
+    expect(h.state.calls.some((c) => /pediu as seguintes mudanças/.test(c.prompt))).toBe(false);
+    expect(h.state.stopPreviewCalls.length).toBe(stops);
+  });
+
+  it("trabalho no Seu teste: NÃO sai da etapa, pergunta, e as verificações ficam pendentes", async () => {
+    const t = await ateTeste();
+    store.updateTask(t.id, { autoAprovar: true }); // aprova o Write simulado sem porteira humana
+    h.state.conversaTrabalha = true;
+    h.state.conversaTaskId = t.id;
+    const gatesAntes = h.state.gateRuns;
+
+    await steer(t.id, "muda o título da home para Boas-vindas");
+    await esperaStatus(t.id, "aguardando");
+
+    // A pessoa está NO MEIO do teste: a etapa não se move nem durante o Write.
+    expect(h.state.stepDuranteConversa).toBe("teste");
+    const depois = store.getTask(t.id)!;
+    expect(depois.step).toBe("teste");
+    expect(depois.verificacoesPendentes).toBe(true);
+    // NENHUMA verificação rodou sozinha — a pessoa testa primeiro.
+    expect(h.state.gateRuns).toBe(gatesAntes);
+    h.state.conversaTrabalha = false;
+    h.state.conversaTaskId = undefined;
+  });
+
+  it("Aprovar com pendências: roda as verificações (preview no ar) e segue para publicar", async () => {
+    const t = await ateTeste();
+    store.updateTask(t.id, { autoAprovar: true });
+    h.state.conversaTrabalha = true;
+    h.state.conversaTaskId = t.id;
+    await steer(t.id, "ajusta o rodapé");
+    await esperaStatus(t.id, "aguardando");
+    h.state.conversaTrabalha = false;
+    h.state.conversaTaskId = undefined;
+    const gatesAntes = h.state.gateRuns;
+
+    await applyAction(t.id, { action: "approve_test" });
+    const pub = await esperaStep(t.id, "publicar");
+    expect(pub.status).toBe("aguardando");
+    expect(h.state.gateRuns).toBeGreaterThan(gatesAntes); // a porteira de segurança rodou
+    expect(store.getTask(t.id)?.verificacoesPendentes).toBeUndefined();
+  });
+
+  it("Rodar verificações agora: verifica com o preview no ar e volta pro teste", async () => {
+    const t = await ateTeste();
+    store.updateTask(t.id, { autoAprovar: true });
+    h.state.conversaTrabalha = true;
+    h.state.conversaTaskId = t.id;
+    await steer(t.id, "ajusta o cabeçalho");
+    await esperaStatus(t.id, "aguardando");
+    h.state.conversaTrabalha = false;
+    h.state.conversaTaskId = undefined;
+    const stops = h.state.stopPreviewCalls.length;
+
+    await applyAction(t.id, { action: "rodar_verificacoes" });
+    await esperaStep(t.id, "teste");
+    await esperaStatus(t.id, "aguardando");
+    expect(store.getTask(t.id)?.verificacoesPendentes).toBeUndefined();
+    expect(h.state.stopPreviewCalls.length).toBe(stops); // preview nunca caiu
+  });
+
+  it("pergunta na aprovação: plano intacto, sem replano", async () => {
+    const t = await criaTaskEmAprovacao();
+    const planoAntes = store.getTask(t.id)?.plan;
+    h.state.calls.length = 0;
+
+    await steer(t.id, "você considerou acessibilidade?");
+    await esperaStatus(t.id, "aguardando");
+
+    const depois = store.getTask(t.id)!;
+    expect(depois.step).toBe("aprovacao");
+    expect(depois.plan).toBe(planoAntes);
+    // Não houve fase de plano (permissionMode "plan") — só a conversa.
+    expect(h.state.calls.every((c) => c.permissionMode !== "plan")).toBe(true);
+  });
+
+  it("ajuste na aprovação: ExitPlanMode revisa o plano e CONTINUA aguardando aprovação", async () => {
+    const t = await criaTaskEmAprovacao();
+    h.state.conversaPlanText = "1. Novo passo A\n2. Novo passo B";
+
+    await steer(t.id, "inclui exportação em PDF no plano");
+    await vi.waitFor(() => {
+      expect(store.getTask(t.id)?.plan).toBe("1. Novo passo A\n2. Novo passo B");
+    }, { timeout: 3000 });
+    const depois = store.getTask(t.id)!;
+    expect(depois.step).toBe("aprovacao");
+    expect(depois.status).toBe("aguardando");
+    h.state.conversaPlanText = undefined;
+  });
+
+  it("pergunta numa falha de execução: explica e a falha volta com o MESMO erro", async () => {
+    h.state.gatesOk = false;
+    h.state.fixDesiste = true;
+    const t = await criaTaskEmAprovacao();
+    await applyAction(t.id, { action: "approve_plan", direto: true });
+    const falhou = await esperaStatus(t.id, "falhou");
+    const erroAntes = falhou.error;
+    h.state.gatesOk = true; // não interfere: a conversa não roda gates
+    h.state.calls.length = 0;
+
+    await steer(t.id, "por que falhou?");
+    await esperaStatus(t.id, "falhou");
+
+    const depois = store.getTask(t.id)!;
+    expect(depois.error).toBe(erroAntes); // card de falha preservado
+    expect(h.state.calls.some((c) => /CONVERSA DA PORTEIRA/.test(c.prompt))).toBe(true);
+    h.state.fixDesiste = false;
+  });
+});
+
+describe("machine: revisão da engenharia (PR + acompanhamento + festa)", () => {
+  /** Leva uma task do projeto COM GitHub até a etapa Revisão. */
+  async function ateRevisao(): Promise<Task> {
+    const t = await startTask("p2", "Feature revisada", "Descrição da tarefa");
+    await esperaStep(t.id, "aprovacao");
+    await applyAction(t.id, { action: "approve_plan", direto: true });
+    await esperaStep(t.id, "teste");
+    await applyAction(t.id, { action: "approve_test" });
+    return esperaStep(t.id, "revisao");
+  }
+
+  it("projeto com GitHub: aprovar o teste leva à Revisão (pino desde o início)", async () => {
+    const criada = await startTask("p2", "Com revisão", "Descrição");
+    expect(criada.temRevisao).toBe(true); // o pino aparece desde o começo
+    await esperaStep(criada.id, "aprovacao");
+    await applyAction(criada.id, { action: "approve_plan", direto: true });
+    await esperaStep(criada.id, "teste");
+    await applyAction(criada.id, { action: "approve_test" });
+    const rev = await esperaStep(criada.id, "revisao");
+    expect(rev.status).toBe("aguardando");
+    expect(rev.revisao).toBeUndefined(); // ainda não enviou
+  });
+
+  it("enviar_revisao abre o PR (preservando o espaço) e começa o acompanhamento", async () => {
+    const t = await ateRevisao();
+    await applyAction(t.id, { action: "enviar_revisao" });
+    const depois = store.getTask(t.id)!;
+    expect(h.state.enviarRevisaoCalls).toContain(t.id);
+    expect(depois.prUrl).toBe("https://github.com/acme/app/pull/42");
+    expect(depois.revisao?.estado).toBe("aguardando");
+    expect(depois.step).toBe("revisao");
+    // O espaço NÃO foi removido (o loop de ajustes precisa dele até o merge).
+    expect(h.state.removeEspacoCalls.length).toBe(0);
+  });
+
+  it("sondagem: ajustes pedidos → 'Pedir para o Claude ajustar' empurra pro PR", async () => {
+    const t = await ateRevisao();
+    await applyAction(t.id, { action: "enviar_revisao" });
+    aplicarSondagem(t.id, {
+      estado: "mudancas_pedidas",
+      eventos: [{ chave: "review:joao:1:CHANGES_REQUESTED", texto: '✋ joao pediu ajustes: "usa o nome do cadastro"' }],
+      pendencias: [{ autor: "joao", arquivo: "src/email.ts", texto: "usa o nome do cadastro" }],
+    });
+    expect(store.getTask(t.id)?.revisao?.estado).toBe("mudancas_pedidas");
+
+    h.state.calls.length = 0;
+    await applyAction(t.id, { action: "ajustar_revisao" });
+    await esperaStatus(t.id, "aguardando");
+    const depois = store.getTask(t.id)!;
+    // O agente rodou com os apontamentos, os gates passaram e o push aconteceu.
+    expect(h.state.calls.some((c) => /revisou o seu trabalho/.test(c.prompt))).toBe(true);
+    expect(h.state.empurrarAjustesCalls).toContain(t.id);
+    expect(depois.step).toBe("revisao");
+    expect(depois.revisao?.pendencias).toEqual([]);
+    expect(depois.revisao?.estado).toBe("aguardando");
+  });
+
+  it("aprovada → Publicar (merge) → 🚀 concluída com quem publicou", async () => {
+    const t = await ateRevisao();
+    await applyAction(t.id, { action: "enviar_revisao" });
+    aplicarSondagem(t.id, {
+      estado: "aprovada",
+      eventos: [{ chave: "review:joao:2:APPROVED", texto: "✔ joao aprovou a revisão." }],
+      pendencias: [],
+    });
+    const aprovada = store.getTask(t.id)!;
+    expect(aprovada.step).toBe("publicar");
+    expect(aprovada.status).toBe("aguardando");
+
+    await applyAction(t.id, { action: "publish" });
+    const fim = await esperaStatus(t.id, "concluida");
+    expect(h.state.mergeRevisaoCalls).toContain(t.id);
+    expect(fim.revisao?.mergePor).toBe("você");
+    expect(fim.revisao?.mergeEm).toBeTruthy();
+  });
+
+  it("o TIME mergeou direto no GitHub: a sondagem conclui com a mesma festa", async () => {
+    const t = await ateRevisao();
+    await applyAction(t.id, { action: "enviar_revisao" });
+    aplicarSondagem(t.id, {
+      estado: "aprovada",
+      merged: { por: "joao", em: "2026-08-14T12:00:00.000Z" },
+      eventos: [],
+      pendencias: [],
+    });
+    const fim = await esperaStatus(t.id, "concluida");
+    expect(fim.revisao?.mergePor).toBe("joao");
+    expect(fim.revisao?.mergeEm).toBe("2026-08-14T12:00:00.000Z");
+    expect(h.state.mergeRevisaoCalls).not.toContain(t.id); // ninguém re-mergeou
+  });
+
+  it("PR fechado sem merge: volta pro Seu teste com explicação (sem beco)", async () => {
+    const t = await ateRevisao();
+    await applyAction(t.id, { action: "enviar_revisao" });
+    aplicarSondagem(t.id, { estado: "aguardando", fechadoSemMerge: true, eventos: [], pendencias: [] });
+    const depois = store.getTask(t.id)!;
+    expect(depois.step).toBe("teste");
+    expect(depois.status).toBe("aguardando");
+    expect(depois.revisao).toBeUndefined();
   });
 });
