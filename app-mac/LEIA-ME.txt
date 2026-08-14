@@ -1,0 +1,25 @@
+Inhouse para Mac — como instalar
+
+1. Arraste o "Inhouse" para a pasta Aplicativos (ao lado).
+
+2. PRIMEIRA ABERTURA (importante): o app ainda não é assinado pela Apple,
+   então o macOS mostra um aviso. Para abrir:
+     • clique no Inhouse com o BOTÃO DIREITO (ou Control+clique)
+     • escolha "Abrir"
+     • confirme "Abrir" no aviso
+   Isso só é preciso na primeira vez.
+
+   Se o macOS disser que o app "está danificado", abra o Terminal e rode:
+     xattr -dr com.apple.quarantine /Applications/Inhouse.app
+
+3. O Inhouse aparece na BARRA DE MENU (ícone de caixa, perto do relógio).
+   Ele sobe o servidor sozinho e abre o Inhouse no seu navegador.
+
+Requisitos na máquina:
+  • Claude Code instalado e logado (rode `claude` no Terminal uma vez).
+  • git instalado (vem com as ferramentas de linha de comando da Apple).
+
+Dicas:
+  • Menu do ícone: Abrir o Inhouse · Ver o registro · Reiniciar · Encerrar.
+  • Se você já roda o Inhouse pelo Terminal (porta 4400), o app percebe e
+    usa esse servidor em vez de subir outro.
