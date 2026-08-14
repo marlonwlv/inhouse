@@ -55,7 +55,7 @@ function stepsAtivos(t) {
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.25.0";
+const UI_VERSION = "0.26.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -535,6 +535,7 @@ function onChatDelta(taskId, text) {
   if (!isEditorOf(taskId)) return;
   const scroller = $("#chat-scroll");
   if (!scroller) return;
+  $("#pensando", scroller)?.remove(); // a resposta começou — o indicador sai de cena
   const stick = nearBottom(scroller);
   let bubble = $("#stream-bubble");
   if (!bubble) {
@@ -1972,7 +1973,84 @@ function renderChat(id) {
 
   scroller.innerHTML = parts.join("");
   scroller.scrollTop = stick ? scroller.scrollHeight : prevTop;
+  syncPensando(id);
 }
+
+// ---------- Indicador de pensamento ("Pensando…" com o verbo do momento) ----------
+
+/** Traduz o último evento da conversa num verbo honesto para o indicador. */
+function verboDoMomento(items) {
+  const last = items[items.length - 1];
+  if (!last) return "Pensando…";
+  if (last.kind === "tool") {
+    const l = last.label ?? "";
+    if (l.startsWith("Criar arquivo") || l.startsWith("Editar")) return "Fazendo a mudança…";
+    if (l.startsWith("Rodar:")) return "Rodando um comando…";
+    // Labels exatos das ferramentas de preview do Inhouse (antes do "Ler" genérico;
+    // um caminho de arquivo contendo "preview" não pode cair aqui).
+    if (
+      l.startsWith("Consultar o preview") ||
+      l.startsWith("Reiniciar o preview") ||
+      l.startsWith("Ler o registro do preview") ||
+      l.startsWith("Registrar uma tela")
+    ) {
+      return "Conferindo o preview…";
+    }
+    if (l.startsWith("Ler") || l.startsWith("Buscar no código")) return "Lendo o projeto…";
+    if (l.startsWith("Acessar a internet")) return "Pesquisando na internet…";
+    if (l.startsWith("Delegar subtarefa")) return "Trabalhando numa subtarefa…";
+    if (l.startsWith("Plano pronto")) return "Terminando o plano…";
+    return "Trabalhando…";
+  }
+  if (last.kind === "system" && /^Rodando a verificação/.test(last.text ?? "")) {
+    return "Rodando as verificações…";
+  }
+  return "Pensando…";
+}
+
+/**
+ * Mantém o indicador "Pensando…" no fim do chat enquanto o Claude trabalha em
+ * silêncio (entre eventos). Idempotente: cria, atualiza o texto ou remove.
+ * Some quando o texto começa a chegar (streaming), quando há um pedido de
+ * permissão aguardando a pessoa, e quando a fase termina. Passados 45s na
+ * mesma atividade, ganha um cronômetro discreto (" · 1:20") — responde ao
+ * "travou?" só quando a dúvida existe.
+ */
+function syncPensando(taskId) {
+  const scroller = $("#chat-scroll");
+  if (!scroller || !isEditorOf(taskId)) return;
+  const t = getTask(taskId);
+  const c = tcache(taskId);
+  const mostrar =
+    t && t.status === "rodando" && !c.stream && !state.permissions.some((p) => p.taskId === taskId);
+  let el = $("#pensando", scroller);
+  if (!mostrar) {
+    el?.remove();
+    return;
+  }
+  const last = c.items[c.items.length - 1];
+  const desde = Date.parse(last?.at ?? t.updatedAt ?? "") || Date.now();
+  const seg = Math.max(0, Math.floor((Date.now() - desde) / 1000));
+  const tempo = seg >= 45 ? ` · ${Math.floor(seg / 60)}:${String(seg % 60).padStart(2, "0")}` : "";
+  const texto = `${verboDoMomento(c.items)}${tempo}`;
+  // Decide se gruda no fim ANTES de mexer no DOM — e rola DEPOIS do texto no
+  // lugar (o elemento entra vazio; rolar antes deixava o texto cortado embaixo).
+  const stick = nearBottom(scroller);
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "pensando";
+    el.className = "pensando";
+    scroller.insertBefore(el, $("#chat-cards", scroller));
+  }
+  if (el.textContent !== texto) el.textContent = texto;
+  if (stick) scroller.scrollTop = scroller.scrollHeight;
+}
+
+// O cronômetro do indicador anda sozinho, mesmo sem eventos novos chegando.
+setInterval(() => {
+  const r = route();
+  if (r.name === "editor") syncPensando(r.id);
+}, 1000);
 
 function transcriptItemHtml(item) {
   if (item.kind === "user") return `<div class="msg-user">${mdLite(item.text)}</div>`;
@@ -2320,8 +2398,10 @@ function appendChatDom(taskId, item) {
   const tpl = document.createElement("template");
   tpl.innerHTML = transcriptItemHtml(item).trim();
   const node = tpl.content.firstElementChild;
-  if (node) scroller.insertBefore(node, $("#chat-cards", scroller));
+  // O indicador "Pensando…" fica sempre por último — o item novo entra antes dele.
+  if (node) scroller.insertBefore(node, $("#pensando", scroller) ?? $("#chat-cards", scroller));
   if (stick) scroller.scrollTop = scroller.scrollHeight;
+  syncPensando(taskId);
 }
 
 // HTML do painel de registro do app (escondido até abrir em "Registro"). É um

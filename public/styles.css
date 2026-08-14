@@ -44,6 +44,9 @@
   --danger-soft: #FEECEC;
   --danger-line: #F6D2D2;
 
+  /* Ponto claro que varre o texto do indicador "Pensando…". */
+  --pensando-glow: #C9C9CF;
+
   /* Borda-primeiro: sombras quase invisíveis, mais fortes só em overlays. */
   --shadow-sm: 0 1px 2px rgba(24, 24, 27, .04), 0 1px 3px rgba(24, 24, 27, .05);
   --shadow: 0 4px 12px -4px rgba(24, 24, 27, .10), 0 15px 40px -12px rgba(24, 24, 27, .14);
@@ -81,6 +84,8 @@
   --danger: #F26B6B;
   --danger-soft: #2E1615;
   --danger-line: #4A2320;
+
+  --pensando-glow: #B4B4BE;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .5);
   --shadow: 0 4px 12px -4px rgba(0, 0, 0, .6), 0 15px 40px -12px rgba(0, 0, 0, .7);
@@ -717,6 +722,30 @@ input::placeholder { color: var(--faint); }
   border-radius: 2px;
   animation: pulse 1s ease-in-out infinite;
 }
+/* Indicador de pensamento: "Pensando…" com brilho varrendo + verbo do momento
+   (protótipo aprovado em docs/plans/mockups/indicador-pensamento). Após 45s na
+   mesma atividade ganha o cronômetro (" · 1:20"). Some quando o texto começa. */
+.pensando {
+  align-self: flex-start;
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 2px 1px;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(90deg, var(--faint) 0%, var(--faint) 35%, var(--pensando-glow) 50%, var(--faint) 65%, var(--faint) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: pensando-varre 1.8s linear infinite;
+}
+@keyframes pensando-varre {
+  from { background-position: 180% 0; }
+  to { background-position: -20% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pensando { animation: none; background: none; color: var(--faint); }
+}
+
 .tool-row {
   display: flex;
   align-items: center;

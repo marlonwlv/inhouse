@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Protótipo — Indicador de pensamento no chat</title>
+<style>
+  :root{
+    --ground:#FAFAFA; --surface:#FFF; --surface-2:#F4F4F5; --ink:#18181B; --muted:#52525B;
+    --faint:#8E8E97; --line:#EAEAEC; --line-2:#DCDCE0; --brand:#18181B; --brand-ink:#FFF;
+    --amber:#8A4E06; --amber-soft:#FCF3E3;
+    --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    --shadow-sm:0 1px 2px rgba(24,24,27,.04),0 1px 3px rgba(24,24,27,.05);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);font:14px/1.55 "Onest",system-ui,-apple-system,sans-serif;padding:34px 40px 90px}
+  h1{font-size:21px;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 6px;max-width:78ch}
+  .sub b{color:var(--ink)}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin:42px 0 10px}
+  h2 .n{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:50%;background:var(--brand);color:#fff;font-size:11px;margin-right:6px}
+  .note{font-size:13px;color:var(--muted);margin:10px 0 0;max-width:82ch}
+  .note b{color:var(--ink)}
+  .pros{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;margin-top:8px}
+  .pros span{color:var(--muted)}
+  .pros .p::before{content:"✓ ";color:#166534}
+  .pros .c::before{content:"— ";color:var(--amber)}
+
+  /* ---- moldura de chat realista ---- */
+  .frame{width:560px;max-width:100%;background:var(--ground);border:1px solid var(--line);border-radius:13px;overflow:hidden;box-shadow:var(--shadow-sm)}
+  .scroll{padding:18px 16px 10px;display:flex;flex-direction:column;gap:12px;min-height:180px}
+  .msg-user{align-self:flex-end;max-width:85%;background:var(--brand);color:var(--brand-ink);padding:10px 13px;border-radius:14px 14px 4px 14px}
+  .msg-ai{align-self:flex-start;max-width:92%;background:var(--surface);border:1px solid var(--line);border-radius:4px 14px 14px 14px;padding:11px 13px;box-shadow:var(--shadow-sm)}
+  .tool{align-self:stretch;font-size:12.5px;color:var(--muted);background:var(--surface-2);border-radius:8px;padding:7px 11px;font-family:var(--mono)}
+
+  /* ---- composer ---- */
+  .composer{margin:0 12px 12px;border:1px solid var(--line-2);border-radius:14px;background:var(--surface);padding:10px 12px;display:flex;align-items:center;gap:10px;position:relative}
+  .composer .ph{flex:1;color:var(--faint);font-size:13.5px}
+  .composer .modelo{font-size:12px;color:var(--muted);white-space:nowrap}
+  .composer .modelo b{color:var(--ink)}
+  .send{width:34px;height:34px;border:1px solid var(--line-2);border-radius:9px;background:var(--surface-2);display:grid;place-items:center;cursor:pointer;flex:none;position:relative}
+  .send::before{content:"";width:11px;height:11px;border:1.5px solid var(--ink);border-radius:3.5px}
+
+  /* ============ 1. Três pontinhos ============ */
+  .typing{align-self:flex-start;background:var(--surface);border:1px solid var(--line);border-radius:4px 14px 14px 14px;padding:13px 15px;display:flex;gap:5px;box-shadow:var(--shadow-sm)}
+  .typing i{width:7px;height:7px;border-radius:50%;background:var(--faint);animation:tp 1.2s ease-in-out infinite}
+  .typing i:nth-child(2){animation-delay:.15s}
+  .typing i:nth-child(3){animation-delay:.3s}
+  @keyframes tp{0%,60%,100%{transform:translateY(0);opacity:.45}30%{transform:translateY(-4px);opacity:1}}
+
+  /* ============ 2. "Pensando…" com brilho ============ */
+  .shimmer{align-self:flex-start;font-size:13.5px;font-weight:500;padding:2px 1px;
+    background:linear-gradient(90deg,var(--faint) 0%,var(--faint) 35%,#c9c9cf 50%,var(--faint) 65%,var(--faint) 100%);
+    background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;
+    animation:sh 1.8s linear infinite}
+  @keyframes sh{from{background-position:180% 0}to{background-position:-20% 0}}
+
+  /* ============ 3. Anel no botão ============ */
+  .send.anel::after{content:"";position:absolute;inset:-5px;border-radius:13px;padding:2px;
+    background:conic-gradient(from 0deg,transparent 0 300deg,var(--ink) 340deg,transparent 360deg);
+    -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor;mask-composite:exclude;
+    animation:gira 1.1s linear infinite}
+  @keyframes gira{to{transform:rotate(360deg)}}
+
+  /* ============ 4. Aurora no composer ============ */
+  .composer.aurora{border-color:transparent;background:
+    linear-gradient(var(--surface),var(--surface)) padding-box,
+    linear-gradient(100deg,var(--line-2) 0%,var(--line-2) 30%,#9a9aa4 50%,var(--line-2) 70%,var(--line-2) 100%) border-box;
+    background-size:100% 100%,220% 100%;
+    animation:au 2.2s linear infinite}
+  @keyframes au{from{background-position:0 0,190% 0}to{background-position:0 0,-90% 0}}
+
+  /* ============ 5. Chip vivo ============ */
+  .vivo{align-self:flex-start;display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);
+    background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:6px 12px;box-shadow:var(--shadow-sm)}
+  .vivo .dot{width:7px;height:7px;border-radius:50%;background:#16a34a;animation:pulsa 1.6s ease-in-out infinite}
+  .vivo b{color:var(--ink);font-weight:600}
+  .vivo .t{color:var(--faint);font-variant-numeric:tabular-nums}
+  @keyframes pulsa{0%,100%{box-shadow:0 0 0 0 rgba(22,163,74,.35)}50%{box-shadow:0 0 0 5px rgba(22,163,74,0)}}
+
+  .destaque{margin-top:46px;background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--brand);border-radius:9px;padding:16px 18px;max-width:760px}
+  .destaque h3{margin:0 0 6px;font-size:14px}
+  .destaque p{margin:6px 0;color:var(--muted);font-size:13.5px}
+  .destaque b{color:var(--ink)}
+</style>
+</head>
+<body>
+
+<h1>Indicador de pensamento no chat</h1>
+<p class="sub">Enquanto o Claude trabalha, o chat às vezes fica <b>parado por vários segundos</b> (entre uma ferramenta e outra, ou pensando antes de escrever). Cinco jeitos de mostrar vida — todos animados, é só olhar. Em todos, o indicador <b>some no instante</b> em que a resposta começa a aparecer.</p>
+
+<!-- ================== 1 ================== -->
+<h2><span class="n">1</span> Três pontinhos — a bolha "digitando"</h2>
+<div class="frame">
+  <div class="scroll">
+    <div class="msg-user">Ajusta o texto do aviso para citar o nome da empresa</div>
+    <div class="typing"><i></i><i></i><i></i></div>
+  </div>
+  <div class="composer"><span class="ph">O Claude está respondendo — pode complementar…</span><span class="modelo"><b>Opus</b> Alto</span><button class="send"></button></div>
+</div>
+<div class="pros"><span class="p">linguagem universal (WhatsApp) — ninguém precisa aprender</span><span class="c">promete "digitando"; numa execução de 6 min parece travado</span></div>
+
+<!-- ================== 2 ================== -->
+<h2><span class="n">2</span> "Pensando…" com brilho — e o verbo do momento</h2>
+<div class="frame">
+  <div class="scroll">
+    <div class="msg-user">Ajusta o texto do aviso para citar o nome da empresa</div>
+    <div class="tool">✎ Editar apps/web/aviso-empresa.tsx</div>
+    <div class="shimmer" id="verbo">Pensando…</div>
+  </div>
+  <div class="composer"><span class="ph">O Claude está respondendo — pode complementar…</span><span class="modelo"><b>Opus</b> Alto</span><button class="send"></button></div>
+</div>
+<div class="pros"><span class="p">padrão dos apps de IA (o Claude usa) — aparece onde a resposta vai nascer</span><span class="p">o texto conta a verdade: "Lendo o projeto…", "Escrevendo…"</span><span class="c">exige mapear os eventos reais para os verbos (já temos via SSE)</span></div>
+<p class="note">O texto segue o que está acontecendo de verdade: sem evento → <b>Pensando…</b>; ferramenta de leitura → <b>Lendo o projeto…</b>; edição → <b>Fazendo a mudança…</b>; comando → <b>Rodando um comando…</b>; texto chegando → o balão real substitui o indicador.</p>
+
+<!-- ================== 3 ================== -->
+<h2><span class="n">3</span> Anel no botão — o parar "respira"</h2>
+<div class="frame">
+  <div class="scroll">
+    <div class="msg-user">Ajusta o texto do aviso para citar o nome da empresa</div>
+    <div class="msg-ai">Vou ajustar o texto do aviso e conferir no preview.</div>
+  </div>
+  <div class="composer"><span class="ph">O Claude está respondendo — pode complementar…</span><span class="modelo"><b>Opus</b> Alto</span><button class="send anel"></button></div>
+</div>
+<div class="pros"><span class="p">sempre visível, mesmo com o chat rolado para cima</span><span class="p">reforça onde fica o "parar"</span><span class="c">longe de onde o olho está (a conversa); sinal pequeno</span></div>
+
+<!-- ================== 4 ================== -->
+<h2><span class="n">4</span> Aurora — a borda do composer se move</h2>
+<div class="frame">
+  <div class="scroll">
+    <div class="msg-user">Ajusta o texto do aviso para citar o nome da empresa</div>
+    <div class="msg-ai">Vou ajustar o texto do aviso e conferir no preview.</div>
+  </div>
+  <div class="composer aurora"><span class="ph">O Claude está respondendo — pode complementar…</span><span class="modelo"><b>Opus</b> Alto</span><button class="send"></button></div>
+</div>
+<div class="pros"><span class="p">elegante e periférico — dá vida sem adicionar nenhum elemento</span><span class="c">sutil demais para responder "ainda está vivo?" numa espera longa</span></div>
+
+<!-- ================== 5 ================== -->
+<h2><span class="n">5</span> Chip vivo — atividade + tempo</h2>
+<div class="frame">
+  <div class="scroll">
+    <div class="msg-user">Ajusta o texto do aviso para citar o nome da empresa</div>
+    <div class="vivo"><span class="dot"></span><span id="atv"><b>Pensando</b> na sua mensagem…</span><span class="t" id="cron">0:04</span></div>
+  </div>
+  <div class="composer"><span class="ph">O Claude está respondendo — pode complementar…</span><span class="modelo"><b>Opus</b> Alto</span><button class="send"></button></div>
+</div>
+<div class="pros"><span class="p">o mais informativo: o que está fazendo + há quanto tempo</span><span class="p">o cronômetro tranquiliza em esperas longas ("não travou")</span><span class="c">mais um elemento visual no chat; o tempo pode gerar ansiedade</span></div>
+
+<!-- ================== recomendação ================== -->
+<div class="destaque">
+  <h3>Minha recomendação: a 2 — com um toque da 5 quando a espera cresce</h3>
+  <p>A <b>2 ("Pensando…" com brilho)</b> é o padrão que as pessoas já conhecem dos apps de IA, aparece exatamente onde a resposta vai nascer e — como o texto segue os eventos reais — nunca mente sobre o que está acontecendo.</p>
+  <p>Complemento barato: se a mesma atividade passar de <b>~45 segundos</b>, o indicador ganha o cronômetro discreto da 5 ("Pensando… · 1:20") — resolve a dúvida "travou?" só quando ela existe, sem poluir a espera curta.</p>
+  <p>A <b>3 (anel no botão)</b> combina com qualquer uma e é quase de graça — dá para levar junto.</p>
+</div>
+
+<script>
+  // 2 — verbos rodando como na vida real
+  const verbos=["Pensando…","Lendo o projeto…","Escrevendo…","Fazendo a mudança…","Conferindo o preview…"];
+  let vi=0;
+  setInterval(()=>{vi=(vi+1)%verbos.length;document.getElementById("verbo").textContent=verbos[vi];},2600);
+
+  // 5 — atividade + cronômetro
+  const atv=[["Pensando"," na sua mensagem…"],["Lendo"," aviso-empresa.tsx…"],["Editando"," o texto do aviso…"],["Rodando"," as verificações…"]];
+  let ai=0,seg=4;
+  setInterval(()=>{ai=(ai+1)%atv.length;document.getElementById("atv").innerHTML=`<b>${atv[ai][0]}</b>${atv[ai][1]}`;},3400);
+  setInterval(()=>{seg++;document.getElementById("cron").textContent=`${Math.floor(seg/60)}:${String(seg%60).padStart(2,"0")}`;},1000);
+</script>
+</body>
+</html>
