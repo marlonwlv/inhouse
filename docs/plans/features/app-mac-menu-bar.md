@@ -2,7 +2,7 @@
 
 - **Categoria:** features
 - **Data:** 2026-08-13
-- **Status:** Em andamento
+- **Status:** Concluído (v0.1.0)
 
 ## Contexto
 
@@ -72,11 +72,11 @@ DMG ~170MB por arquitetura (runtime Node completo é o grosso).
 
 ## Pendências / próximos passos
 
-- Validar o DMG arm64 num Mac Apple Silicon (Gatekeeper + Rosetta-free).
+- ~~Validar o DMG~~ — validado pelo Marlon (2026-08-13).
+- ~~Publicar os DMGs~~ — publicados: https://github.com/marlonwlv/inhouse/releases/tag/v0.1.0
 - Ícone próprio (`.icns`) — hoje o app usa o ícone genérico e o símbolo
   `shippingbox` na barra de menu.
 - Assinatura + notarização quando houver conta Apple Developer (o build já
   isola o passo de assinatura).
 - Atualização automática (checagem que o server já faz via git não se aplica
   ao app — pensar em Sparkle ou aviso de versão nova com link do DMG).
-- Publicar os DMGs em GitHub Releases (hoje: build local).
