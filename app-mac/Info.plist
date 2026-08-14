@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Inhouse</string>
+  <key>CFBundleDisplayName</key>
+  <string>Inhouse</string>
+  <key>CFBundleIdentifier</key>
+  <string>br.com.leapy.inhouse</string>
+  <key>CFBundleExecutable</key>
+  <string>Inhouse</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>__VERSAO__</string>
+  <key>CFBundleVersion</key>
+  <string>__VERSAO__</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.0</string>
+  <!-- Só na barra de menu: sem ícone no Dock, sem janela própria. -->
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <!-- O servidor local fala com localhost (previews) e o npm baixa pacotes. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+</dict>
+</plist>
