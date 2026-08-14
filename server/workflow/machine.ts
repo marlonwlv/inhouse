@@ -36,7 +36,15 @@ import {
 } from "../services/preview.js";
 import { previewEvents, setPreviewInfo } from "../services/previewState.js";
 import { lastLines } from "../services/proc.js";
-import { publishTask } from "../services/publish.js";
+import {
+  empurrarAjustesRevisao,
+  enviarParaRevisao,
+  limparAposMerge,
+  mergeRevisao,
+  publishTask,
+} from "../services/publish.js";
+import { sondarRevisao } from "../services/revisao.js";
+import type { Sondagem } from "../services/revisao.js";
 import { createEspaco, removeEspaco, slugify } from "../services/worktrees.js";
 import * as store from "../store.js";
 import { registrarFalha, registrarTarefaFinalizada } from "../eval/coleta.js";
@@ -44,6 +52,7 @@ import { verificarGatilhoAuto } from "../eval/juiz.js";
 import { skillsDetalhamento, skillsProduto, temUi } from "./config.js";
 import { activeConfig, activeGates } from "./library.js";
 import {
+  ajustesRevisaoPrompt,
   anexosBloco,
   changesPrompt,
   consertoPreviewPrompt,
@@ -61,6 +70,7 @@ import {
   parseVeredito,
   planoFeedbackPrompt,
   planoPrompt,
+  porteiraChatPrompt,
   preparacaoPrompt,
   previewExercisePrompt,
   previewSetupPrompt,
@@ -622,9 +632,14 @@ async function runExecucao(
  * Verificação LEVE pós-conserto no "Seu teste": roda só os gates do PROJETO
  * (TS/Lint/Testes — baratos) e confere a saúde do preview VIVO, sem derrubar
  * o iframe nem re-rodar skill-gates caros. Gates reprovando → cai no caminho
- * completo (aí a re-verificação pesada se justifica).
+ * completo (preservando o preview quando ele está no ar).
+ * `opts.depois`: onde pousar quando tudo passa — "teste" (default) ou
+ * "publicar" (quando a pessoa já aprovou e as pendências rodaram no Aprovar).
  */
-async function runVerificacaoLeve(taskId: string): Promise<boolean> {
+async function runVerificacaoLeve(
+  taskId: string,
+  opts: { depois?: "teste" | "publicar" } = {},
+): Promise<boolean> {
   const task = store.getTask(taskId);
   if (!task || cancelada(taskId)) return false;
   const project = store.getProject(task.projectId);
@@ -636,8 +651,10 @@ async function runVerificacaoLeve(taskId: string): Promise<boolean> {
   const anteriores = (store.getTask(taskId)?.gates ?? []).filter((g) => !results.some((r) => r.name === g.name));
   patch(taskId, { gates: [...results, ...anteriores] });
   if (results.some((g) => !g.ok)) {
-    sistema(taskId, "A mudança quebrou uma verificação do projeto — indo para a verificação completa.");
-    return runVerificacoes(taskId);
+    sistema(taskId, "A mudança quebrou uma verificação do projeto — indo para a verificação completa (o preview fica no ar).");
+    // Escala SEM derrubar o preview; código mudou no conserto → re-aprovação
+    // humana: pousa sempre no teste, mesmo que a origem fosse o Aprovar.
+    return runVerificacoes(taskId, { manterPreview: true });
   }
 
   // Preview vivo: health-check sem stop/start; se caiu, tenta UM reinício.
@@ -672,14 +689,20 @@ async function runVerificacaoLeve(taskId: string): Promise<boolean> {
       }
     }
   }
-  sistema(taskId, "Tudo certo — de volta pro seu teste.");
-  // Verificação leve saudável também rearma o conserto automático e limpa o alerta.
-  patch(taskId, { previewFixRounds: 0 });
+  // Verificação leve saudável rearma o conserto automático, limpa o alerta e
+  // as pendências da conversa do teste.
+  patch(taskId, { previewFixRounds: 0, verificacoesPendentes: undefined });
   const stOk = previewStatus(taskId);
   if (stOk.status === "no_ar" && stOk.url) {
     setPreviewInfo(taskId, { status: "no_ar", url: stOk.url, porta: stOk.porta });
   }
-  pousarTeste(taskId);
+  if (opts.depois === "publicar") {
+    sistema(taskId, "Verificações em dia — seguindo para a publicação.");
+    avancarAposTeste(taskId);
+  } else {
+    sistema(taskId, "Tudo certo — de volta pro seu teste.");
+    pousarTeste(taskId);
+  }
   return true;
 }
 
@@ -846,6 +869,159 @@ function aoCrashDoPreview(taskId: string): void {
 
 previewEvents.on("crash", ({ taskId }: { taskId: string }) => aoCrashDoPreview(taskId));
 
+// ---------- Porteira viva: conversar sem sair da etapa ----------
+
+/**
+ * Tipo do turno de conversa desta tarefa, ou null quando a mensagem não deve
+ * abrir conversa (fases rodando; pausa manual; falha de espec — que mantém o
+ * contorno direto por não ter sinal natural de trabalho).
+ */
+type PorteiraTipo = "codigo" | "plano" | "prototipo";
+
+function tipoDaPorteira(task: Task): PorteiraTipo | null {
+  if (task.kind === "preparacao" || task.modo === "livre") return null;
+  if (task.status === "aguardando" && !task.aguardandoPedido) {
+    if (task.step === "teste" || task.step === "revisao" || task.step === "publicar") return "codigo";
+    if (task.step === "aprovacao") return "plano";
+    if (task.step === "aprovacao_prototipo") return "prototipo";
+  }
+  if (task.status === "falhou" && !task.pausadaManual) {
+    if (
+      task.step === "execucao" ||
+      task.step === "verificacoes" ||
+      task.step === "revisao" ||
+      isHumanStep(task.step)
+    ) {
+      return "codigo";
+    }
+    if (task.step === "plano" || task.step === "detalhamento") return "plano";
+    if (task.step === "prototipo") return "prototipo";
+  }
+  return null;
+}
+
+/** Ferramentas cujo PRIMEIRO uso significa "a conversa virou trabalho". */
+const FERRAMENTAS_DE_TRABALHO = new Set([
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "NotebookEdit",
+  "mcp__inhouse__preview_reiniciar",
+]);
+
+/**
+ * O gate de permissões como SENSOR de intenção: na primeira ferramenta de
+ * trabalho, `aoTrabalhar()` transiciona a esteira ao vivo; tudo o mais segue o
+ * gate de preview normal (curl localhost livre, dev server negado, resto HITL).
+ */
+function gateComTransicao(taskId: string, aoTrabalhar: () => void): CanUseTool {
+  const base = createPreviewSetupGate(taskId, gateComStatus(taskId));
+  return async (toolName, input, options) => {
+    if (FERRAMENTAS_DE_TRABALHO.has(toolName)) aoTrabalhar();
+    return base(toolName, input, options);
+  };
+}
+
+/**
+ * UM turno de conversa na porteira (ou falha): prompt neutro, sessão retomada.
+ * Só conversa → o estado anterior é restaurado na íntegra (etapa parada,
+ * preview intocado). Trabalho de verdade → a esteira segue o agente:
+ *  - código: pino desliza p/ execução na 1ª edição; ao final, verificação LEVE
+ *    (preview vivo) e pouso de volta no teste;
+ *  - plano: ExitPlanMode emite o plano revisado → card novo, ainda aguardando;
+ *  - protótipo: mockups editados → continua na porteira, protótipo atualizado.
+ */
+async function runPorteiraChat(taskId: string, msg: string): Promise<boolean> {
+  const task = store.getTask(taskId);
+  if (!task) return false;
+  const tipo = tipoDaPorteira(task);
+  if (!tipo) return false;
+  const antes = { step: task.step, status: task.status, error: task.error };
+  const local =
+    antes.status === "falhou"
+      ? ("falha" as const)
+      : (antes.step as "teste" | "aprovacao" | "aprovacao_prototipo" | "revisao" | "publicar");
+
+  patch(taskId, { status: "rodando", error: undefined });
+
+  let virouTrabalho = false;
+  const aoTrabalhar = (): void => {
+    if (virouTrabalho) return;
+    virouTrabalho = true;
+    // A etapa NÃO se move (a pessoa está no meio do teste dela) — só o chat
+    // narra que a conversa virou trabalho.
+    if (tipo === "codigo") {
+      sistema(taskId, "A conversa virou mão na massa — aplicando a mudança.");
+    } else if (tipo === "prototipo") {
+      sistema(taskId, "Ajustando o protótipo a partir da conversa…");
+    }
+  };
+
+  const r = await runPhase({
+    taskId,
+    cwd: task.worktreePath,
+    prompt: porteiraChatPrompt(local, msg),
+    // Plano: leitura pura — a revisão sai pelo ExitPlanMode, nunca por edição.
+    permissionMode: tipo === "plano" ? "default" : "acceptEdits",
+    resume: store.getTask(taskId)?.claudeSessionId,
+    ...(tipo === "plano"
+      ? { disallowedTools: ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "Task", "WebFetch", "WebSearch"] }
+      : { canUseTool: gateComTransicao(taskId, aoTrabalhar) }),
+    maxTurns: 30,
+    ...previewPhaseOpts(taskId, { reiniciar: tipo === "codigo" }),
+  });
+  if (cancelada(taskId)) return false;
+  if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
+  if (pausou(taskId)) return false;
+  if (!r.success) {
+    sistema(taskId, "A resposta não terminou — tente mandar a mensagem de novo.");
+    patch(taskId, { step: antes.step, status: antes.status, error: antes.error });
+    return false;
+  }
+
+  // Desfechos pelo que ACONTECEU na fase.
+  if (tipo === "plano" && r.planText) {
+    patch(taskId, {
+      plan: limparJulgamento(r.planText),
+      step: "aprovacao",
+      status: "aguardando",
+      error: undefined,
+    });
+    sistema(taskId, "Plano revisado a partir da conversa — aguardando a sua aprovação.");
+    return true;
+  }
+  if (tipo === "prototipo" && r.filesTouched) {
+    patch(taskId, { step: "aprovacao_prototipo", status: "aguardando", error: undefined });
+    sistema(taskId, "Protótipo atualizado a partir da conversa — veja e aprove (ou converse mais).");
+    return true;
+  }
+  if (tipo === "codigo" && (r.filesTouched || virouTrabalho)) {
+    // Trabalho DURANTE a revisão do time: os ajustes vão para o PR (gates
+    // baratos → commit+push+aviso ao time), sem sair da etapa.
+    if ((antes.step === "revisao" || antes.step === "publicar") && task.temRevisao && store.getTask(taskId)?.prUrl) {
+      return finalizarAjustesRevisao(taskId, antes.step);
+    }
+    if (antes.step === "teste") {
+      // A pessoa está NO MEIO do teste dela: não interrompe, não re-verifica,
+      // não mexe no preview (o dev server recarrega sozinho as mudanças).
+      // As verificações ficam PENDENTES e rodam quando ela pedir — ou, no mais
+      // tardar, ao clicar Aprovar. Pergunta em vez de decidir por ela.
+      patch(taskId, { step: "teste", status: "aguardando", verificacoesPendentes: true, error: undefined });
+      sistema(
+        taskId,
+        "Mudanças aplicadas — o preview recarrega sozinho, é só conferir aí do lado. Quer testar primeiro ou já rodo as verificações? (Elas rodam de qualquer jeito quando você aprovar.)",
+      );
+      return true;
+    }
+    // Origem falha/publicar: fluxo de reparo — verifica leve e pousa no teste.
+    return runVerificacaoLeve(taskId);
+  }
+  // Só conversa: nada mudou — restaura o estado como se o turno não tivesse
+  // tocado a esteira (inclusive uma falha, que volta com o mesmo aviso).
+  patch(taskId, { step: antes.step, status: antes.status, error: antes.error });
+  return true;
+}
+
 /**
  * Roda os skill-gates configurados (ex.: /review, /qa) que ainda NÃO passaram,
  * anexando cada resultado a task.gates. Pula os que já passaram (memoizados em
@@ -968,7 +1144,10 @@ async function runGateFix(taskId: string, falhas: GateResult[]): Promise<{ desis
  * gates passarem OU até ele mesmo declarar que não dá (precisa de decisão sua).
  * GATE_FIX_SAFETY_ROUNDS é só um teto de segurança contra loop infinito/custo.
  */
-async function runVerificacoes(taskId: string): Promise<boolean> {
+async function runVerificacoes(
+  taskId: string,
+  opts: { manterPreview?: boolean } = {},
+): Promise<boolean> {
   const inicial = store.getTask(taskId);
   if (!inicial) return false;
 
@@ -1004,6 +1183,26 @@ async function runVerificacoes(taskId: string): Promise<boolean> {
     const todos = store.getTask(taskId)?.gates ?? results;
     const falhas = todos.filter((g) => !g.ok);
     if (falhas.length === 0) {
+      // Preview JÁ no ar (a pessoa estava testando quando a verificação rodou):
+      // não derruba — só confere a saúde no processo VIVO e devolve o teste.
+      // O ciclo completo (stop/setup/exercício) fica para o caminho pré-teste.
+      if (opts.manterPreview) {
+        const st = previewStatus(taskId);
+        if (st.status === "no_ar" && st.url) {
+          const projeto = store.getProject(store.getTask(taskId)?.projectId ?? "");
+          const cfg = projeto ? resolvePreviewConfig(projeto, store.getTask(taskId)!.worktreePath) : null;
+          const saude = await verificarSaude(st.url, cfg);
+          if (cancelada(taskId)) return false;
+          if (saude.ok) {
+            patch(taskId, { previewFixRounds: 0, verificacoesPendentes: undefined });
+            setPreviewInfo(taskId, { status: "no_ar", url: st.url, porta: st.porta });
+            sistema(taskId, "Tudo verificado — o preview seguiu no ar o tempo todo.");
+            pousarTeste(taskId);
+            return true;
+          }
+          // Preview adoeceu no meio: aí sim o ciclo completo se justifica.
+        }
+      }
       // Verificações passaram: o agente prepara e valida o preview (tasks com UI)
       // antes de a task chegar ao "Seu teste" — o usuário só vê preview funcionando.
       return runPreviewCheck(taskId);
@@ -1053,6 +1252,7 @@ async function runPreviewCheck(taskId: string): Promise<boolean> {
   // Sem UI (ou sem projeto): não há tela para preparar — direto pro teste.
   if (!project || !temUi(task.worktreePath)) {
     sistema(taskId, "Tudo verificado.");
+    patch(taskId, { verificacoesPendentes: undefined });
     pousarTeste(taskId);
     return true;
   }
@@ -1138,7 +1338,7 @@ async function runPreviewCheck(taskId: string): Promise<boolean> {
       // Ciclo de verificação saudável REARMA o conserto automático (sem isto,
       // duas falhas antigas desligariam o conserto para o resto da vida da task)
       // e LIMPA o alerta de erro (500 provocados pelo próprio exercício).
-      patch(taskId, { previewFixRounds: 0 });
+      patch(taskId, { previewFixRounds: 0, verificacoesPendentes: undefined });
       const stOk = previewStatus(taskId);
       if (stOk.status === "no_ar" && stOk.url) {
         setPreviewInfo(taskId, { status: "no_ar", url: stOk.url, porta: stOk.porta });
@@ -1250,8 +1450,195 @@ function avancarAposPrototipo(taskId: string): void {
   fireAndForget(taskId, () => runExecucao(taskId, execucaoPrompt(t)));
 }
 
-/** Avança após o teste: fica em "publicar" (SEMPRE humano — nada é publicado sozinho). */
+// ---------- Revisão da engenharia (PR + acompanhamento + ajustes) ----------
+
+/**
+ * Fecha um lote de ajustes da revisão: gates baratos do projeto → commit+push
+ * no PR + aviso ao time. Gates reprovando → NÃO envia (avisa e mantém as
+ * pendências para nova tentativa). Nunca sai da etapa.
+ */
+async function finalizarAjustesRevisao(taskId: string, voltarPara: Step): Promise<boolean> {
+  const task = store.getTask(taskId);
+  const project = task ? store.getProject(task.projectId) : undefined;
+  if (!task || !project || cancelada(taskId)) return false;
+
+  const results = await runGates(taskId, task.worktreePath);
+  if (cancelada(taskId)) return false;
+  const anteriores = (store.getTask(taskId)?.gates ?? []).filter((g) => !results.some((r) => r.name === g.name));
+  patch(taskId, { gates: [...results, ...anteriores] });
+  if (results.some((g) => !g.ok)) {
+    sistema(
+      taskId,
+      "Os ajustes quebraram uma verificação do projeto — ainda NÃO enviei ao time. Converse comigo aqui para corrigir e peça de novo.",
+    );
+    patch(taskId, { step: voltarPara, status: "aguardando" });
+    return false;
+  }
+
+  try {
+    await empurrarAjustesRevisao(task, project);
+  } catch (err) {
+    sistema(taskId, err instanceof Error ? err.message : "Não foi possível enviar os ajustes ao GitHub.");
+    patch(taskId, { step: voltarPara, status: "aguardando" });
+    return false;
+  }
+  patch(taskId, {
+    step: voltarPara,
+    status: "aguardando",
+    revisao: {
+      ...(store.getTask(taskId)?.revisao ?? { estado: "aguardando" as const }),
+      estado: "aguardando" as const,
+      pendencias: [],
+      ajustadoEm: new Date().toISOString(),
+    },
+  });
+  sistema(taskId, "✓ Ajustes enviados — o time foi avisado para olhar de novo.");
+  return true;
+}
+
+/** "Pedir para o Claude ajustar": aplica os apontamentos do time e reenvia. */
+async function runAjustesRevisao(taskId: string): Promise<boolean> {
+  const task = store.getTask(taskId);
+  if (!task || cancelada(taskId)) return false;
+  const pendencias = task.revisao?.pendencias ?? [];
+  if (pendencias.length === 0) return false;
+  const voltarPara = task.step;
+  patch(taskId, { status: "rodando", error: undefined });
+  sistema(taskId, `Aplicando os ${pendencias.length === 1 ? "ajuste" : `${pendencias.length} ajustes`} que o time pediu…`);
+
+  const r = await runPhase({
+    taskId,
+    cwd: task.worktreePath,
+    prompt: ajustesRevisaoPrompt(pendencias),
+    permissionMode: "acceptEdits",
+    resume: store.getTask(taskId)?.claudeSessionId,
+    canUseTool: createPreviewSetupGate(taskId, gateComStatus(taskId)),
+    maxTurns: 40,
+    ...previewPhaseOpts(taskId),
+  });
+  if (cancelada(taskId)) return false;
+  if (r.sessionId) store.updateTask(taskId, { claudeSessionId: r.sessionId });
+  if (pausou(taskId)) return false;
+  if (!r.success) {
+    sistema(taskId, "Os ajustes falharam no meio — tente pedir de novo.");
+    patch(taskId, { step: voltarPara, status: "aguardando" });
+    return false;
+  }
+  return finalizarAjustesRevisao(taskId, voltarPara);
+}
+
+/**
+ * 🚀 O merge aconteceu (por você ou pelo time): conclui com a celebração —
+ * o momento em que a mudança da pessoa entra no app de verdade.
+ */
+async function concluirComMerge(taskId: string, por: string, em: string, peloTime: boolean): Promise<void> {
+  const task = store.getTask(taskId);
+  if (!task || task.status === "concluida") return;
+  const project = store.getProject(task.projectId);
+  patch(taskId, {
+    step: "concluida",
+    status: "concluida",
+    previewUrl: undefined,
+    revisao: {
+      ...(task.revisao ?? { estado: "aprovada" as const }),
+      estado: "aprovada" as const,
+      pendencias: [],
+      mergePor: por,
+      mergeEm: em,
+    },
+  });
+  sistema(
+    taskId,
+    peloTime
+      ? `🚀 Publicado! A mudança que você criou está no app — merge feito por ${por}.`
+      : "🚀 Publicado! A mudança que você criou está no app.",
+  );
+  if (project) await limparAposMerge(task, project);
+  registrarTarefaFinalizada(taskId, "concluida");
+  verificarGatilhoAuto();
+}
+
+/**
+ * Aplica UMA sondagem do PR à tarefa: noticia eventos novos no chat (dedupe
+ * por assinatura), atualiza estado/pendências, avança para "publicar" quando
+ * aprovada, conclui com festa no merge, e devolve ao teste se o PR fechar
+ * sem merge. Exportada para os testes dirigirem estados sem gh real.
+ */
+export function aplicarSondagem(taskId: string, s: Sondagem): void {
+  const task = store.getTask(taskId);
+  if (!task || !task.revisao || task.status === "concluida") return;
+
+  const vistos = new Set(task.revisao.vistos ?? []);
+  for (const ev of s.eventos) {
+    if (vistos.has(ev.chave)) continue;
+    vistos.add(ev.chave);
+    sistema(taskId, ev.texto);
+  }
+
+  if (s.merged) {
+    fireAndForget(taskId, () => concluirComMerge(taskId, s.merged!.por, s.merged!.em, true));
+    return;
+  }
+  if (s.fechadoSemMerge) {
+    patch(taskId, { step: "teste", status: "aguardando", revisao: undefined });
+    sistema(
+      taskId,
+      "O time fechou a revisão sem publicar. A tarefa voltou para o seu teste — converse aqui para entender o motivo ou ajustar.",
+    );
+    return;
+  }
+
+  const aprovouAgora = s.estado === "aprovada" && task.step === "revisao";
+  patch(taskId, {
+    revisao: { ...task.revisao, estado: s.estado, pendencias: s.pendencias, vistos: [...vistos].slice(-100) },
+    ...(aprovouAgora ? { step: "publicar" as const, status: "aguardando" as const } : {}),
+  });
+  if (aprovouAgora) {
+    sistema(taskId, "Revisão aprovada — clique em Publicar para levar a mudança ao app. 🚀");
+  }
+}
+
+/** Sonda os PRs de todas as tarefas em Revisão/Publicar (uma passada). */
+export async function sondarRevisoesPendentes(): Promise<void> {
+  if (isFakeModelActive()) return;
+  for (const t of store.listTasks()) {
+    if ((t.step !== "revisao" && t.step !== "publicar") || t.status !== "aguardando") continue;
+    if (!t.revisao || !t.prUrl || t.arquivadaEm) continue;
+    const project = store.getProject(t.projectId);
+    if (!project?.originUrl) continue;
+    try {
+      const s = await sondarRevisao(t, project);
+      if (s) aplicarSondagem(t.id, s);
+    } catch {
+      // próxima sondagem tenta de novo
+    }
+  }
+}
+
+/**
+ * Liga o relógio da sondagem (chamado pelo index.ts — testes nunca ligam).
+ * 60s é suficiente: revisão humana se mede em minutos/horas, não segundos.
+ */
+export function iniciarSondagemRevisoes(intervaloMs = 60_000): void {
+  const timer = setInterval(() => void sondarRevisoesPendentes(), intervaloMs);
+  timer.unref();
+}
+
+/**
+ * Avança após o teste. Projeto com GitHub → etapa REVISÃO (o time olha antes);
+ * sem GitHub → direto para "publicar" (SEMPRE humano — nada publica sozinho).
+ */
 function avancarAposTeste(taskId: string): void {
+  const t = store.getTask(taskId);
+  const project = t ? store.getProject(t.projectId) : undefined;
+  if (project?.originUrl) {
+    patch(taskId, { step: "revisao", status: "aguardando", temRevisao: true });
+    sistema(
+      taskId,
+      "Pronto para a revisão — envie para o time de engenharia quando quiser. Nada muda no app até eles aprovarem.",
+    );
+    return;
+  }
   patch(taskId, { step: "publicar", status: "aguardando" });
   sistema(taskId, "Pronto para publicar — clique em Publicar para levar as mudanças ao projeto.");
 }
@@ -1319,6 +1706,9 @@ export async function startTask(
     description,
     step: passoInicial,
     status: "rodando",
+    // Projeto com GitHub → a esteira desta task tem a etapa Revisão (o pino
+    // aparece desde o início; a etapa em si só chega depois do Seu teste).
+    ...(modo !== "livre" && project.originUrl ? { temRevisao: true } : {}),
     espaco: store.nextEspaco(projectId),
     // Preenchidos logo abaixo por ensureEspaco (se falhar, a tarefa fica "falhou" e dá retry).
     branch: "",
@@ -1557,8 +1947,67 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       if (!(task.step === "teste" && task.status === "aguardando")) {
         throw new Error("Esta tarefa não está aguardando o seu teste.");
       }
+      // Mudanças da conversa ainda sem verificação: rodam AGORA (porteira de
+      // segurança), sem derrubar o preview; verdes → segue para publicar.
+      if (task.verificacoesPendentes) {
+        sistema(taskId, "Teste aprovado — rodando as verificações das mudanças da conversa antes de seguir…");
+        fireAndForget(taskId, () => runVerificacaoLeve(taskId, { depois: "publicar" }));
+        break;
+      }
       sistema(taskId, "Teste aprovado.");
       avancarAposTeste(taskId);
+      break;
+    }
+
+    case "rodar_verificacoes": {
+      if (!(task.step === "teste" && task.status === "aguardando" && task.verificacoesPendentes)) {
+        throw new Error("Não há verificações pendentes para rodar agora.");
+      }
+      fireAndForget(taskId, () => runVerificacaoLeve(taskId, { depois: "teste" }));
+      break;
+    }
+
+    case "enviar_revisao": {
+      if (!(task.step === "revisao" && task.status === "aguardando" && !task.revisao)) {
+        throw new Error("Esta tarefa não está pronta para ir à revisão.");
+      }
+      const project = store.getProject(task.projectId);
+      if (!project) throw new Error("O projeto desta tarefa não foi encontrado.");
+      patch(taskId, { status: "rodando", error: undefined });
+      try {
+        const { prUrl } = await enviarParaRevisao(task, project);
+        if (!prUrl) {
+          patch(taskId, { status: "aguardando" });
+          sistema(taskId, "A branch subiu, mas o Pull Request não abriu — tente enviar de novo em instantes.");
+          break;
+        }
+        patch(taskId, {
+          status: "aguardando",
+          prUrl,
+          revisao: { estado: "aguardando", pendencias: [], vistos: [] },
+        });
+        sistema(
+          taskId,
+          "📤 Enviado para revisão — o time foi avisado. Você acompanha tudo por aqui (e o preview segue no ar, se quiser continuar testando).",
+        );
+        // Primeira sondagem logo depois (o relógio de 60s cobre as seguintes).
+        const t = setTimeout(() => void sondarRevisoesPendentes(), 15_000);
+        t.unref();
+      } catch (err) {
+        fail(taskId, err instanceof Error ? err.message : "Não foi possível enviar para a revisão.");
+      }
+      break;
+    }
+
+    case "ajustar_revisao": {
+      const podeAjustar =
+        (task.step === "revisao" || task.step === "publicar") &&
+        task.status === "aguardando" &&
+        (task.revisao?.pendencias?.length ?? 0) > 0;
+      if (!podeAjustar) {
+        throw new Error("Não há apontamentos do time para ajustar agora.");
+      }
+      fireAndForget(taskId, () => runAjustesRevisao(taskId));
       break;
     }
 
@@ -1664,6 +2113,17 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       }
       const project = store.getProject(task.projectId);
       if (!project) throw new Error("O projeto desta tarefa não foi encontrado.");
+      // Revisão aprovada (projeto com GitHub): publicar = MERGE do PR + festa.
+      if (task.modo !== "livre" && task.temRevisao && task.revisao && project.originUrl) {
+        patch(taskId, { status: "rodando", error: undefined });
+        try {
+          await mergeRevisao(task, project);
+          await concluirComMerge(taskId, "você", new Date().toISOString(), false);
+        } catch (err) {
+          fail(taskId, err instanceof Error ? err.message : "Não foi possível publicar. Tente de novo.");
+        }
+        break;
+      }
       patch(taskId, { status: "rodando", error: undefined });
       try {
         const { prUrl } = await publishTask(task, project, action.createPr ?? false);
@@ -1894,10 +2354,38 @@ export async function steer(taskId: string, text: string, anexos?: TaskAnexo[]):
     return;
   }
 
-  // Esteira: a mensagem SEMPRE entra na fila (consumida no próximo passo em que
-  // o Claude trabalhar — execução, correção de gates, conserto de preview).
-  // Antes, fora da execução ela era gravada no transcript e descartada em
-  // silêncio — a pessoa via a mensagem no chat e achava que foi entregue.
+  // PORTEIRA VIVA: tarefa parada numa porteira (ou numa falha elegível) → a
+  // mensagem abre um turno de CONVERSA — pergunta vira resposta; a esteira só
+  // se move se o agente de fato trabalhar (transição por ação).
+  if (tipoDaPorteira(task)) {
+    fireAndForget(taskId, () => runPorteiraChat(taskId, msgFila));
+    return;
+  }
+
+  // Preparação falhada: a mensagem re-roda a preparação levando a orientação
+  // no prompt (a preparação tem prompt próprio e roda no checkout principal).
+  if (task.kind === "preparacao" && task.status === "falhou" && !task.pausadaManual) {
+    const fila = steerQueue.get(taskId) ?? [];
+    fila.push(msgFila);
+    steerQueue.set(taskId, fila);
+    patch(taskId, { status: "rodando", error: undefined, pausadaPorTempo: undefined });
+    fireAndForget(taskId, () => runPreparacao(taskId));
+    return;
+  }
+
+  // Exceção documentada: falha de ESPEC não tem sinal natural de trabalho — a
+  // mensagem re-roda a espec com a observação incorporada (contorno direto).
+  if (task.status === "falhou" && !task.pausadaManual && task.step === "espec") {
+    store.updateTask(taskId, {
+      description: `${task.description}\n\n[Observação do usuário após uma falha]: ${msgFila}`,
+    });
+    patch(taskId, { step: "espec", status: "rodando", error: undefined, pausadaPorTempo: undefined });
+    fireAndForget(taskId, () => pipelineFromEspec(taskId));
+    return;
+  }
+
+  // Esteira em movimento: a mensagem SEMPRE entra na fila (consumida no próximo
+  // passo em que o Claude trabalhar — execução, correção de gates, conserto).
   const q = steerQueue.get(taskId) ?? [];
   q.push(msgFila);
   steerQueue.set(taskId, q);
@@ -1908,7 +2396,7 @@ export async function steer(taskId: string, text: string, anexos?: TaskAnexo[]):
     // Honestidade: avisa que a mensagem espera o próximo passo (não some mais).
     sistema(
       taskId,
-      "Recebi — levo em conta no próximo passo em que o Claude trabalhar. Para mudar o plano/protótipo agora, use \"Pedir mudanças\" quando a tarefa parar numa porteira.",
+      "Recebi — levo em conta no próximo passo em que o Claude trabalhar.",
     );
   }
 }

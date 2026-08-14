@@ -15,6 +15,7 @@ import { stopAllPreviews } from "./services/preview.js";
 import { setPreviewInfo } from "./services/previewState.js";
 import { killInstallsDeEspaco } from "./services/worktrees.js";
 import { checarUpdate } from "./services/update.js";
+import { iniciarSondagemRevisoes } from "./workflow/machine.js";
 import { backfillSeVazio } from "./eval/coleta.js";
 import { listTasks, load } from "./store.js";
 
@@ -32,6 +33,10 @@ for (const t of listTasks()) {
     setPreviewInfo(t.id, { status: "parado" });
   }
 }
+
+// Sondagem das revisões (PRs em Revisão/Publicar): o time revisou/mergeou no
+// GitHub → o Inhouse noticia no chat e move a esteira (inclusive a festa 🚀).
+iniciarSondagemRevisoes();
 
 const app = express();
 app.use(buildRouter());

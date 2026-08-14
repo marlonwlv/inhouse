@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Protótipo — Revisão e Publicar</title>
+<style>
+  :root{
+    --ground:#FAFAFA; --surface:#FFF; --surface-2:#F4F4F5; --ink:#18181B; --muted:#52525B;
+    --faint:#8E8E97; --line:#EAEAEC; --line-2:#DCDCE0; --brand:#18181B; --brand-ink:#FFF;
+    --amber:#8A4E06; --amber-soft:#FCF3E3; --amber-line:#F0E2C4;
+    --danger:#DC2626; --danger-soft:#FEECEC;
+    --ok:#166534; --ok-soft:#EAF6EC; --ok-line:#CDE8D2;
+    --r:12px; --rs:8px; --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    --shadow:0 4px 12px -4px rgba(24,24,27,.10),0 15px 40px -12px rgba(24,24,27,.14);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);font:14px/1.55 "Onest",system-ui,-apple-system,sans-serif;padding:34px 40px 100px;overflow-x:hidden}
+  h1{font-size:21px;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 28px;max-width:78ch}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin:42px 0 10px}
+  h2 .n{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:50%;background:var(--brand);color:#fff;font-size:11px;margin-right:6px}
+  .note{font-size:13px;color:var(--muted);margin:8px 0 0;max-width:82ch}
+  .note b{color:var(--ink)}
+  .frame{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:0 1px 2px rgba(24,24,27,.04)}
+
+  /* esteira */
+  .strip{display:flex;align-items:center;gap:12px;padding:12px 16px;font-size:13px;flex-wrap:wrap}
+  .pins{display:flex;align-items:center;gap:0}
+  .pin{width:9px;height:9px;border-radius:50%;background:var(--line-2);position:relative}
+  .pin.done{background:var(--brand)}
+  .pin.now{background:var(--brand);box-shadow:0 0 0 4px rgba(24,24,27,.12)}
+  .pin.human{transform:rotate(45deg);border-radius:2px;background:var(--amber)}
+  .pin.human.done{background:var(--brand)}
+  .bar{width:26px;height:2px;background:var(--line-2)}
+  .bar.done{background:var(--brand)}
+  .plabel{font-size:10.5px;color:var(--faint);position:absolute;top:14px;left:50%;transform:translateX(-50%);white-space:nowrap}
+  .pin.human .plabel{transform:translateX(-50%) rotate(-45deg);top:12px}
+  .pins{padding-bottom:22px}
+
+  /* cards de chat */
+  .card{border-radius:var(--r);padding:15px 17px;max-width:620px}
+  .card .head{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;margin-bottom:8px}
+  .card p{margin:0 0 8px;font-size:13.5px}
+  .card p:last-child{margin-bottom:0}
+  .card.amber{background:var(--amber-soft);border:1px solid var(--amber-line)}
+  .card.amber .head{color:var(--amber)}
+  .card.okc{background:var(--ok-soft);border:1px solid var(--ok-line)}
+  .card.okc .head{color:var(--ok)}
+  .pulse{width:8px;height:8px;border-radius:50%;background:var(--amber);animation:pulse 1.2s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .acts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center}
+  .btn{border:none;background:transparent;color:var(--ink);font:inherit;font-size:13px;padding:7px 14px;border-radius:var(--rs);cursor:pointer}
+  .btn:hover{background:rgba(0,0,0,.05)}
+  .btn.primary{background:var(--brand);color:var(--brand-ink)}
+  .btn.primary:hover{background:#2E2E33}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;border-radius:999px;padding:3px 11px}
+  .chip.wait{background:var(--amber-soft);color:var(--amber)}
+  .chip.okk{background:var(--ok-soft);color:var(--ok)}
+  .chip.bad{background:var(--danger-soft);color:var(--danger)}
+
+  /* timeline da revisão */
+  .tl{display:grid;gap:0;padding:6px 0 2px}
+  .ev{display:flex;gap:12px;position:relative;padding:10px 0 10px 4px}
+  .ev::before{content:"";position:absolute;left:14px;top:34px;bottom:-2px;width:2px;background:var(--line)}
+  .ev:last-child::before{display:none}
+  .dot{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:11px;flex:none;background:var(--surface-2);border:1px solid var(--line-2)}
+  .dot.a{background:var(--amber-soft);border-color:var(--amber-line)}
+  .dot.g{background:var(--ok-soft);border-color:var(--ok-line)}
+  .ev .body{flex:1}
+  .ev .t{font-size:13.5px}
+  .ev .t b{font-weight:650}
+  .ev .when{font-size:11.5px;color:var(--faint);margin-top:1px}
+  .coment{margin-top:8px;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 13px;font-size:13px}
+  .coment .arq{font-family:var(--mono);font-size:11px;color:var(--faint);margin-bottom:4px}
+  .resp{margin-top:8px;font-size:13px;color:var(--muted)}
+  .resp .ok{color:var(--ok);font-weight:600}
+
+  /* celebração */
+  .stage{position:relative;min-height:300px;display:grid;place-items:center;overflow:hidden;border-radius:var(--r)}
+  .cele{text-align:center;position:relative;z-index:2}
+  .rocket{font-size:52px;display:inline-block;animation:liftoff 2.6s ease-in-out infinite}
+  @keyframes liftoff{0%,100%{transform:translateY(0) rotate(-4deg)}50%{transform:translateY(-14px) rotate(3deg)}}
+  .cele h3{font-size:22px;margin:10px 0 6px}
+  .cele p{color:var(--muted);margin:0 0 4px}
+  .cele .who{font-size:13px;color:var(--faint)}
+  canvas#confetti{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1}
+  .replay{margin-top:14px}
+
+  table{border-collapse:collapse;font-size:13px;margin-top:10px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+  th,td{text-align:left;padding:8px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:12px;color:var(--faint)}
+  tr:last-child td{border-bottom:0}
+  td:first-child{white-space:nowrap;font-weight:600}
+  .rec{color:var(--ok);font-weight:700;font-size:11px;margin-left:6px}
+</style>
+</head>
+<body>
+
+<h1>Revisão e Publicar — a etapa mágica</h1>
+<p class="sub">Hoje, "Publicar" abre um PR e a tarefa some — o momento mais importante (a mudança da pessoa indo para o app) acontece invisível, no GitHub. A proposta: dividir em <b>Revisão</b> (o time olha) e <b>Publicar</b> (entra no app), com a pessoa <b>acompanhando a revisão de dentro do Inhouse</b>, corrigindo apontamentos com o Claude, e uma <b>celebração de verdade</b> quando o merge acontece.</p>
+
+<h2><span class="n">1</span> O nome da etapa</h2>
+<table>
+  <tr><th>Opção</th><th>Como fica a esteira</th><th>Prós / contras</th></tr>
+  <tr><td>Revisão <span class="rec">RECOMENDADO</span></td><td>… Seu teste → <b>Revisão</b> → Publicar</td><td>Curto como os outros pinos; faz par com "Seu teste" (o seu → o do time). Tooltip completa: "o time de engenharia revisa antes de publicar".</td></tr>
+  <tr><td>Time</td><td>… Seu teste → Time → Publicar</td><td>Mais curto ainda, porém vago — "time" de quê?</td></tr>
+  <tr><td>Aprovação técnica</td><td>… Seu teste → Aprovação técnica → Publicar</td><td>Preciso, mas longo e burocrático.</td></tr>
+</table>
+<p class="note">Nos textos (não no pino), sempre por extenso: <b>"revisão da engenharia"</b>. Apps locais sem GitHub pulam a etapa — vai direto de "Seu teste" para "Publicar", como hoje.</p>
+
+<h2><span class="n">2</span> A esteira nova</h2>
+<div class="frame">
+  <div class="strip">
+    <span>Onde essa tarefa está: <b>Revisão</b></span>
+    <span class="pins">
+      <span class="pin done"><span class="plabel">Espec</span></span><span class="bar done"></span>
+      <span class="pin done"><span class="plabel">Plano</span></span><span class="bar done"></span>
+      <span class="pin human done"><span class="plabel">Aprovação</span></span><span class="bar done"></span>
+      <span class="pin done"><span class="plabel">Execução</span></span><span class="bar done"></span>
+      <span class="pin done"><span class="plabel">Verificações</span></span><span class="bar done"></span>
+      <span class="pin human done"><span class="plabel">Seu teste</span></span><span class="bar done"></span>
+      <span class="pin now"><span class="plabel">Revisão</span></span><span class="bar"></span>
+      <span class="pin human"><span class="plabel">Publicar</span></span>
+    </span>
+    <span style="flex:1"></span>
+    <span class="chip wait">⏳ com a engenharia</span>
+  </div>
+</div>
+<p class="note">"Revisão" é um pino <b>redondo</b> (não é uma porteira SUA — é a vez do time). O chip à direita mostra com quem está a bola: <b>"⏳ com a engenharia"</b> ou <b>"✋ com você"</b> (quando pedem ajustes).</p>
+
+<h2><span class="n">3</span> Enviar para revisão (o card que substitui o "Publicar abre um PR")</h2>
+<div class="card amber frame">
+  <div class="head"><span class="pulse"></span> Pronto para a revisão</div>
+  <p>Verificações e o seu teste aprovados. Agora o trabalho vai para o <b>time de engenharia revisar</b> — nada muda no app até eles aprovarem.</p>
+  <p>Você acompanha tudo por aqui: quem está revisando, o que pediram e quando for publicado.</p>
+  <div class="acts">
+    <button class="btn primary">Enviar para revisão</button>
+  </div>
+</div>
+<p class="note">A palavra "Pull Request" não aparece para a pessoa (fica no "ver no GitHub" para quem quiser). O botão do topo ("Publicar") vira <b>"Enviar para revisão"</b> nesta fase.</p>
+
+<h2><span class="n">4</span> Acompanhando a revisão — a pessoa nunca fica no escuro</h2>
+<div class="card frame" style="max-width:640px">
+  <div class="head" style="color:var(--muted)">🔎 Revisão da engenharia · <span style="font-weight:500">enviada há 2 h</span></div>
+  <div class="tl">
+    <div class="ev"><span class="dot">📤</span><div class="body"><div class="t">Enviado para revisão — o time foi avisado.</div><div class="when">hoje, 14:02</div></div></div>
+    <div class="ev"><span class="dot">👀</span><div class="body"><div class="t"><b>João (engenharia)</b> começou a revisar.</div><div class="when">hoje, 15:11</div></div></div>
+    <div class="ev">
+      <span class="dot a">✋</span>
+      <div class="body">
+        <div class="t"><b>João pediu 2 ajustes</b> — a bola voltou para você, mas o Claude resolve:</div>
+        <div class="when">hoje, 15:26</div>
+        <div class="coment">
+          <div class="arq">packages/core/src/services/templates/vaga-shortlist-empresa.ts</div>
+          "Esse texto do e-mail está hardcoded — melhor puxar o nome da empresa do cadastro, senão fica 'Olá,' genérico."
+        </div>
+        <div class="coment">
+          <div class="arq">apps/web/src/components/features/vaga-drawer/aviso-empresa.tsx</div>
+          "Falta tratar o caso de lista vazia aqui — quebra se a vaga nunca teve aviso."
+        </div>
+        <div class="acts">
+          <button class="btn primary">Pedir para o Claude ajustar</button>
+          <button class="btn">Ver no GitHub</button>
+        </div>
+        <div class="resp"><span class="ok">✓ Claude aplicou os 2 ajustes e reenviou</span> — o João foi avisado para olhar de novo. <i>(hoje, 15:34)</i></div>
+      </div>
+    </div>
+    <div class="ev"><span class="dot g">✔</span><div class="body"><div class="t"><b>João aprovou a revisão.</b> Pode publicar!</div><div class="when">hoje, 16:02</div></div></div>
+  </div>
+</div>
+<p class="note">Cada evento do GitHub vira uma linha aqui (e no chat): revisor entrou, comentou, pediu mudanças, aprovou. Os comentários aparecem na íntegra com o botão <b>"Pedir para o Claude ajustar"</b> — o Claude lê os apontamentos do PR, corrige na branch, envia e responde ao revisor. <b>A pessoa não-técnica fecha um ciclo de code review sozinha.</b></p>
+
+<h2><span class="n">5</span> Aprovado → Publicar</h2>
+<div class="card okc frame">
+  <div class="head">✔ Revisão aprovada</div>
+  <p>O time aprovou o seu trabalho. Publicar junta a mudança no app.</p>
+  <div class="acts">
+    <button class="btn primary">Publicar 🚀</button>
+    <span style="font-size:12px;color:var(--faint)">ou aguarde — a engenharia também pode publicar por lá</span>
+  </div>
+</div>
+
+<h2><span class="n">6</span> A celebração — o merge aconteceu (por você ou pelo time)</h2>
+<div class="frame stage" id="stage">
+  <canvas id="confetti"></canvas>
+  <div class="cele">
+    <span class="rocket">🚀</span>
+    <h3>Publicado!</h3>
+    <p><b>A mudança que você criou está no app.</b></p>
+    <p class="who">Merge feito por João (engenharia) · hoje, 16:15 · <a href="#" style="color:var(--faint)">ver no GitHub</a></p>
+    <button class="btn primary replay" onclick="festa()">▶ Ver a celebração de novo</button>
+  </div>
+</div>
+<p class="note">O confete dispara UMA vez, no momento em que o Inhouse detecta o merge (mesmo que tenha sido a engenharia mergeando direto no GitHub) — com a tarefa aberta ou ao abrir depois (celebra na primeira visita). O card final guarda quem publicou e quando. Depois da festa, o widget de feedback de sempre.</p>
+
+<h2><span class="n">7</span> O que acontece por baixo (resumo para aprovação)</h2>
+<p class="note">
+<b>Etapa nova "revisao"</b> entre teste e publicar — só para projetos com GitHub (sem origin, o fluxo atual fica igual).<br>
+<b>Acompanhamento</b>: o Inhouse consulta o PR pelo <code style="font-family:var(--mono)">gh</code> (que já é dependência) a cada ~60s enquanto a tarefa está em Revisão: revisores, estado (comentou/pediu mudanças/aprovou), merge. Cada novidade vira linha no chat + evento ao vivo na UI. Sem webhooks, sem servidor exposto.<br>
+<b>"Pedir para o Claude ajustar"</b>: o agente lê os comentários do PR, aplica as correções na branch da tarefa (mesma sessão, mesmo espaço), roda a verificação leve (preview vivo), faz push e comenta no PR ("ajustes aplicados") re-pedindo a revisão.<br>
+<b>Publicar</b>: habilita com a revisão aprovada (merge pelo Inhouse) — e se o time mergear direto, o Inhouse detecta e conclui com a mesma celebração.<br>
+<b>PR fechado sem merge</b>: a tarefa volta para "Seu teste" com a explicação do time — sem beco.
+</p>
+
+<script>
+// Confete simples e autocontido (canvas) — dispara no load e no replay.
+const cv = document.getElementById("confetti");
+const cx = cv.getContext("2d");
+let pcs = [];
+function resize(){ const r = cv.parentElement.getBoundingClientRect(); cv.width = r.width; cv.height = r.height; }
+window.addEventListener("resize", resize);
+function festa(){
+  resize();
+  const cores = ["#18181B","#8A4E06","#166534","#DC2626","#2563EB","#D97706"];
+  pcs = Array.from({length:160},()=>({
+    x: cv.width/2 + (Math.random()-.5)*80,
+    y: cv.height*0.62,
+    vx: (Math.random()-.5)*9,
+    vy: -(6+Math.random()*9),
+    s: 4+Math.random()*5,
+    c: cores[(Math.random()*cores.length)|0],
+    a: Math.random()*Math.PI,
+    va: (Math.random()-.5)*.3,
+    vida: 140+Math.random()*60
+  }));
+  requestAnimationFrame(tick);
+}
+function tick(){
+  cx.clearRect(0,0,cv.width,cv.height);
+  let vivos = 0;
+  for(const p of pcs){
+    if(p.vida<=0) continue;
+    vivos++;
+    p.x+=p.vx; p.y+=p.vy; p.vy+=0.22; p.vx*=0.99; p.a+=p.va; p.vida--;
+    cx.save(); cx.translate(p.x,p.y); cx.rotate(p.a);
+    cx.globalAlpha = Math.min(1, p.vida/40);
+    cx.fillStyle = p.c; cx.fillRect(-p.s/2,-p.s/2,p.s,p.s*0.6);
+    cx.restore();
+  }
+  if(vivos>0) requestAnimationFrame(tick);
+}
+setTimeout(festa, 400);
+</script>
+</body>
+</html>

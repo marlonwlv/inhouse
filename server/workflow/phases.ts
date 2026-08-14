@@ -298,6 +298,73 @@ export function changesPrompt(
 }
 
 /**
+ * Ajustes da revisão do time: o Claude aplica os apontamentos do PR na própria
+ * branch da tarefa (o push/comentário no PR é mecânico, feito pela máquina).
+ */
+export function ajustesRevisaoPrompt(
+  pendencias: { autor: string; arquivo?: string; texto: string }[],
+): string {
+  const lista = pendencias
+    .map(
+      (p, i) =>
+        `${i + 1}. [${p.autor}${p.arquivo ? ` · ${p.arquivo}` : ""}] ${p.texto}`,
+    )
+    .join("\n");
+  return [
+    "O time de engenharia revisou o seu trabalho e pediu os ajustes abaixo.",
+    "Aplique cada um NO CÓDIGO desta branch — não mude nada além do apontado.",
+    "",
+    lista,
+    "",
+    "Se algum apontamento for uma pergunta (não um pedido de mudança), responda-a no seu",
+    "resumo final em vez de mudar código. Ao final, explique em português simples o que",
+    "mudou, item por item.",
+  ].join("\n");
+}
+
+/**
+ * Porteira viva: mensagem digitada com a tarefa parada numa porteira (ou falha)
+ * abre UM turno de conversa NEUTRO — sem o enquadramento "faça os ajustes" que
+ * transformava perguntas em execução. A esteira transiciona pelo que o agente
+ * FAZ (primeira ferramenta de trabalho), não pelo que o prompt manda.
+ * O literal "CONVERSA DA PORTEIRA" é usado pelo fake model para classificar.
+ */
+export function porteiraChatPrompt(
+  local: "teste" | "aprovacao" | "aprovacao_prototipo" | "revisao" | "publicar" | "falha",
+  msg: string,
+): string {
+  const onde = {
+    teste: "o seu teste",
+    aprovacao: "a aprovação do plano",
+    aprovacao_prototipo: "a aprovação do protótipo",
+    revisao: "a revisão da engenharia",
+    publicar: "a publicação",
+    falha: "uma falha do passo",
+  }[local];
+  const regrasPlano =
+    local === "aprovacao"
+      ? [
+          "O plano ainda NÃO foi aprovado: não edite código nem rode comandos de mudança.",
+          "Se a conversa pedir um AJUSTE NO PLANO, use a ferramenta ExitPlanMode com o plano",
+          "completo revisado — ele substitui o atual e volta para a aprovação da pessoa.",
+        ]
+      : [
+          "Só altere o app se a mensagem claramente pedir uma mudança. Se pedir, aplique",
+          "normalmente — sem desfazer o restante do trabalho — e explique ao final o que mudou.",
+        ];
+  return [
+    `CONVERSA DA PORTEIRA — o usuário escreveu durante ${onde}:`,
+    "",
+    msg,
+    "",
+    "Responda como numa conversa, em português simples, direto no chat.",
+    "Perguntas, dúvidas e pedidos de TEXTO (ex.: um roteiro de teste, uma explicação, um",
+    "resumo) se respondem AQUI no chat — sem criar arquivos e sem rodar comandos.",
+    ...regrasPlano,
+  ].join("\n");
+}
+
+/**
  * Conserto automático do preview (crash/5xx/reporte do usuário): erro + logs
  * inline, diagnóstico e correção com verificação do PRÓPRIO conserto contra o
  * preview vivo. Termina com o mesmo contrato do fixGates (CONSERTO: …).
