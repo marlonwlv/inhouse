@@ -35,5 +35,6 @@ Cada plano abre com um cabeçalho: **título · categoria · data (YYYY-MM-DD) �
 - [Estabilidade: espaço, sobrecarga e modelo/effort](features/estabilidade-espaco-sobrecarga-modelo.md) — numeração de espaço monotônica (fim da worktree destruída no reuso); isolar dev + limitador global de concorrência + restart sem órfãos (fim do EAGAIN/ETXTBSY sob carga); e chip de modelo(s)+effort na tarefa. **Status: Em andamento** (2026-08-09).
 
 ### design
+- [Navegação multi-projeto](design/navegacao-multi-projeto.md) — quadro unificado por projetos (chips + grupos sticky + "◆ Sua vez") e abas de trabalho persistentes no editor; mockups lo-fi (3 direções) e protótipo hi-fi navegável em `mockups/navegacao-multi-projeto/`. **Status: Em andamento** — implementado em `feat/navegacao-multi-projeto` (2026-08-14).
 - [Redesign visual](design/redesign-visual.md) — moderno light & clean → accent monocromático → audit impeccable (UI v0.4.2). **Status: Concluído** (2026-08-06).
 - [Polimento de UI (detalhes)](design/polimento-ui-detalhes.md) — chevron colado, losango cortado, etapas encavaladas + porteira-que-falha (bug de cor) + emojis; diagnóstico → design review (7 dim + voz independente) → implementação. **Status: Concluído** (2026-08-06).

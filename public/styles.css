@@ -641,7 +641,6 @@ input::placeholder { color: var(--faint); }
 /* ---------- EDITOR ---------- */
 .topbar .app-name { display: flex; align-items: center; gap: 11px; font-weight: 600; font-size: 14px; min-width: 0; }
 .topbar .app-name #ed-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
-.topbar .back { font-size: 15px; padding: 4px 11px; }
 
 .flow-strip {
   flex: none;
@@ -1473,3 +1472,206 @@ input::placeholder { color: var(--faint); }
 .wf-ia-form:focus-within { border-color: var(--faint); }
 .wf-ia-form .grow-area { flex: 1; font-size: 13.5px; }
 .wf-ia-foot { margin: 10px 0 0; font-size: 11.5px; color: var(--faint); }
+
+/* ---------- Faixa de abas de trabalho (navegação multi-projeto) ---------- */
+/* Companion do atributo hidden: o display próprio abaixo exige isto (test/ui-static). */
+#tabstrip[hidden] { display: none; }
+#tabstrip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 42px;
+  padding: 0 10px;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+#tabstrip::-webkit-scrollbar { display: none; }
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 29px;
+  padding: 0 6px 0 11px;
+  flex: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .13s ease, color .13s ease, border-color .13s ease;
+}
+.tab:hover { background: var(--surface-2); color: var(--ink); }
+.tab.on { background: var(--surface); border-color: var(--line-2); color: var(--ink); box-shadow: var(--shadow-sm); }
+.tab.home { padding: 0 12px; gap: 8px; }
+.tab svg { flex: none; }
+.tab .t-title { max-width: 168px; overflow: hidden; text-overflow: ellipsis; }
+.tab.on .t-title { font-weight: 600; }
+.tab .t-ico {
+  width: 15px; height: 15px;
+  border-radius: 4px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  font-size: 8px;
+  font-weight: 700;
+  color: #fff;
+}
+/* Glifos de estado: a mesma linguagem da esteira (● trabalhando · ◆ porteira humana). */
+.t-run { width: 7px; height: 7px; border-radius: 50%; background: var(--brand); flex: none; animation: pulse 1.6s ease-in-out infinite; }
+.t-wait { width: 8px; height: 8px; border-radius: 2px; background: var(--amber); transform: rotate(45deg); flex: none; }
+.t-fail { width: 7px; height: 7px; border-radius: 50%; background: var(--danger); flex: none; }
+.t-done { color: var(--faint); font-size: 11px; font-weight: 700; flex: none; }
+.tab .t-x {
+  width: 17px; height: 17px;
+  border-radius: 5px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--faint);
+  font-size: 13px;
+  line-height: 1;
+  visibility: hidden;
+}
+.tab:hover .t-x, .tab.on .t-x { visibility: visible; }
+.tab .t-x:hover { background: var(--line); color: var(--ink); }
+
+/* "+" da faixa: abre o popover de busca de tarefas. */
+.tab-new {
+  width: 26px; height: 26px;
+  border: 1px dashed var(--line-2);
+  background: transparent;
+  border-radius: 7px;
+  color: var(--faint);
+  font-size: 14px;
+  cursor: pointer;
+  flex: none;
+  display: grid;
+  place-items: center;
+  transition: border-color .13s ease, color .13s ease, background .13s ease;
+}
+.tab-new:hover { border-color: var(--faint); color: var(--ink); background: var(--surface); }
+
+/* Popover do "+": buscar tarefa por texto e projeto, abrir como aba. */
+.abas-pop {
+  position: fixed;
+  z-index: 60;
+  width: 340px;
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.abas-pop[hidden] { display: none; }
+.abas-pop .docs-filter { margin-top: 0; }
+.abas-proj { display: flex; gap: 5px; flex-wrap: wrap; }
+.fchip.xs { padding: 3px 9px; font-size: 11px; gap: 5px; }
+.fchip.xs .app-ico { width: 13px; height: 13px; font-size: 7px; border-radius: 3.5px; }
+.abas-list { max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.abas-row {
+  display: flex; align-items: center; gap: 9px;
+  width: 100%; text-align: left;
+  border: none; background: transparent;
+  color: var(--ink); font: inherit; font-size: 12.5px;
+  padding: 7px 8px; border-radius: var(--r-sm); cursor: pointer;
+}
+.abas-row:hover { background: var(--surface-2); }
+.abas-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.abas-row .t-ico {
+  width: 15px; height: 15px; border-radius: 4px; flex: none;
+  display: grid; place-items: center;
+  font-size: 8px; font-weight: 700; color: #fff;
+}
+.abas-row.aberta { opacity: .6; }
+.abas-vazio { padding: 14px; text-align: center; color: var(--faint); font-size: 12px; }
+.abas-foot {
+  border: none; border-top: 1px solid var(--line);
+  background: transparent; color: var(--muted);
+  font: inherit; font-size: 12.5px; font-weight: 550;
+  padding: 9px 8px 4px;
+  text-align: left; cursor: pointer;
+}
+.abas-foot:hover { color: var(--ink); }
+
+/* ---------- Quadro unificado: filtros por projeto ---------- */
+.filters { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.filters::-webkit-scrollbar { display: none; }
+.fchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  padding: 5px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color .12s ease, background .12s ease;
+}
+.fchip:hover { border-color: var(--faint); }
+.fchip.sel { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+.fchip .cnt { color: var(--faint); font-weight: 600; font-variant-numeric: tabular-nums; }
+.fchip.sel .cnt { color: inherit; }
+.fchip .app-ico { width: 15px; height: 15px; border-radius: 4px; font-size: 8px; }
+.fchip.suavez { border-color: var(--amber-line); background: var(--amber-soft); color: var(--amber); font-weight: 600; }
+.fchip.suavez.sel { border-color: var(--amber); }
+.fchip .dia { width: 8px; height: 8px; border-radius: 2px; background: var(--amber); transform: rotate(45deg); flex: none; }
+.fdiv { width: 1px; height: 20px; background: var(--line); flex: none; margin: 0 3px; }
+
+/* ---------- Quadro unificado: grupos por projeto ---------- */
+/* O respiro do topo vem deste espaçador (não do padding do .board): assim o
+   cabeçalho sticky cola no topo real do scroll, sem tarefa vazando por cima. */
+.board { padding-top: 0; }
+.board::before { content: ""; height: 8px; }
+.group { display: grid; gap: 12px; }
+.group-h {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 2px 7px;
+  background: var(--ground);
+  font-size: 13.5px;
+  font-weight: 650;
+}
+.group-h .app-ico { width: 20px; height: 20px; font-size: 10px; }
+.group-h .cnt {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--faint);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.group-h .grule { flex: 1; height: 1px; background: var(--line); }
+
+/* Endereço da nova tarefa: select compacto no compose-bar ("em: projeto"). */
+.proj-select-wrap { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--faint); flex: none; }
+.proj-select {
+  font-size: 12px;
+  font-weight: 550;
+  padding: 4px 26px 4px 10px;
+  border-radius: var(--r-sm);
+  background-position: right 9px center;
+  max-width: 190px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}

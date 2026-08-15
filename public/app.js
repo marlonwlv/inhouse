@@ -55,7 +55,7 @@ function stepsAtivos(t) {
 const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.26.0";
+const UI_VERSION = "0.27.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -101,6 +101,8 @@ const state = {
   anexosPendentes: {}, // alvo ("new-task" | "composer") -> TaskAnexo[] já enviados, aguardando o envio da mensagem
   artefatos: {}, // taskId -> { at, temPrototipo, docs[], loading } (barra de artefatos do editor)
   showArquivadas: false, // mostrar as tarefas arquivadas no quadro
+  abas: lerAbas(), // ids das tarefas com aba de trabalho (persistem em inhouse.abas)
+  filtroQuadro: localStorage.getItem("inhouse.filtroQuadro") || "todos", // "todos" | "suavez" | <projectId>
   ui: { createPr: true },
   novaTarefaModo: "esteira", // "esteira" | "livre" — escolha na caixa de nova tarefa
   eval: null, // resumo carregado ao entrar em #/experiencia
@@ -869,6 +871,7 @@ function render() {
     const active = a.dataset.nav === r.name || (r.name === "editor" && a.dataset.nav === "board");
     a.classList.toggle("active", active);
   });
+  renderTabstrip(r);
   if (r.name === "home") renderHome();
   else if (r.name === "board") renderBoard();
   else if (r.name === "experiencia") renderExperiencia();
@@ -1546,6 +1549,170 @@ function claudeFootHtml() {
 }
 
 // ---------- TAREFAS (quadro) ----------
+// ---------- Faixa de abas de trabalho (navegação multi-projeto) ----------
+/* As tarefas que você abre viram abas persistentes (localStorage), com estado ao
+   vivo — trocar de tarefa, mesmo entre projetos, é 1 clique de qualquer tela. */
+function lerAbas() {
+  try {
+    const v = JSON.parse(localStorage.getItem("inhouse.abas") || "[]");
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function salvarAbas() {
+  try { localStorage.setItem("inhouse.abas", JSON.stringify(state.abas)); } catch { /* modo privado */ }
+}
+
+/* "Sua vez": a tarefa espera uma decisão humana (porteira, permissão ou modo livre). */
+function tarefaSuaVez(t) {
+  if (t.arquivadaEm) return false;
+  if (state.permissions.some((p) => p.taskId === t.id)) return true;
+  return t.status === "aguardando";
+}
+
+/* Glifo de estado da aba — a mesma linguagem da esteira (● trabalhando · ◆ sua vez). */
+function abaGlifoHtml(t) {
+  if (tarefaSuaVez(t)) return `<span class="t-wait" title="Sua vez"></span>`;
+  if (t.status === "rodando") return `<span class="t-run" title="Claude trabalhando"></span>`;
+  if (t.status === "falhou") return `<span class="t-fail" title="Precisa de atenção"></span>`;
+  return `<span class="t-done" title="Encerrada">✓</span>`;
+}
+
+function renderTabstrip(r) {
+  const el = $("#tabstrip");
+  if (!el) return;
+  // Abrir uma tarefa no editor cria a aba dela (se ainda não existe).
+  if (r.name === "editor" && getTask(r.id) && !state.abas.includes(r.id)) {
+    state.abas.push(r.id);
+    salvarAbas();
+  }
+  // Abas de tarefas que não existem mais saem sozinhas.
+  if (state.loaded && state.abas.some((id) => !getTask(id))) {
+    state.abas = state.abas.filter((id) => getTask(id));
+    salvarAbas();
+  }
+  const visivel = r.name === "board" || r.name === "editor";
+  el.hidden = !visivel;
+  if (!visivel) { fecharAbasPop(); return; }
+  const home = `<button class="tab home ${r.name === "board" ? "on" : ""}" data-act="aba-home" title="Quadro de tarefas — todos os projetos">
+    <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1" y="1" width="11" height="11" rx="2"/><path d="M1 4.5h11M4.8 4.5V12"/></svg>Tarefas</button>`;
+  const abas = state.abas.map((id) => {
+    const t = getTask(id);
+    if (!t) return "";
+    const nome = getProject(t.projectId)?.name || "?";
+    const on = r.name === "editor" && r.id === id;
+    return `<button class="tab ${on ? "on" : ""}" data-act="aba-abrir" data-task="${esc(id)}" title="${esc(nome)} · ${esc(t.title)}">${abaGlifoHtml(t)}<span class="t-title">${esc(t.title)}</span><span class="t-ico" style="background:${icoColor(nome)}">${esc(nome[0].toUpperCase())}</span><span class="t-x" data-act="aba-fechar" data-task="${esc(id)}" title="Fechar aba — a tarefa continua no quadro">✕</span></button>`;
+  }).join("");
+  const mais = `<button class="tab-new" data-act="abas-pop" title="Abrir tarefa — busque por texto ou projeto" aria-label="Abrir tarefa">+</button>`;
+  el.innerHTML = home + abas + mais;
+  renderAbasPop(); // lista viva se o popover estiver aberto durante um re-render (SSE)
+}
+
+// ---------- Popover do "+": abrir tarefa (busca por texto + filtro por projeto) ----------
+let abasPopProj = "todos"; // filtro de projeto do popover (efêmero, zera ao abrir)
+
+function abasPopEl() {
+  let el = document.getElementById("abas-pop");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "abas-pop";
+    el.className = "abas-pop";
+    el.hidden = true;
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+/* Busca sem acento: "relatorio" acha "Relatório". */
+function semAcento(s) {
+  return String(s).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function abasPopTarefas() {
+  const busca = semAcento(document.getElementById("abas-busca")?.value ?? "");
+  const peso = (t) => (tarefaSuaVez(t) ? 0 : t.status === "rodando" ? 1 : 2);
+  return state.tasks
+    .filter((t) => !t.arquivadaEm)
+    .filter((t) => abasPopProj === "todos" || t.projectId === abasPopProj)
+    .filter((t) => !busca || semAcento(t.title).includes(busca))
+    .sort((a, b) => peso(a) - peso(b) || String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+function renderAbasPop() {
+  const el = document.getElementById("abas-pop");
+  if (!el || el.hidden) return;
+  const projetos = state.projects.filter((p) => !p.arquivadoEm);
+  $(".abas-proj", el).innerHTML =
+    `<button class="fchip xs ${abasPopProj === "todos" ? "sel" : ""}" data-act="abas-pop-proj" data-proj="todos">Todos</button>` +
+    projetos.map((p) => `<button class="fchip xs ${abasPopProj === p.id ? "sel" : ""}" data-act="abas-pop-proj" data-proj="${esc(p.id)}"><span class="app-ico" style="background:${icoColor(p.name)}">${esc(p.name[0].toUpperCase())}</span>${esc(p.name)}</button>`).join("");
+  const linhas = abasPopTarefas().map((t) => {
+    const nome = getProject(t.projectId)?.name || "?";
+    const aberta = state.abas.includes(t.id);
+    return `<button class="abas-row ${aberta ? "aberta" : ""}" data-act="abas-pop-abrir" data-task="${esc(t.id)}" title="${esc(nome)} · ${esc(t.title)}${aberta ? " (já aberta)" : ""}">${abaGlifoHtml(t)}<span class="t">${esc(t.title)}</span><span class="t-ico" style="background:${icoColor(nome)}">${esc(nome[0].toUpperCase())}</span></button>`;
+  }).join("");
+  $(".abas-list", el).innerHTML = linhas || `<div class="abas-vazio">Nenhuma tarefa encontrada.</div>`;
+}
+
+function abrirAbasPop(btn) {
+  const el = abasPopEl();
+  if (!el.hidden) { fecharAbasPop(); return; }
+  abasPopProj = "todos";
+  el.innerHTML = `
+    <input class="docs-filter abas-busca" id="abas-busca" type="text" placeholder="Buscar tarefa… (Enter abre a primeira)" autocomplete="off" aria-label="Buscar tarefa">
+    <div class="abas-proj"></div>
+    <div class="abas-list"></div>
+    <button class="abas-foot" data-act="abas-pop-nova">＋ Criar nova tarefa…</button>`;
+  el.hidden = false;
+  renderAbasPop();
+  const r = btn.getBoundingClientRect();
+  el.style.top = `${Math.round(r.bottom + 6)}px`;
+  el.style.left = `${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - 356)))}px`;
+  setTimeout(() => document.getElementById("abas-busca")?.focus(), 30);
+}
+
+function fecharAbasPop() {
+  const el = document.getElementById("abas-pop");
+  if (el) el.hidden = true;
+}
+
+// ---------- TAREFAS (quadro unificado) ----------
+/* Filtro do quadro, validado: projeto que sumiu/arquivou volta para "todos". */
+function filtroQuadroAtual() {
+  const f = state.filtroQuadro;
+  if (f === "todos" || f === "suavez") return f;
+  return getProject(f) ? f : "todos";
+}
+
+function prepareCardHtml(p) {
+  return `<div class="prepare-card">
+    <div class="head">🛠️ Preparar este projeto</div>
+    <p>Antes de criar tarefas, deixe o Claude conferir e instalar o que o projeto precisa (dependências, variáveis de ambiente, scripts de setup) e te avisar se falta algo do sistema — como o Docker.</p>
+    <button class="btn primary" data-act="preparar-projeto" data-project="${esc(p.id)}">Preparar este projeto</button>
+  </div>`;
+}
+
+function grupoProjetoHtml(p, filtro, claudeOff) {
+  const visiveis = state.tasks
+    .filter((t) => t.projectId === p.id && !t.arquivadaEm)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const tasks = filtro === "suavez" ? visiveis.filter(tarefaSuaVez) : visiveis;
+  const temPreparacao = state.tasks.some((t) => t.projectId === p.id && t.kind === "preparacao");
+  const mostrarPreparar = filtro !== "suavez" && p.kind === "repo" && !p.preparado && !temPreparacao && !claudeOff;
+  // Sem nada para mostrar, o grupo só aparece quando o filtro foca este projeto.
+  if (!tasks.length && !mostrarPreparar && filtro !== p.id) return "";
+  const corpo = [
+    mostrarPreparar ? prepareCardHtml(p) : "",
+    tasks.length
+      ? tasks.map(taskCardHtml).join("")
+      : (filtro === p.id && !mostrarPreparar ? `<div class="empty-card">Nenhuma tarefa neste projeto ainda. Descreva a primeira ali em cima — o Claude cuida do resto.</div>` : ""),
+  ].join("");
+  return `<div class="group">
+    <div class="group-h"><span class="app-ico" style="background:${icoColor(p.name)}">${esc(p.name[0].toUpperCase())}</span>${esc(p.name)}<span class="cnt">${tasks.length}</span><span class="grule"></span><button class="btn ghost xs" data-act="nova-tarefa-em" data-project="${esc(p.id)}" ${claudeOff ? "disabled" : ""}>+ tarefa</button></div>
+    ${corpo}
+  </div>`;
+}
+
 function renderBoard() {
   if (state.projects.length === 0) {
     renderPage(`<div class="view view-page"><div class="center-box">
@@ -1555,29 +1722,44 @@ function renderBoard() {
     </div></div>`);
     return;
   }
-  const pid = selectedProjectId();
-  const todas = state.tasks
-    .filter((t) => t.projectId === pid)
-    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
-  const tasks = todas.filter((t) => !t.arquivadaEm);
-  const arquivadas = todas.filter((t) => t.arquivadaEm);
-  const ativas = tasks.filter((t) => t.status === "rodando" || t.status === "aguardando").length;
-  const proj = state.projects.find((p) => p.id === pid);
-  const temPreparacao = todas.some((t) => t.kind === "preparacao");
-  const mostrarPreparar = !!proj && proj.kind === "repo" && !proj.preparado && !temPreparacao;
+  const filtro = filtroQuadroAtual();
+  const claudeOff = state.loaded && !state.claude.ok;
+  const projSel = selectedProjectId(); // endereço pré-selecionado da nova tarefa (último usado)
+
+  const naoArquivadas = state.tasks.filter((t) => !t.arquivadaEm);
+  const ativas = naoArquivadas.filter((t) => t.status === "rodando" || t.status === "aguardando").length;
+  const suaVezTotal = naoArquivadas.filter(tarefaSuaVez).length;
+  const projetos = state.projects.filter((p) => !p.arquivadoEm);
+  const conta = (pid) => naoArquivadas.filter((t) => t.projectId === pid).length;
+
+  const chips = `<div class="filters" role="group" aria-label="Filtrar tarefas por projeto">
+      <button class="fchip ${filtro === "todos" ? "sel" : ""}" data-act="filtro-quadro" data-filtro="todos" title="Tarefas de todos os projetos">Todos <span class="cnt">${naoArquivadas.length}</span></button>
+      ${projetos.map((p) => `<button class="fchip ${filtro === p.id ? "sel" : ""}" data-act="filtro-quadro" data-filtro="${esc(p.id)}" title="Só as tarefas de ${esc(p.name)}"><span class="app-ico" style="background:${icoColor(p.name)}">${esc(p.name[0].toUpperCase())}</span>${esc(p.name)} <span class="cnt">${conta(p.id)}</span></button>`).join("")}
+      <span class="fdiv"></span>
+      <button class="fchip suavez ${filtro === "suavez" ? "sel" : ""}" data-act="filtro-quadro" data-filtro="suavez" title="Só o que espera uma decisão sua, em todos os projetos"><span class="dia"></span>Sua vez <span class="cnt">${suaVezTotal}</span></button>
+    </div>`;
+
   const statusLine = ativas === 0
     ? "nenhuma tarefa em andamento"
     : ativas === 1
       ? "1 tarefa em andamento · num espaço isolado"
       : `${ativas} tarefas em paralelo · cada uma no seu espaço isolado`;
-  const claudeOff = state.loaded && !state.claude.ok;
+
+  const grupos = projetos
+    .filter((p) => filtro === "todos" || filtro === "suavez" || filtro === p.id)
+    .map((p) => grupoProjetoHtml(p, filtro, claudeOff))
+    .join("");
+  const vazioSuaVez = filtro === "suavez" && suaVezTotal === 0
+    ? `<div class="empty-card">Nada esperando você agora — o Claude está cuidando de tudo.</div>`
+    : "";
+  const arquivadas = state.tasks
+    .filter((t) => t.arquivadaEm && filtro !== "suavez" && (filtro === "todos" || t.projectId === filtro))
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 
   renderPage(`
   <div class="view view-board">
     <div class="topbar">
-      <select id="project-select" class="repo-pick" aria-label="Escolher projeto" title="${esc(proj?.name || "")}">
-        ${opcoesProjeto(pid)}
-      </select>
+      ${chips}
       <div class="status">${statusLine}</div>
       <button class="btn sm primary" data-act="focus-new-task">+ Nova tarefa</button>
     </div>
@@ -1587,6 +1769,7 @@ function renderBoard() {
         <div class="compose-anexos" id="anexos-new-task">${anexoChipsHtml("new-task")}</div>
         <div class="compose-bar">
           <button type="button" class="attach-btn" data-act="attach" data-target="new-task" title="Anexar arquivos (imagem, PDF)" ${claudeOff ? "disabled" : ""}>📎 Anexar</button>
+          <span class="proj-select-wrap">em: <select id="new-task-proj" class="proj-select" aria-label="Projeto da nova tarefa" title="Em qual projeto criar a tarefa" ${claudeOff ? "disabled" : ""}>${opcoesProjeto(projSel)}</select></span>
           <span class="modo-seg" role="group" aria-label="Modo da tarefa">
             <button type="button" class="${state.novaTarefaModo !== "livre" ? "on" : ""}" data-act="set-modo" data-modo="esteira" title="Passa pela esteira: plano, suas aprovações e verificações">Esteira</button>
             <button type="button" class="${state.novaTarefaModo === "livre" ? "on" : ""}" data-act="set-modo" data-modo="livre" title="Sem esteira: você conduz o Claude direto e escolhe as skills no chat">Livre</button>
@@ -1597,15 +1780,8 @@ function renderBoard() {
         ${state.novaTarefaModo === "livre" ? `<p class="modo-hint">⚡ <b>Modo livre:</b> vai direto, sem plano nem porteiras — você conduz e pede <code>/review</code>, <code>/qa</code> etc. quando quiser. Publique quando estiver pronto.</p>` : ""}
       </form>
       ${claudeOff ? primeirosPassosHtml() : ""}
-      ${mostrarPreparar && !claudeOff ? `
-        <div class="prepare-card">
-          <div class="head">🛠️ Preparar este projeto</div>
-          <p>Antes de criar tarefas, deixe o Claude conferir e instalar o que o projeto precisa (dependências, variáveis de ambiente, scripts de setup) e te avisar se falta algo do sistema — como o Docker.</p>
-          <button class="btn primary" data-act="preparar-projeto" data-project="${esc(pid)}">Preparar este projeto</button>
-        </div>` : ""}
-      ${tasks.length
-        ? tasks.map(taskCardHtml).join("")
-        : `<div class="empty-card">Nenhuma tarefa neste projeto ainda. Descreva a primeira ali em cima — o Claude cuida do resto.</div>`}
+      ${grupos || (filtro === "suavez" ? "" : `<div class="empty-card">Nenhuma tarefa ainda. Descreva a primeira ali em cima — o Claude cuida do resto.</div>`)}
+      ${vazioSuaVez}
       ${arquivadas.length ? `
         <div class="arquivadas-sep">
           <button class="btn sm ghost" data-act="toggle-arquivadas">${state.showArquivadas ? "Ocultar" : "Ver"} arquivadas (${arquivadas.length})</button>
@@ -1621,6 +1797,7 @@ function taskCardHtml(t) {
       <div class="task-head">
         <b>${esc(t.title)}</b>
         <span class="chip">arquivada</span>
+        <span class="chip">${esc(getProject(t.projectId)?.name ?? "?")}</span>
         <div class="meta">${t.prUrl ? `<a class="link" href="${esc(t.prUrl)}" target="_blank" rel="noreferrer">Ver no GitHub</a> · ` : ""}<button class="btn sm ghost" data-act="desarquivar" data-task="${esc(t.id)}">Desarquivar</button></div>
       </div>
     </div>`;
@@ -1789,7 +1966,6 @@ function editorShellHtml(t, p) {
   const name = p?.name || "?";
   return `<div class="view view-editor" data-view="editor" data-task="${esc(t.id)}">
     <div class="topbar">
-      <a class="btn sm ghost back" href="#/tarefas" title="Voltar para as tarefas" aria-label="Voltar">←</a>
       <div class="app-name">
         <span class="app-ico" style="background:${icoColor(name)}">${esc(name[0].toUpperCase())}</span>
         <span id="ed-title"></span>
@@ -2811,6 +2987,52 @@ const actions = {
     const i = $("#new-task-desc");
     if (i) { i.focus(); i.scrollIntoView({ block: "nearest" }); }
   },
+  // Quadro unificado: chips de filtro por projeto + "sua vez".
+  "filtro-quadro": (btn) => {
+    state.filtroQuadro = btn.dataset.filtro;
+    try { localStorage.setItem("inhouse.filtroQuadro", state.filtroQuadro); } catch { /* modo privado */ }
+    render();
+  },
+  // "+ tarefa" do grupo: endereça o composer àquele projeto e foca.
+  "nova-tarefa-em": (btn) => {
+    try { localStorage.setItem("inhouse.projectId", btn.dataset.project); } catch { /* modo privado */ }
+    const sel = $("#new-task-proj");
+    if (sel) sel.value = btn.dataset.project;
+    actions["focus-new-task"]();
+  },
+  // Faixa de abas de trabalho.
+  "abas-pop": (btn) => abrirAbasPop(btn),
+  "abas-pop-proj": (btn) => {
+    abasPopProj = btn.dataset.proj;
+    renderAbasPop();
+    document.getElementById("abas-busca")?.focus();
+  },
+  "abas-pop-abrir": (btn) => {
+    fecharAbasPop();
+    location.hash = `#/tarefa/${btn.dataset.task}`;
+  },
+  "abas-pop-nova": () => {
+    const proj = abasPopProj;
+    fecharAbasPop();
+    if (proj !== "todos") { try { localStorage.setItem("inhouse.projectId", proj); } catch { /* modo privado */ } }
+    if (route().name !== "board") location.hash = "#/tarefas";
+    // Espera o quadro renderizar para focar o composer já endereçado.
+    setTimeout(() => {
+      const sel = $("#new-task-proj");
+      if (sel && proj !== "todos") sel.value = proj;
+      actions["focus-new-task"]();
+    }, 90);
+  },
+  "aba-home": () => { location.hash = "#/tarefas"; },
+  "aba-abrir": (btn) => { location.hash = `#/tarefa/${btn.dataset.task}`; },
+  "aba-fechar": (btn) => {
+    const id = btn.dataset.task;
+    state.abas = state.abas.filter((x) => x !== id);
+    salvarAbas();
+    const r = route();
+    if (r.name === "editor" && r.id === id) location.hash = "#/tarefas";
+    else render();
+  },
   "approve-plan": (btn) => taskAction(btn.dataset.task, { action: "approve_plan" }),
   "approve-plan-direto": (btn) => taskAction(btn.dataset.task, { action: "approve_plan", direto: true }),
   "approve-prototype": (btn) => taskAction(btn.dataset.task, { action: "approve_prototype" }),
@@ -3305,6 +3527,9 @@ document.addEventListener("click", (e) => {
   const projOpen = e.target.closest("[data-open-project]");
   if (projOpen) {
     localStorage.setItem("inhouse.projectId", projOpen.dataset.openProject);
+    // Abrir um projeto do Início foca o quadro nele (o filtro fica gravado).
+    state.filtroQuadro = projOpen.dataset.openProject;
+    try { localStorage.setItem("inhouse.filtroQuadro", state.filtroQuadro); } catch { /* modo privado */ }
     location.hash = "#/tarefas";
     return;
   }
@@ -3332,6 +3557,9 @@ document.addEventListener("change", (e) => {
   if (el.id === "project-select" || el.id === "cfg-project") {
     localStorage.setItem("inhouse.projectId", el.value);
     render();
+  } else if (el.id === "new-task-proj") {
+    // Endereço da nova tarefa: vira também o "último projeto usado".
+    localStorage.setItem("inhouse.projectId", el.value);
   } else if (el.id === "create-pr") {
     state.ui.createPr = el.checked;
   } else if (el.id === "eval-fonte") {
@@ -3365,8 +3593,9 @@ document.addEventListener("submit", async (e) => {
     const input = $("#new-task-desc");
     const description = input.value.trim();
     if (!description) return;
-    const projectId = selectedProjectId();
+    const projectId = $("#new-task-proj")?.value || selectedProjectId();
     if (!projectId) { toast("Escolha um projeto primeiro."); return; }
+    try { localStorage.setItem("inhouse.projectId", projectId); } catch { /* modo privado */ }
     const anexos = state.anexosPendentes["new-task"] || [];
     const modo = state.novaTarefaModo === "livre" ? "livre" : "esteira";
     const t = await api("/api/tasks", { projectId, title: titleFrom(description), description, modo, ...(anexos.length ? { anexos } : {}) });
@@ -3491,6 +3720,7 @@ document.addEventListener("input", (e) => {
   const el = e.target;
   if (!el || !el.classList) return;
   if (el.classList.contains("grow-area")) autoGrow(el);
+  else if (el.classList.contains("abas-busca")) renderAbasPop();
   else if (el.classList.contains("docs-filter")) filtrarDocs(el);
 });
 // Fecha o dropdown de Documentos ao clicar fora dele (o próprio gatilho é ignorado).
@@ -3501,6 +3731,23 @@ document.addEventListener("click", (e) => {
 document.addEventListener("click", (e) => {
   if (e.target.closest?.('[data-act="proj-menu"]') || e.target.closest?.(".proj-menu-pop")) return;
   document.querySelectorAll(".proj-menu-pop.open").forEach((p) => p.classList.remove("open"));
+});
+// Popover do "+" (abrir tarefa): fecha ao clicar fora; Enter abre a primeira; Esc fecha.
+document.addEventListener("click", (e) => {
+  // Alvo destacado do DOM = um clique DENTRO do popover que re-renderizou
+  // (ex.: chip de projeto) — closest() já não enxerga o ancestral; não é "fora".
+  if (!e.target.isConnected) return;
+  if (e.target.closest?.('[data-act="abas-pop"]') || e.target.closest?.("#abas-pop")) return;
+  fecharAbasPop();
+});
+document.addEventListener("keydown", (e) => {
+  const pop = document.getElementById("abas-pop");
+  if (!pop || pop.hidden) return;
+  if (e.key === "Escape") { fecharAbasPop(); return; }
+  if (e.key === "Enter" && e.target && e.target.id === "abas-busca") {
+    e.preventDefault();
+    pop.querySelector(".abas-row")?.click();
+  }
 });
 // Fecha os popovers de esforço/modo ao clicar fora deles.
 document.addEventListener("click", (e) => {
@@ -3583,6 +3830,7 @@ window.addEventListener("hashchange", hideStepTip);
 window.addEventListener("hashchange", () => {
   document.querySelectorAll("dialog.doc-dialog[open]").forEach((d) => d.close());
   document.querySelectorAll(".docs-pop.open").forEach((p) => p.classList.remove("open"));
+  fecharAbasPop();
 });
 window.addEventListener("hashchange", render);
 connectSSE();
