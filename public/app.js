@@ -2,6 +2,9 @@
    Estado global alimentado por GET /api/state e mantido vivo por SSE em /api/events.
    Rotas por hash: #/ (Início) · #/tarefas (quadro) · #/tarefa/<id> (editor). */
 
+// Funções puras (validação de entrada do localStorage) — testadas em test/ui-puro.test.ts.
+import { filtroQuadroValido, parseAbas } from "./puro.js";
+
 // ---------- Constantes copiadas de shared/types.ts (manter em sincronia) ----------
 const STEPS = ["espec", "plano", "aprovacao", "detalhamento", "prototipo", "aprovacao_prototipo", "execucao", "verificacoes", "teste", "revisao", "publicar", "concluida"];
 const STEP_LABELS = {
@@ -171,6 +174,14 @@ function icoColor(name) {
   return `hsl(${h} 45% 42%)`;
 }
 
+/* Selo do projeto (quadradinho com a inicial). Um único lugar porque a inicial
+   precisa do fallback "?": nome vazio faria nome[0].toUpperCase() estourar
+   DENTRO do template, derrubando o render inteiro em vez de um selo só. */
+function icoHtml(nome, cls = "app-ico") {
+  const n = String(nome || "?");
+  return `<span class="${cls}" style="background:${icoColor(n)}">${esc((n[0] || "?").toUpperCase())}</span>`;
+}
+
 function getProject(id) { return state.projects.find((p) => p.id === id); }
 function getTask(id) { return state.tasks.find((t) => t.id === id); }
 function upsert(arr, item) {
@@ -180,8 +191,11 @@ function upsert(arr, item) {
 
 function selectedProjectId() {
   const saved = localStorage.getItem("inhouse.projectId");
-  if (saved && getProject(saved)) return saved;
-  return state.projects[0]?.id ?? null;
+  // Projeto arquivado não serve de destino para tarefa nova: ele não aparece
+  // no quadro, então a tarefa nasceria invisível.
+  const p = saved ? getProject(saved) : null;
+  if (p && !p.arquivadoEm) return saved;
+  return state.projects.find((x) => !x.arquivadoEm)?.id ?? state.projects[0]?.id ?? null;
 }
 
 // ---------- Rede ----------
@@ -889,7 +903,13 @@ function renderPage(html) {
   appEl.querySelectorAll("input[id], textarea[id]").forEach((i) => {
     values[i.id] = i.type === "checkbox" ? i.checked : i.value;
   });
+  // Rolagem: o quadro unificado é longo (todos os projetos) e o SSE re-renderiza
+  // a cada evento de QUALQUER projeto — sem isto, a tela pula para o topo sozinha.
+  const scrolls = [...appEl.querySelectorAll(".board, .view-page")].map((el) => el.scrollTop);
   appEl.innerHTML = html;
+  [...appEl.querySelectorAll(".board, .view-page")].forEach((el, i) => {
+    if (scrolls[i]) el.scrollTop = scrolls[i];
+  });
   appEl.querySelectorAll("input[id], textarea[id]").forEach((i) => {
     if (i.id in values) {
       if (i.type === "checkbox") i.checked = values[i.id];
@@ -1554,10 +1574,9 @@ function claudeFootHtml() {
    vivo — trocar de tarefa, mesmo entre projetos, é 1 clique de qualquer tela. */
 function lerAbas() {
   try {
-    const v = JSON.parse(localStorage.getItem("inhouse.abas") || "[]");
-    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+    return parseAbas(localStorage.getItem("inhouse.abas"));
   } catch {
-    return [];
+    return []; // localStorage indisponível (modo privado)
   }
 }
 function salvarAbas() {
@@ -1602,7 +1621,7 @@ function renderTabstrip(r) {
     if (!t) return "";
     const nome = getProject(t.projectId)?.name || "?";
     const on = r.name === "editor" && r.id === id;
-    return `<button class="tab ${on ? "on" : ""}" data-act="aba-abrir" data-task="${esc(id)}" title="${esc(nome)} · ${esc(t.title)}">${abaGlifoHtml(t)}<span class="t-title">${esc(t.title)}</span><span class="t-ico" style="background:${icoColor(nome)}">${esc(nome[0].toUpperCase())}</span><span class="t-x" data-act="aba-fechar" data-task="${esc(id)}" title="Fechar aba — a tarefa continua no quadro">✕</span></button>`;
+    return `<button class="tab ${on ? "on" : ""}" data-act="aba-abrir" data-task="${esc(id)}" title="${esc(nome)} · ${esc(t.title)}">${abaGlifoHtml(t)}<span class="t-title">${esc(t.title)}</span>${icoHtml(nome, "t-ico")}<span class="t-x" data-act="aba-fechar" data-task="${esc(id)}" title="Fechar aba — a tarefa continua no quadro">✕</span></button>`;
   }).join("");
   const mais = `<button class="tab-new" data-act="abas-pop" title="Abrir tarefa — busque por texto ou projeto" aria-label="Abrir tarefa">+</button>`;
   el.innerHTML = home + abas + mais;
@@ -1629,14 +1648,32 @@ function semAcento(s) {
   return String(s).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
+/* Ordem congelada enquanto o popover está aberto: o SSE muda status e updatedAt
+   a todo momento, e reordenar a lista embaixo do cursor faz o clique abrir a
+   tarefa errada (ou se perder, quando mousedown e mouseup caem em linhas
+   diferentes). A ordem só é recalculada ao abrir e ao mudar busca/filtro. */
+let abasPopOrdem = null; // Map<taskId, posição> ou null quando fechado
+
 function abasPopTarefas() {
   const busca = semAcento(document.getElementById("abas-busca")?.value ?? "");
   const peso = (t) => (tarefaSuaVez(t) ? 0 : t.status === "rodando" ? 1 : 2);
-  return state.tasks
+  const lista = state.tasks
     .filter((t) => !t.arquivadaEm)
     .filter((t) => abasPopProj === "todos" || t.projectId === abasPopProj)
-    .filter((t) => !busca || semAcento(t.title).includes(busca))
-    .sort((a, b) => peso(a) - peso(b) || String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    .filter((t) => !busca || semAcento(t.title).includes(busca));
+  // Com a ordem congelada, um re-render do SSE mantém cada linha no seu lugar;
+  // tarefas que surgiram depois (sem posição) vão para o fim.
+  if (abasPopOrdem) {
+    const pos = (t) => (abasPopOrdem.has(t.id) ? abasPopOrdem.get(t.id) : Number.MAX_SAFE_INTEGER);
+    return lista.sort((a, b) => pos(a) - pos(b));
+  }
+  return lista.sort((a, b) => peso(a) - peso(b) || String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+/* Recalcula a ordem (ao abrir e quando busca/filtro mudam) e congela de novo. */
+function recalcularOrdemAbasPop() {
+  abasPopOrdem = null;
+  abasPopOrdem = new Map(abasPopTarefas().map((t, i) => [t.id, i]));
 }
 
 function renderAbasPop() {
@@ -1645,11 +1682,11 @@ function renderAbasPop() {
   const projetos = state.projects.filter((p) => !p.arquivadoEm);
   $(".abas-proj", el).innerHTML =
     `<button class="fchip xs ${abasPopProj === "todos" ? "sel" : ""}" data-act="abas-pop-proj" data-proj="todos">Todos</button>` +
-    projetos.map((p) => `<button class="fchip xs ${abasPopProj === p.id ? "sel" : ""}" data-act="abas-pop-proj" data-proj="${esc(p.id)}"><span class="app-ico" style="background:${icoColor(p.name)}">${esc(p.name[0].toUpperCase())}</span>${esc(p.name)}</button>`).join("");
+    projetos.map((p) => `<button class="fchip xs ${abasPopProj === p.id ? "sel" : ""}" data-act="abas-pop-proj" data-proj="${esc(p.id)}">${icoHtml(p.name)}${esc(p.name)}</button>`).join("");
   const linhas = abasPopTarefas().map((t) => {
     const nome = getProject(t.projectId)?.name || "?";
     const aberta = state.abas.includes(t.id);
-    return `<button class="abas-row ${aberta ? "aberta" : ""}" data-act="abas-pop-abrir" data-task="${esc(t.id)}" title="${esc(nome)} · ${esc(t.title)}${aberta ? " (já aberta)" : ""}">${abaGlifoHtml(t)}<span class="t">${esc(t.title)}</span><span class="t-ico" style="background:${icoColor(nome)}">${esc(nome[0].toUpperCase())}</span></button>`;
+    return `<button class="abas-row ${aberta ? "aberta" : ""}" data-act="abas-pop-abrir" data-task="${esc(t.id)}" title="${esc(nome)} · ${esc(t.title)}${aberta ? " (já aberta)" : ""}">${abaGlifoHtml(t)}<span class="t">${esc(t.title)}</span>${icoHtml(nome, "t-ico")}</button>`;
   }).join("");
   $(".abas-list", el).innerHTML = linhas || `<div class="abas-vazio">Nenhuma tarefa encontrada.</div>`;
 }
@@ -1658,30 +1695,47 @@ function abrirAbasPop(btn) {
   const el = abasPopEl();
   if (!el.hidden) { fecharAbasPop(); return; }
   abasPopProj = "todos";
+  abasPopOrdem = null; // ordem nova a cada abertura
   el.innerHTML = `
     <input class="docs-filter abas-busca" id="abas-busca" type="text" placeholder="Buscar tarefa… (Enter abre a primeira)" autocomplete="off" aria-label="Buscar tarefa">
     <div class="abas-proj"></div>
     <div class="abas-list"></div>
     <button class="abas-foot" data-act="abas-pop-nova">＋ Criar nova tarefa…</button>`;
   el.hidden = false;
+  recalcularOrdemAbasPop();
   renderAbasPop();
-  const r = btn.getBoundingClientRect();
-  el.style.top = `${Math.round(r.bottom + 6)}px`;
-  el.style.left = `${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - 356)))}px`;
+  posicionarAbasPop();
   setTimeout(() => document.getElementById("abas-busca")?.focus(), 30);
 }
+
+/* Posiciona o popover sob o "+". Refeito no resize: como é position:fixed, sem
+   recalcular ele fica pendurado em coordenadas velhas quando a janela muda. */
+function posicionarAbasPop() {
+  const el = document.getElementById("abas-pop");
+  const btn = document.querySelector('[data-act="abas-pop"]');
+  if (!el || el.hidden || !btn) return;
+  const r = btn.getBoundingClientRect();
+  // Largura vem do CSS (.abas-pop), medida aqui — não duplicar o número nos dois lados.
+  const larg = el.getBoundingClientRect().width || 340;
+  const top = Math.round(r.bottom + 6);
+  el.style.top = `${top}px`;
+  el.style.left = `${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - larg - 16)))}px`;
+  // Janela baixa (tela dividida): limita a altura para o rodapé continuar clicável.
+  el.style.maxHeight = `${Math.max(160, window.innerHeight - top - 16)}px`;
+}
+window.addEventListener("resize", posicionarAbasPop);
 
 function fecharAbasPop() {
   const el = document.getElementById("abas-pop");
   if (el) el.hidden = true;
+  abasPopOrdem = null; // fechou: a próxima abertura recalcula
 }
 
 // ---------- TAREFAS (quadro unificado) ----------
-/* Filtro do quadro, validado: projeto que sumiu/arquivou volta para "todos". */
+/* Filtro do quadro, validado (lógica e testes em puro.js): projeto que sumiu ou
+   foi arquivado volta para "todos", senão o quadro ficaria em branco. */
 function filtroQuadroAtual() {
-  const f = state.filtroQuadro;
-  if (f === "todos" || f === "suavez") return f;
-  return getProject(f) ? f : "todos";
+  return filtroQuadroValido(state.filtroQuadro, state.projects);
 }
 
 function prepareCardHtml(p) {
@@ -1708,7 +1762,7 @@ function grupoProjetoHtml(p, filtro, claudeOff) {
       : (filtro === p.id && !mostrarPreparar ? `<div class="empty-card">Nenhuma tarefa neste projeto ainda. Descreva a primeira ali em cima — o Claude cuida do resto.</div>` : ""),
   ].join("");
   return `<div class="group">
-    <div class="group-h"><span class="app-ico" style="background:${icoColor(p.name)}">${esc(p.name[0].toUpperCase())}</span>${esc(p.name)}<span class="cnt">${tasks.length}</span><span class="grule"></span><button class="btn ghost xs" data-act="nova-tarefa-em" data-project="${esc(p.id)}" ${claudeOff ? "disabled" : ""}>+ tarefa</button></div>
+    <div class="group-h">${icoHtml(p.name)}${esc(p.name)}<span class="cnt">${tasks.length}</span><span class="grule"></span><button class="btn ghost xs" data-act="nova-tarefa-em" data-project="${esc(p.id)}" ${claudeOff ? "disabled" : ""}>+ tarefa</button></div>
     ${corpo}
   </div>`;
 }
@@ -1726,15 +1780,19 @@ function renderBoard() {
   const claudeOff = state.loaded && !state.claude.ok;
   const projSel = selectedProjectId(); // endereço pré-selecionado da nova tarefa (último usado)
 
-  const naoArquivadas = state.tasks.filter((t) => !t.arquivadaEm);
+  const projetos = state.projects.filter((p) => !p.arquivadoEm);
+  // As contagens têm de olhar o MESMO conjunto que os grupos renderizam: só
+  // projetos ativos. Arquivar um projeto não arquiva as tarefas dele, então
+  // contar tudo faria o chip prometer tarefas que nenhum grupo mostra.
+  const idsAtivos = new Set(projetos.map((p) => p.id));
+  const naoArquivadas = state.tasks.filter((t) => !t.arquivadaEm && idsAtivos.has(t.projectId));
   const ativas = naoArquivadas.filter((t) => t.status === "rodando" || t.status === "aguardando").length;
   const suaVezTotal = naoArquivadas.filter(tarefaSuaVez).length;
-  const projetos = state.projects.filter((p) => !p.arquivadoEm);
   const conta = (pid) => naoArquivadas.filter((t) => t.projectId === pid).length;
 
   const chips = `<div class="filters" role="group" aria-label="Filtrar tarefas por projeto">
       <button class="fchip ${filtro === "todos" ? "sel" : ""}" data-act="filtro-quadro" data-filtro="todos" title="Tarefas de todos os projetos">Todos <span class="cnt">${naoArquivadas.length}</span></button>
-      ${projetos.map((p) => `<button class="fchip ${filtro === p.id ? "sel" : ""}" data-act="filtro-quadro" data-filtro="${esc(p.id)}" title="Só as tarefas de ${esc(p.name)}"><span class="app-ico" style="background:${icoColor(p.name)}">${esc(p.name[0].toUpperCase())}</span>${esc(p.name)} <span class="cnt">${conta(p.id)}</span></button>`).join("")}
+      ${projetos.map((p) => `<button class="fchip ${filtro === p.id ? "sel" : ""}" data-act="filtro-quadro" data-filtro="${esc(p.id)}" title="Só as tarefas de ${esc(p.name)}">${icoHtml(p.name)}${esc(p.name)} <span class="cnt">${conta(p.id)}</span></button>`).join("")}
       <span class="fdiv"></span>
       <button class="fchip suavez ${filtro === "suavez" ? "sel" : ""}" data-act="filtro-quadro" data-filtro="suavez" title="Só o que espera uma decisão sua, em todos os projetos"><span class="dia"></span>Sua vez <span class="cnt">${suaVezTotal}</span></button>
     </div>`;
@@ -1967,7 +2025,7 @@ function editorShellHtml(t, p) {
   return `<div class="view view-editor" data-view="editor" data-task="${esc(t.id)}">
     <div class="topbar">
       <div class="app-name">
-        <span class="app-ico" style="background:${icoColor(name)}">${esc(name[0].toUpperCase())}</span>
+        ${icoHtml(name)}
         <span id="ed-title"></span>
         <span class="chip" id="ed-espaco"></span>
       </div>
@@ -2995,15 +3053,22 @@ const actions = {
   },
   // "+ tarefa" do grupo: endereça o composer àquele projeto e foca.
   "nova-tarefa-em": (btn) => {
-    try { localStorage.setItem("inhouse.projectId", btn.dataset.project); } catch { /* modo privado */ }
+    const alvo = btn.dataset.project;
+    try { localStorage.setItem("inhouse.projectId", alvo); } catch { /* modo privado */ }
     const sel = $("#new-task-proj");
-    if (sel) sel.value = btn.dataset.project;
+    if (sel) {
+      sel.value = alvo;
+      // value que não casa com nenhuma <option> vira "" em silêncio (o projeto
+      // pode ter sido arquivado por um evento do SSE entre o render e o clique).
+      if (sel.value !== alvo) { toast("Esse projeto não está mais disponível."); render(); return; }
+    }
     actions["focus-new-task"]();
   },
   // Faixa de abas de trabalho.
   "abas-pop": (btn) => abrirAbasPop(btn),
   "abas-pop-proj": (btn) => {
     abasPopProj = btn.dataset.proj;
+    recalcularOrdemAbasPop();
     renderAbasPop();
     document.getElementById("abas-busca")?.focus();
   },
@@ -3030,8 +3095,13 @@ const actions = {
     state.abas = state.abas.filter((x) => x !== id);
     salvarAbas();
     const r = route();
-    if (r.name === "editor" && r.id === id) location.hash = "#/tarefas";
-    else render();
+    if (r.name === "editor" && r.id === id) {
+      // replaceState (em vez de trocar o hash) apaga a entrada da tarefa do
+      // histórico: senão o "voltar" do navegador cairia nela de novo e o
+      // renderTabstrip recriaria a aba que você acabou de fechar.
+      history.replaceState(null, "", "#/tarefas");
+      render();
+    } else render();
   },
   "approve-plan": (btn) => taskAction(btn.dataset.task, { action: "approve_plan" }),
   "approve-plan-direto": (btn) => taskAction(btn.dataset.task, { action: "approve_plan", direto: true }),
@@ -3554,7 +3624,7 @@ document.addEventListener("keydown", (e) => {
 
 document.addEventListener("change", (e) => {
   const el = e.target;
-  if (el.id === "project-select" || el.id === "cfg-project") {
+  if (el.id === "cfg-project") {
     localStorage.setItem("inhouse.projectId", el.value);
     render();
   } else if (el.id === "new-task-proj") {
@@ -3720,7 +3790,7 @@ document.addEventListener("input", (e) => {
   const el = e.target;
   if (!el || !el.classList) return;
   if (el.classList.contains("grow-area")) autoGrow(el);
-  else if (el.classList.contains("abas-busca")) renderAbasPop();
+  else if (el.classList.contains("abas-busca")) { recalcularOrdemAbasPop(); renderAbasPop(); }
   else if (el.classList.contains("docs-filter")) filtrarDocs(el);
 });
 // Fecha o dropdown de Documentos ao clicar fora dele (o próprio gatilho é ignorado).
@@ -3733,20 +3803,31 @@ document.addEventListener("click", (e) => {
   document.querySelectorAll(".proj-menu-pop.open").forEach((p) => p.classList.remove("open"));
 });
 // Popover do "+" (abrir tarefa): fecha ao clicar fora; Enter abre a primeira; Esc fecha.
-document.addEventListener("click", (e) => {
-  // Alvo destacado do DOM = um clique DENTRO do popover que re-renderizou
-  // (ex.: chip de projeto) — closest() já não enxerga o ancestral; não é "fora".
-  if (!e.target.isConnected) return;
-  if (e.target.closest?.('[data-act="abas-pop"]') || e.target.closest?.("#abas-pop")) return;
+// A decisão "foi dentro ou fora?" é tirada no mousedown, ANTES de qualquer
+// re-render do SSE: no clique o alvo pode já ter sido destacado do DOM, e aí
+// closest() não enxerga mais o ancestral — testar isConnected no clique fazia
+// clique legítimo lá fora (num card do quadro) não fechar o popover.
+let abasPopMouseDentro = false;
+document.addEventListener("mousedown", (e) => {
+  abasPopMouseDentro = !!(
+    e.target.closest?.('[data-act="abas-pop"]') || e.target.closest?.("#abas-pop")
+  );
+});
+document.addEventListener("click", () => {
+  if (abasPopMouseDentro) return;
   fecharAbasPop();
 });
 document.addEventListener("keydown", (e) => {
   const pop = document.getElementById("abas-pop");
   if (!pop || pop.hidden) return;
-  if (e.key === "Escape") { fecharAbasPop(); return; }
+  // Esc fecha só o popover: sem parar a propagação, um <dialog> aberto atrás
+  // dele fecharia junto, no mesmo toque.
+  if (e.key === "Escape") { e.stopPropagation(); fecharAbasPop(); return; }
   if (e.key === "Enter" && e.target && e.target.id === "abas-busca") {
+    const primeira = pop.querySelector(".abas-row");
+    if (!primeira) return; // lista vazia: deixa o Enter seguir, sem engolir a tecla
     e.preventDefault();
-    pop.querySelector(".abas-row")?.click();
+    primeira.click();
   }
 });
 // Fecha os popovers de esforço/modo ao clicar fora deles.
