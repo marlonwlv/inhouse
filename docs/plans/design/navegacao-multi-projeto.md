@@ -2,7 +2,7 @@
 
 - **Categoria:** design
 - **Data:** 2026-08-14
-- **Status:** Em andamento (implementado na branch `feat/navegacao-multi-projeto`, worktree `../inhouse-navegacao`; testes passando e verificação visual feita em server isolado — aguardando revisão e merge)
+- **Status:** Em andamento — PR [#11](https://github.com/marlonwlv/inhouse/pull/11) aberto (branch `feat/navegacao-multi-projeto`, worktree `../inhouse-navegacao`). Revisão de código feita em 2026-08-18: 13 correções aplicadas em `e736f06` (projeto arquivado deixando o quadro vazio e as contagens mentindo, lista do popover reordenando sob o cursor a cada evento SSE, nome de projeto vazio derrubando o render, rolagem perdida a cada re-render) e a lógica pura de validação do `localStorage` saiu para `public/puro.js` com testes — 285 testes passando. Falta verificação manual no navegador e o merge.
 
 ## Dores
 
