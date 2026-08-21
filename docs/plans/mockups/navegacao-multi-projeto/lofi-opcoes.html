@@ -1,0 +1,1100 @@
+<meta charset="utf-8">
+<title>Inhouse multi-projeto</title>
+<style>
+  :root {
+    --ground: #F7F7F9;
+    --paper: #FFFFFF;
+    --ink: #1C1C21;
+    --muted: #5C5C66;
+    --faint: #8C8C96;
+    --line: #E5E5EA;
+    --line-2: #D2D2DA;
+
+    --acc: #3B5BA5;
+    --acc-ink: #FFFFFF;
+    --acc-soft: #EBF0FA;
+
+    --warn: #8A4E06;
+    --warn-soft: #FBF2E2;
+    --warn-line: #EEDFC0;
+
+    --wf-screen: #F2F2F5;
+    --wf-chrome: #FAFAFC;
+    --wf-card: #FFFFFF;
+    --wf-line: #DCDCE3;
+    --wf-bar: #DFDFE6;
+    --wf-ink: #45454E;
+    --wf-faint: #9A9AA4;
+
+    --shadow-pop: 0 8px 24px rgba(24, 24, 27, .16), 0 2px 6px rgba(24, 24, 27, .08);
+
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0D0D10;
+      --paper: #17171B;
+      --ink: #ECECEF;
+      --muted: #A5A5AF;
+      --faint: #73737D;
+      --line: #26262C;
+      --line-2: #38383F;
+
+      --acc: #96B2EE;
+      --acc-ink: #101523;
+      --acc-soft: #1C2434;
+
+      --warn: #E0A94A;
+      --warn-soft: #2A2113;
+      --warn-line: #4A3A1C;
+
+      --wf-screen: #1B1B20;
+      --wf-chrome: #202026;
+      --wf-card: #242429;
+      --wf-line: #33333B;
+      --wf-bar: #3C3C46;
+      --wf-ink: #C9C9D2;
+      --wf-faint: #7C7C86;
+
+      --shadow-pop: 0 8px 24px rgba(0, 0, 0, .5), 0 2px 6px rgba(0, 0, 0, .35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0D0D10;
+    --paper: #17171B;
+    --ink: #ECECEF;
+    --muted: #A5A5AF;
+    --faint: #73737D;
+    --line: #26262C;
+    --line-2: #38383F;
+
+    --acc: #96B2EE;
+    --acc-ink: #101523;
+    --acc-soft: #1C2434;
+
+    --warn: #E0A94A;
+    --warn-soft: #2A2113;
+    --warn-line: #4A3A1C;
+
+    --wf-screen: #1B1B20;
+    --wf-chrome: #202026;
+    --wf-card: #242429;
+    --wf-line: #33333B;
+    --wf-bar: #3C3C46;
+    --wf-ink: #C9C9D2;
+    --wf-faint: #7C7C86;
+
+    --shadow-pop: 0 8px 24px rgba(0, 0, 0, .5), 0 2px 6px rgba(0, 0, 0, .35);
+  }
+
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font: 15px/1.6 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 72px; }
+
+  a { color: inherit; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+
+  /* ---------- cabeçalho da página ---------- */
+  .eyebrow {
+    font: 600 11px/1 var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-size: 30px;
+    line-height: 1.15;
+    letter-spacing: -.015em;
+    font-weight: 650;
+    margin: 0 0 12px;
+    text-wrap: balance;
+  }
+  .lede { color: var(--muted); max-width: 62ch; margin: 0 0 22px; }
+
+  .goals { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 0 0 18px; }
+  .goal {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 13px 15px;
+  }
+  .goal b { display: block; font-size: 14px; margin-bottom: 3px; }
+  .goal p { margin: 0; color: var(--muted); font-size: 13.5px; }
+  .goal .gk { font: 700 10px/1 var(--mono); color: var(--acc); letter-spacing: .06em; display: block; margin-bottom: 7px; }
+
+  .meta-row {
+    display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center;
+    font: 500 12px/1.5 var(--mono);
+    color: var(--muted);
+    padding: 10px 0 0;
+  }
+  .meta-row .gl { white-space: nowrap; }
+  .jump { display: flex; flex-wrap: wrap; gap: 8px; margin: 26px 0 0; }
+  .jump a {
+    font: 600 12px/1 var(--mono);
+    text-decoration: none;
+    border: 1px solid var(--line-2);
+    border-radius: 999px;
+    padding: 7px 13px;
+    background: var(--paper);
+    color: var(--muted);
+  }
+  .jump a:hover { color: var(--ink); border-color: var(--faint); }
+
+  /* ---------- seções ---------- */
+  section { margin-top: 56px; }
+  .sec-label {
+    font: 600 11px/1 var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin: 0 0 10px;
+  }
+  .opt-head { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; margin-bottom: 6px; }
+  .okey {
+    width: 32px; height: 32px; border-radius: 9px;
+    background: var(--ink); color: var(--ground);
+    display: inline-flex; align-items: center; justify-content: center;
+    font: 700 16px/1 var(--mono);
+    flex: none;
+  }
+  .opt-head h2 { font-size: 21px; font-weight: 650; letter-spacing: -.01em; margin: 0; }
+  .ef {
+    font: 600 11px/1 var(--mono);
+    border: 1px solid var(--line-2);
+    border-radius: 999px;
+    padding: 5px 11px;
+    color: var(--muted);
+    margin-left: auto;
+    white-space: nowrap;
+  }
+  .thesis { color: var(--muted); max-width: 68ch; margin: 0 0 18px; }
+
+  /* ---------- par de wireframes ---------- */
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+  .frame-block { min-width: 0; }
+  .wf-cap {
+    font: 600 11px/1 var(--mono);
+    letter-spacing: .05em;
+    color: var(--faint);
+    margin: 0 0 7px;
+    text-transform: uppercase;
+  }
+
+  /* ---------- primitivas de wireframe ---------- */
+  .wf {
+    position: relative;
+    background: var(--wf-screen);
+    border: 1px solid var(--line-2);
+    border-radius: 10px;
+    overflow: hidden;
+    font: 10px/1.5 var(--mono);
+    color: var(--wf-ink);
+    display: flex;
+    flex-direction: column;
+  }
+  .wbar {
+    display: flex; align-items: center; gap: 7px;
+    padding: 7px 10px;
+    background: var(--wf-chrome);
+    border-bottom: 1px solid var(--wf-line);
+    flex: none; min-width: 0;
+  }
+  .wbar.plain { background: transparent; }
+  .sp { flex: 1; }
+  .wlogo {
+    width: 15px; height: 15px; border-radius: 4px; flex: none;
+    background: var(--wf-ink); color: var(--wf-screen);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 7.5px; font-weight: 700;
+  }
+  .wnav { display: flex; gap: 9px; color: var(--wf-faint); }
+  .wnav .on { color: var(--wf-ink); font-weight: 700; }
+  .wchip {
+    border: 1px solid var(--wf-line);
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-size: 8.5px;
+    background: var(--wf-card);
+    white-space: nowrap;
+  }
+  .wbtn {
+    border: 1px solid var(--wf-line);
+    border-radius: 5px;
+    padding: 2px 8px;
+    background: var(--wf-card);
+    font-size: 9px;
+    white-space: nowrap;
+  }
+  .wbtn.pri { background: var(--wf-ink); color: var(--wf-screen); border-color: transparent; font-weight: 600; }
+  .wsel {
+    border: 1px solid var(--wf-line);
+    border-radius: 5px;
+    padding: 2px 8px;
+    background: var(--wf-card);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .wdim { color: var(--wf-faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wlink { text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
+  .wtx { display: inline-block; height: 6px; border-radius: 3px; background: var(--wf-bar); vertical-align: middle; }
+  .wg { flex: none; width: 12px; text-align: center; }
+  .wtag {
+    background: var(--wf-bar);
+    border-radius: 4px;
+    padding: 0 5px;
+    font-size: 7.5px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    white-space: nowrap;
+  }
+  .wpic {
+    width: 14px; height: 14px; border-radius: 4px; flex: none;
+    background: var(--wf-bar); color: var(--wf-ink);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 8px; font-weight: 700;
+  }
+  .wpad { padding: 9px; display: flex; flex-direction: column; gap: 7px; flex: 1; min-height: 0; }
+  .wrow { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .wtt { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .wcard {
+    background: var(--wf-card);
+    border: 1px solid var(--wf-line);
+    border-radius: 6px;
+    padding: 7px 9px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .wcard .foot { border-top: 1px solid var(--wf-line); padding-top: 5px; }
+
+  .wflow { display: inline-flex; gap: 2px; align-items: center; flex: none; }
+  .wflow i { width: 5px; height: 5px; border-radius: 1.5px; background: var(--wf-card); border: 1px solid var(--wf-bar); }
+  .wflow i.on { background: var(--wf-ink); border-color: var(--wf-ink); }
+  .wflow i.cur { background: var(--wf-bar); border-color: var(--wf-ink); }
+
+  .wcompose {
+    background: var(--wf-card);
+    border: 1px solid var(--wf-line);
+    border-radius: 6px;
+    padding: 6px 8px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .wph { color: var(--wf-faint); }
+
+  /* editor: chat + preview */
+  .wsplit { display: grid; grid-template-columns: 1.1fr 1fr; gap: 8px; padding: 8px; flex: 1; min-height: 0; }
+  .wchat { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .wmsgs { flex: 1; display: flex; flex-direction: column; gap: 5px; }
+  .wme {
+    align-self: flex-end;
+    background: var(--wf-bar);
+    border-radius: 6px;
+    padding: 3px 8px;
+    max-width: 85%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .wtool {
+    border: 1px solid var(--wf-line);
+    border-radius: 5px;
+    background: var(--wf-card);
+    padding: 2px 7px;
+    color: var(--wf-faint);
+    align-self: flex-start;
+    max-width: 95%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .wcomposer {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--wf-card);
+    border: 1px solid var(--wf-line);
+    border-radius: 7px;
+    padding: 5px 8px;
+  }
+  .wprev {
+    border: 1px solid var(--wf-line);
+    border-radius: 7px;
+    background: var(--wf-card);
+    display: flex; flex-direction: column;
+    min-width: 0;
+  }
+  .wprev .purl {
+    display: flex; align-items: center; gap: 5px;
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--wf-line);
+    color: var(--wf-faint);
+  }
+  .wprev .dots { display: inline-flex; gap: 3px; }
+  .wprev .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--wf-bar); }
+  .wprev .pbody { flex: 1; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+
+  /* sidebar (opção A) */
+  .wgrid-side { display: grid; grid-template-columns: 168px 1fr; flex: 1; min-height: 0; }
+  .wside {
+    background: var(--wf-chrome);
+    border-right: 1px solid var(--wf-line);
+    padding: 8px;
+    display: flex; flex-direction: column; gap: 6px;
+    min-width: 0;
+  }
+  .wside .lbl { font-size: 8px; font-weight: 700; letter-spacing: .09em; color: var(--wf-faint); margin-top: 3px; }
+  .wsearch {
+    border: 1px solid var(--wf-line);
+    border-radius: 5px;
+    padding: 2px 7px;
+    background: var(--wf-card);
+    color: var(--wf-faint);
+  }
+  .wsg { display: flex; flex-direction: column; gap: 2px; }
+  .wsg-h { display: flex; align-items: center; gap: 5px; font-weight: 700; padding: 2px 0; }
+  .wsi {
+    display: flex; align-items: center; gap: 4px;
+    padding: 1.5px 4px 1.5px 12px;
+    border-radius: 4px;
+    min-width: 0;
+    color: var(--wf-ink);
+  }
+  .wsi .wtt { font-weight: 400; }
+  .wsi.on { background: var(--wf-bar); }
+  .wsi.on .wtt { font-weight: 700; }
+  .wside hr { border: 0; border-top: 1px solid var(--wf-line); margin: 3px 0; width: 100%; }
+
+  /* trilho colapsado (opção A editor) */
+  .wgrid-rail { display: grid; grid-template-columns: 38px 1fr; flex: 1; min-height: 0; }
+  .wrail {
+    background: var(--wf-chrome);
+    border-right: 1px solid var(--wf-line);
+    display: flex; flex-direction: column; align-items: center; gap: 7px;
+    padding: 8px 0;
+  }
+  .wrav {
+    position: relative;
+    width: 20px; height: 20px; border-radius: 6px;
+    background: var(--wf-bar); color: var(--wf-ink);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700;
+    flex: none;
+  }
+  .wrav.on { box-shadow: 0 0 0 1.5px var(--wf-ink); }
+  .wrav .st { position: absolute; right: -4px; top: -5px; font-size: 8px; background: var(--wf-chrome); border-radius: 50%; line-height: 1; }
+  .wmain { display: flex; flex-direction: column; min-width: 0; min-height: 0; flex: 1; }
+
+  /* grupos por projeto (opção B) */
+  .wgroup { display: flex; align-items: center; gap: 6px; padding: 3px 1px 0; font-weight: 700; }
+  .wgroup .grule { flex: 1; height: 1px; background: var(--wf-line); }
+  .wchips { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; min-width: 0; }
+  .wchip.on { background: var(--wf-ink); color: var(--wf-screen); border-color: transparent; font-weight: 700; }
+
+  /* abas (opção C) */
+  .wtabs {
+    display: flex; align-items: center; gap: 4px;
+    padding: 5px 8px;
+    background: var(--wf-chrome);
+    border-bottom: 1px solid var(--wf-line);
+    min-width: 0;
+  }
+  .wtab {
+    display: flex; align-items: center; gap: 5px;
+    border: 1px solid var(--wf-line);
+    border-radius: 6px;
+    padding: 2px 7px;
+    color: var(--wf-faint);
+    background: transparent;
+    min-width: 0;
+    white-space: nowrap;
+  }
+  .wtab .wtt { font-weight: 400; max-width: 96px; }
+  .wtab.on { background: var(--wf-card); color: var(--wf-ink); border-color: var(--wf-bar); }
+  .wtab.on .wtt { font-weight: 700; }
+  .wbadge {
+    width: 11px; height: 11px; border-radius: 3px; flex: none;
+    background: var(--wf-bar); color: var(--wf-ink);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 6.5px; font-weight: 700;
+  }
+  .wx { color: var(--wf-faint); font-size: 8px; }
+
+  /* colunas por projeto (opção C) */
+  .wscroll { overflow-x: auto; flex: 1; min-height: 0; }
+  .wlanes { display: grid; grid-template-columns: repeat(3, minmax(146px, 1fr)); gap: 8px; padding: 9px; min-width: 470px; }
+  .wlane {
+    border: 1px solid var(--wf-line);
+    border-radius: 8px;
+    padding: 6px;
+    display: flex; flex-direction: column; gap: 6px;
+    min-width: 0;
+    align-self: start;
+  }
+  .wlane .wcard { padding: 6px 7px; gap: 4px; }
+
+  /* overlays (popover / flyout) */
+  .wpop {
+    position: absolute;
+    background: var(--wf-card);
+    border: 1px solid var(--line-2);
+    border-radius: 8px;
+    box-shadow: var(--shadow-pop);
+    padding: 7px 8px;
+    z-index: 2;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .wpop .lbl { font-size: 8px; font-weight: 700; letter-spacing: .09em; color: var(--wf-faint); }
+  .wpop .wsi { padding-left: 2px; }
+  .wpop hr { border: 0; border-top: 1px solid var(--wf-line); margin: 2px 0; }
+
+  /* anotações */
+  .mark { outline: 1.5px dashed var(--acc); outline-offset: 2px; position: relative; }
+  .mark.flush { outline-offset: -2px; }
+  .mark.warn { outline-color: var(--warn); }
+  .call {
+    position: absolute; top: -7px; right: -7px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--acc); color: var(--acc-ink);
+    font: 700 9px/16px var(--mono);
+    text-align: center;
+    z-index: 4;
+    box-shadow: 0 0 0 2px var(--ground);
+  }
+  .call.in { top: 4px; right: 4px; }
+  .call.warn { background: var(--warn); color: #FFF; }
+
+  .notes { list-style: none; margin: 16px 0 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 26px; }
+  .notes li { display: flex; gap: 9px; font-size: 13.5px; color: var(--muted); }
+  .notes .nkey {
+    flex: none;
+    width: 17px; height: 17px; border-radius: 50%;
+    background: var(--acc); color: var(--acc-ink);
+    font: 700 9.5px/17px var(--mono);
+    text-align: center;
+    margin-top: 2px;
+  }
+  .notes .nkey.warn { background: var(--warn); color: #FFF; }
+  .notes b { color: var(--ink); }
+
+  .tradeoffs { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
+  .tcol {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 15px;
+  }
+  .tcol h4 {
+    margin: 0 0 7px;
+    font: 600 11px/1 var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .tcol ul { margin: 0; padding: 0; list-style: none; }
+  .tcol li { display: flex; gap: 8px; font-size: 13.5px; color: var(--muted); padding: 3px 0; }
+  .tcol li::before { content: "+"; font: 700 12px/1.6 var(--mono); color: var(--ink); flex: none; }
+  .tcol.cons li::before { content: "–"; }
+
+  /* comparação */
+  .tblwrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+  table { border-collapse: collapse; width: 100%; min-width: 660px; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child th, tr:last-child td { border-bottom: 0; }
+  thead th { font: 600 11px/1.4 var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--faint); }
+  tbody th { font-weight: 600; color: var(--ink); white-space: nowrap; font-size: 12.5px; }
+  td { color: var(--muted); }
+  td b { color: var(--ink); }
+
+  .combo {
+    background: var(--acc-soft);
+    border: 1px solid var(--acc);
+    border-radius: 10px;
+    padding: 13px 16px;
+    margin-top: 18px;
+  }
+  .combo h4 { margin: 0 0 6px; font-size: 14px; color: var(--ink); }
+  .combo ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13.5px; }
+  .combo li { margin: 3px 0; }
+
+  .decide { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px; }
+  .decide .goal p b { color: var(--ink); }
+
+  footer {
+    margin-top: 56px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    color: var(--faint);
+    font: 500 12px/1.7 var(--mono);
+  }
+
+  @media (max-width: 900px) {
+    .pair { grid-template-columns: 1fr; }
+    .goals { grid-template-columns: 1fr; }
+    .decide { grid-template-columns: 1fr; }
+    .notes { grid-template-columns: 1fr; }
+    .tradeoffs { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Inhouse · exploração de layout · 2026-08-14</p>
+    <h1>Navegação multi-projeto</h1>
+    <p class="lede">Três direções em baixa fidelidade para as duas dores de hoje. Tudo em cinza de propósito: nesta etapa decidimos <b>estrutura</b>, não visual. O azul marca o que muda em cada opção.</p>
+    <div class="goals">
+      <div class="goal"><span class="gk">OBJETIVO 1 · EDITOR</span><b>Trocar de tarefa sem "voltar"</b><p>Do editor, pular para outra tarefa — mesmo de outro projeto — sem refazer o caminho quadro → dropdown → procurar.</p></div>
+      <div class="goal"><span class="gk">OBJETIVO 2 · QUADRO</span><b>Ver o estúdio inteiro</b><p>Tarefas de todos os projetos visíveis de uma vez, cada uma com dono claro — e "sua vez" nunca escondida atrás de um dropdown.</p></div>
+    </div>
+    <div class="meta-row">
+      <span class="gl">legenda:</span>
+      <span class="gl">● trabalhando</span>
+      <span class="gl">◐ sua vez</span>
+      <span class="gl">○ concluída</span>
+      <span class="gl">projetos: L leapy-web · B backoffice · S site-inst</span>
+    </div>
+    <nav class="jump" aria-label="Ir para">
+      <a href="#hoje">Hoje</a>
+      <a href="#opcao-a">A · Trilho lateral</a>
+      <a href="#opcao-b">B · Quadro unificado</a>
+      <a href="#opcao-c">C · Abas de trabalho</a>
+      <a href="#comparar">Comparar</a>
+    </nav>
+  </header>
+
+  <!-- ============================ HOJE ============================ -->
+  <section id="hoje">
+    <p class="sec-label">Ponto de partida</p>
+    <div class="opt-head"><h2>Como está hoje</h2></div>
+    <p class="thesis">O quadro mostra <b>um projeto por vez</b> (dropdown) e o editor só oferece o "←" de volta. As marcas em âmbar são as dores.</p>
+    <div class="pair">
+      <div class="frame-block">
+        <p class="wf-cap">#/tarefas · quadro</p>
+        <div class="wf">
+          <div class="wbar">
+            <span class="wlogo">In</span><b>Inhouse</b>
+            <span class="wnav"><span>Início</span><span class="on">Tarefas</span><span>Experiência</span><span>Configurações</span></span>
+            <span class="sp"></span>
+            <span class="wchip">● Claude conectado</span>
+          </div>
+          <div class="wbar">
+            <span class="wsel mark warn">leapy-web ▾<span class="call warn">P1</span></span>
+            <span class="wdim">2 tarefas em paralelo · cada uma no seu espaço</span>
+            <span class="sp"></span>
+            <span class="wbtn pri">+ Nova tarefa</span>
+          </div>
+          <div class="wpad">
+            <div class="wcompose">
+              <span class="wph">Descreva uma tarefa… ex.: "corrigir o filtro de turmas por data"</span>
+              <div class="wrow"><span class="wbtn">📎 Anexar</span><span class="wchip">Esteira · Livre</span><span class="sp"></span><span class="wbtn pri">Começar</span></div>
+            </div>
+            <div class="wcard">
+              <div class="wrow"><span class="wg">●</span><span class="wtt">Corrigir filtro de turmas por data</span><span class="sp"></span><span class="wchip">espaço 3</span><span class="wchip">~$0.42</span></div>
+              <div class="wrow"><span class="wflow"><i class="on"></i><i class="on"></i><i class="on"></i><i class="cur"></i><i></i><i></i><i></i></span><span class="wdim">Execução</span></div>
+              <div class="wrow foot"><span class="wdim">⟳ Claude no passo "Execução" · há 4 min</span><span class="sp"></span><span class="wlink">Acompanhar no editor →</span></div>
+            </div>
+            <div class="wcard">
+              <div class="wrow"><span class="wg">◐</span><span class="wtt">Trocar texto do botão de login</span><span class="wtag">SUA VEZ</span><span class="sp"></span><span class="wchip">espaço 1</span></div>
+              <div class="wrow foot"><span class="wdim">Plano pronto: 2 arquivos, 3 passos</span><span class="sp"></span><span class="wbtn">Pedir mudanças</span><span class="wbtn pri">Aprovar plano</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="frame-block">
+        <p class="wf-cap">#/tarefa/&lt;id&gt; · editor</p>
+        <div class="wf">
+          <div class="wbar">
+            <span class="wlogo">In</span><b>Inhouse</b>
+            <span class="wnav"><span>Início</span><span class="on">Tarefas</span><span>Experiência</span><span>Configurações</span></span>
+            <span class="sp"></span>
+            <span class="wchip">● Claude conectado</span>
+          </div>
+          <div class="wbar">
+            <span class="wbtn mark warn">←<span class="call warn">P2</span></span>
+            <span class="wpic">L</span>
+            <span class="wtt">leapy-web · Corrigir filtro de turmas por data</span>
+            <span class="wchip">espaço 3</span>
+            <span class="sp"></span>
+            <span class="wdim">● Claude trabalhando · Execução</span>
+            <span class="wbtn">Pausar</span>
+          </div>
+          <div class="wbar plain">
+            <span class="wdim">Onde essa tarefa está: <b>Execução</b></span>
+            <span class="wflow"><i class="on"></i><i class="on"></i><i class="on"></i><i class="cur"></i><i></i><i></i><i></i></span>
+            <span class="sp"></span>
+            <span class="wchip">Modo: Com etapas ▾</span>
+            <span class="wchip">~$0.42 · 118k tokens</span>
+          </div>
+          <div class="wsplit">
+            <div class="wchat">
+              <div class="wmsgs">
+                <span class="wme">corrigir o filtro de turmas por data</span>
+                <span class="wtx" style="width:88%"></span>
+                <span class="wtx" style="width:70%"></span>
+                <span class="wtool">⚙ Editando apps/web/turmas/filtro.tsx</span>
+                <span class="wtx" style="width:55%"></span>
+              </div>
+              <div class="wcomposer"><span>📎</span><span class="wph">Mensagem para o Claude…</span><span class="sp"></span><span class="wchip">Alto ▾</span><span class="wbtn pri">↑</span></div>
+            </div>
+            <div class="wprev">
+              <div class="purl"><span class="dots"><i></i><i></i><i></i></span><span>localhost:3000/turmas</span></div>
+              <div class="pbody"><span class="wtx" style="width:45%"></span><span class="wtx" style="width:92%"></span><span class="wtx" style="width:86%"></span><span class="wtx" style="width:89%"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="nkey warn">P1</span><span>O dropdown mostra <b>um projeto por vez</b> — o resto do estúdio fica invisível, e uma tarefa "sua vez" em outro projeto passa despercebida.</span></li>
+      <li><span class="nkey warn">P2</span><span>No editor, a única navegação é <b>voltar ao quadro</b> — trocar de tarefa custa 2–3 telas (e mais o dropdown, se for outro projeto).</span></li>
+    </ul>
+  </section>
+
+  <!-- ============================ OPÇÃO A ============================ -->
+  <section id="opcao-a">
+    <p class="sec-label">Opção A</p>
+    <div class="opt-head">
+      <span class="okey">A</span>
+      <h2>Trilho lateral</h2>
+      <span class="ef">esforço M–G</span>
+    </div>
+    <p class="thesis">Um trilho à esquerda substitui o menu do topo e vive em <b>todas</b> as telas: projetos com suas tarefas aninhadas, cada uma com seu glifo de estado. No editor ele encolhe para ícones — trocar de tarefa é 1 clique, de qualquer lugar.</p>
+    <div class="pair">
+      <div class="frame-block">
+        <p class="wf-cap">A · quadro — trilho aberto</p>
+        <div class="wf">
+          <div class="wgrid-side">
+            <aside class="wside mark flush">
+              <span class="call in">1</span>
+              <div class="wrow"><span class="wlogo">In</span><b>Inhouse</b></div>
+              <div class="wsearch">⌕ Buscar…</div>
+              <span class="lbl">PROJETOS</span>
+              <div class="wsg">
+                <div class="wsg-h"><span class="wpic">L</span><span class="wtt">leapy-web</span><span class="sp"></span><span class="wdim">2 ▾</span></div>
+                <div class="wsi"><span class="wg">●</span><span class="wtt">Corrigir filtro de turmas…</span></div>
+                <div class="wsi mark"><span class="call" style="top:-6px; right:auto; left:-8px;">2</span><span class="wg">◐</span><span class="wtt">Trocar texto do botão…</span></div>
+              </div>
+              <div class="wsg">
+                <div class="wsg-h"><span class="wpic">B</span><span class="wtt">backoffice</span><span class="sp"></span><span class="wdim">2 ▾</span></div>
+                <div class="wsi"><span class="wg">●</span><span class="wtt">Relatório de vendas em PDF</span></div>
+                <div class="wsi"><span class="wg">◐</span><span class="wtt">Ajustar cores do tema…</span></div>
+              </div>
+              <div class="wsg">
+                <div class="wsg-h"><span class="wpic">S</span><span class="wtt">site-inst</span><span class="sp"></span><span class="wdim">1 ▸</span></div>
+              </div>
+              <div class="wdim">+ Novo projeto</div>
+              <span class="sp"></span>
+              <hr>
+              <div class="wdim">Experiência</div>
+              <div class="wdim">Configurações</div>
+              <span class="wchip">● Claude conectado</span>
+            </aside>
+            <div class="wmain">
+              <div class="wbar plain mark" style="margin:6px 8px 0; border:0;">
+                <span class="call" style="top:-6px; right:-4px;">3</span>
+                <span class="wpic">L</span><b>leapy-web</b>
+                <span class="wdim">2 tarefas em paralelo</span>
+                <span class="sp"></span>
+                <span class="wbtn pri">+ Nova tarefa</span>
+              </div>
+              <div class="wpad">
+                <div class="wcompose">
+                  <span class="wph">Descreva uma tarefa…</span>
+                  <div class="wrow"><span class="wbtn">📎</span><span class="wchip">Esteira · Livre</span><span class="sp"></span><span class="wbtn pri">Começar</span></div>
+                </div>
+                <div class="wcard">
+                  <div class="wrow"><span class="wg">●</span><span class="wtt">Corrigir filtro de turmas por data</span><span class="sp"></span><span class="wchip">espaço 3</span></div>
+                  <div class="wrow foot"><span class="wdim">⟳ Execução · há 4 min</span><span class="sp"></span><span class="wlink">Acompanhar →</span></div>
+                </div>
+                <div class="wcard">
+                  <div class="wrow"><span class="wg">◐</span><span class="wtt">Trocar texto do botão de login</span><span class="wtag">SUA VEZ</span><span class="sp"></span><span class="wchip">espaço 1</span></div>
+                  <div class="wrow foot"><span class="wbtn">Pedir mudanças</span><span class="wbtn pri">Aprovar plano</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="frame-block">
+        <p class="wf-cap">A · editor — trilho encolhido + flyout</p>
+        <div class="wf">
+          <div class="wgrid-rail">
+            <aside class="wrail mark flush">
+              <span class="call in" style="right:auto; left:3px; top:3px;">4</span>
+              <span class="wlogo">In</span>
+              <span class="wrav on">L</span>
+              <span class="wrav">B<span class="st">◐</span></span>
+              <span class="wrav">S</span>
+              <span class="sp"></span>
+              <span class="wdim">⚙</span>
+            </aside>
+            <div class="wmain">
+              <div class="wbar">
+                <span class="wpic">L</span>
+                <span class="wtt">leapy-web · Corrigir filtro de turmas por data</span>
+                <span class="wchip">espaço 3</span>
+                <span class="sp"></span>
+                <span class="wdim">● Execução</span>
+                <span class="wbtn">Pausar</span>
+              </div>
+              <div class="wbar plain">
+                <span class="wflow"><i class="on"></i><i class="on"></i><i class="on"></i><i class="cur"></i><i></i><i></i><i></i></span>
+                <span class="sp"></span>
+                <span class="wchip">Modo: Com etapas ▾</span>
+              </div>
+              <div class="wsplit">
+                <div class="wchat">
+                  <div class="wmsgs">
+                    <span class="wme">corrigir o filtro de turmas</span>
+                    <span class="wtx" style="width:85%"></span>
+                    <span class="wtool">⚙ Editando apps/web/turmas/filtro.tsx</span>
+                    <span class="wtx" style="width:52%"></span>
+                  </div>
+                  <div class="wcomposer"><span>📎</span><span class="wph">Mensagem…</span><span class="sp"></span><span class="wbtn pri">↑</span></div>
+                </div>
+                <div class="wprev">
+                  <div class="purl"><span class="dots"><i></i><i></i><i></i></span><span>localhost:3000</span></div>
+                  <div class="pbody"><span class="wtx" style="width:45%"></span><span class="wtx" style="width:90%"></span><span class="wtx" style="width:84%"></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="wpop mark" style="left:46px; top:64px; width:214px;">
+            <span class="call">5</span>
+            <div class="wrow"><span class="wpic">B</span><b>backoffice</b></div>
+            <div class="wsi"><span class="wg">●</span><span class="wtt">Relatório de vendas em PDF</span></div>
+            <div class="wsi"><span class="wg">◐</span><span class="wtt">Ajustar cores do tema escuro</span><span class="wtag">SUA VEZ</span></div>
+            <hr>
+            <div class="wdim">+ nova tarefa em backoffice</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="nkey">1</span><span><b>Trilho substitui o menu do topo</b> — projetos com tarefas aninhadas, sempre à mão. Início/Experiência/Configurações moram no rodapé do trilho.</span></li>
+      <li><span class="nkey">2</span><span>O glifo de cada tarefa dá o <b>estado do estúdio inteiro de relance</b> — "sua vez" nunca some, em nenhuma tela.</span></li>
+      <li><span class="nkey">3</span><span>Clicar no projeto <b>foca o quadro</b> nele; clicar numa tarefa abre o editor direto.</span></li>
+      <li><span class="nkey">4</span><span>No editor o trilho <b>encolhe para ícones</b> (não rouba espaço do chat + preview); a bolinha no projeto avisa quando algo pede você.</span></li>
+      <li><span class="nkey">5</span><span><b>Passar o mouse expande</b>: as tarefas do projeto aparecem ali — trocar é 1 clique, sem sair do editor.</span></li>
+    </ul>
+    <div class="tradeoffs">
+      <div class="tcol">
+        <h4>Prós</h4>
+        <ul>
+          <li>Navegação e estado permanentes, iguais em todas as telas.</li>
+          <li>Troca de tarefa a 1 clique de qualquer lugar.</li>
+          <li>Escala bem para o futuro agente que abre tasks: o trilho vira o mapa do estúdio.</li>
+        </ul>
+      </div>
+      <div class="tcol cons">
+        <h4>Contras</h4>
+        <ul>
+          <li>A maior obra das três — appbar → trilho muda todas as telas.</li>
+          <li>Disputa largura com chat + preview (mitigado pelo modo ícones).</li>
+          <li>Com muitos projetos/tarefas o trilho pede busca e colapso.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ OPÇÃO B ============================ -->
+  <section id="opcao-b">
+    <p class="sec-label">Opção B</p>
+    <div class="opt-head">
+      <span class="okey">B</span>
+      <h2>Quadro unificado + salto rápido</h2>
+      <span class="ef">esforço P–M</span>
+    </div>
+    <p class="thesis">A menor obra: o topo continua igual. O quadro passa a nascer em <b>"Todos"</b> (agrupado por projeto, com filtros em chips) e, no editor, o título vira um <b>seletor de tarefas</b> — reforçado por um ⌘K que funciona de qualquer tela.</p>
+    <div class="pair">
+      <div class="frame-block">
+        <p class="wf-cap">B · quadro — todos os projetos</p>
+        <div class="wf">
+          <div class="wbar">
+            <span class="wlogo">In</span><b>Inhouse</b>
+            <span class="wnav"><span>Início</span><span class="on">Tarefas</span><span>Experiência</span><span>Configurações</span></span>
+            <span class="sp"></span>
+            <span class="wchip">● Claude conectado</span>
+          </div>
+          <div class="wbar">
+            <span class="wchips mark"><span class="call">1</span><span class="wchip on">Todos · 5</span><span class="wchip">L leapy-web · 2</span><span class="wchip">B backoffice · 2</span><span class="wchip">S site-inst · 1</span></span>
+            <span class="wchip mark" style="margin-left:6px;"><span class="call">2</span>◐ Sua vez · 2</span>
+            <span class="sp"></span>
+            <span class="wbtn pri">+ Nova tarefa</span>
+          </div>
+          <div class="wpad">
+            <div class="wcompose">
+              <span class="wph">Descreva uma tarefa…</span>
+              <div class="wrow"><span class="wbtn">📎</span><span class="wsel mark">em: L leapy-web ▾<span class="call" style="right:auto; left:-8px; top:-8px;">3</span></span><span class="wchip">Esteira · Livre</span><span class="sp"></span><span class="wbtn pri">Começar</span></div>
+            </div>
+            <div class="wgroup mark" style="align-self:stretch;"><span class="call" style="top:-8px; right:-4px;">4</span><span class="wpic">L</span>leapy-web<span class="grule"></span><span class="wdim">2</span></div>
+            <div class="wcard">
+              <div class="wrow"><span class="wg">●</span><span class="wtt">Corrigir filtro de turmas por data</span><span class="sp"></span><span class="wchip">espaço 3</span></div>
+              <div class="wrow foot"><span class="wdim">⟳ Execução · há 4 min</span><span class="sp"></span><span class="wlink">Acompanhar →</span></div>
+            </div>
+            <div class="wcard">
+              <div class="wrow"><span class="wg">◐</span><span class="wtt">Trocar texto do botão de login</span><span class="wtag">SUA VEZ</span><span class="sp"></span><span class="wbtn">Pedir mudanças</span><span class="wbtn pri">Aprovar plano</span></div>
+            </div>
+            <div class="wgroup"><span class="wpic">B</span>backoffice<span class="grule"></span><span class="wdim">2</span></div>
+            <div class="wcard">
+              <div class="wrow"><span class="wg">◐</span><span class="wtt">Ajustar cores do tema escuro</span><span class="wtag">SUA VEZ</span><span class="sp"></span><span class="wbtn">Abrir preview</span><span class="wbtn pri">Aprovar e publicar…</span></div>
+            </div>
+            <div class="wcard">
+              <div class="wrow"><span class="wg">●</span><span class="wtt">Relatório de vendas em PDF</span><span class="sp"></span><span class="wdim">⟳ Verificações</span></div>
+            </div>
+            <div class="wgroup"><span class="wpic">S</span>site-inst<span class="grule"></span><span class="wdim">1</span></div>
+            <div class="wcard">
+              <div class="wrow"><span class="wg">○</span><span class="wtt">Nova seção de depoimentos</span><span class="sp"></span><span class="wlink">Ver no GitHub</span><span class="wbtn">Arquivar</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="frame-block">
+        <p class="wf-cap">B · editor — seletor aberto no título</p>
+        <div class="wf">
+          <div class="wbar">
+            <span class="wlogo">In</span><b>Inhouse</b>
+            <span class="wnav"><span>Início</span><span class="on">Tarefas</span><span>Experiência</span><span>Configurações</span></span>
+            <span class="sp"></span>
+            <span class="wchip">● Claude conectado</span>
+          </div>
+          <div class="wbar">
+            <span class="wbtn">←</span>
+            <span class="wsel mark">L leapy-web · Corrigir filtro de turmas… ▾<span class="call">5</span></span>
+            <span class="wchip">espaço 3</span>
+            <span class="sp"></span>
+            <span class="wdim">● Execução</span>
+            <span class="wbtn">Pausar</span>
+          </div>
+          <div class="wbar plain">
+            <span class="wflow"><i class="on"></i><i class="on"></i><i class="on"></i><i class="cur"></i><i></i><i></i><i></i></span>
+            <span class="sp"></span>
+            <span class="wchip">Modo: Com etapas ▾</span>
+          </div>
+          <div class="wsplit">
+            <div class="wchat">
+              <div class="wmsgs">
+                <span class="wme">corrigir o filtro de turmas</span>
+                <span class="wtx" style="width:85%"></span>
+                <span class="wtool">⚙ Editando apps/web/turmas/filtro.tsx</span>
+                <span class="wtx" style="width:52%"></span>
+              </div>
+              <div class="wcomposer"><span>📎</span><span class="wph">Mensagem…</span><span class="sp"></span><span class="wbtn pri">↑</span></div>
+            </div>
+            <div class="wprev">
+              <div class="purl"><span class="dots"><i></i><i></i><i></i></span><span>localhost:3000</span></div>
+              <div class="pbody"><span class="wtx" style="width:45%"></span><span class="wtx" style="width:90%"></span><span class="wtx" style="width:84%"></span></div>
+            </div>
+          </div>
+          <div class="wpop" style="left:40px; top:60px; width:240px;">
+            <span class="lbl">SUA VEZ · 2</span>
+            <div class="wsi"><span class="wg">◐</span><span class="wtt">Trocar texto do botão de login</span><span class="sp"></span><span class="wbadge">L</span></div>
+            <div class="wsi"><span class="wg">◐</span><span class="wtt">Ajustar cores do tema escuro</span><span class="sp"></span><span class="wbadge">B</span></div>
+            <span class="lbl">RECENTES</span>
+            <div class="wsi"><span class="wg">●</span><span class="wtt">Relatório de vendas em PDF</span><span class="sp"></span><span class="wbadge">B</span></div>
+            <div class="wsi"><span class="wg">○</span><span class="wtt">Nova seção de depoimentos</span><span class="sp"></span><span class="wbadge">S</span></div>
+            <hr>
+            <div class="wrow mark"><span class="call" style="right:-10px; top:-6px;">6</span><span class="wchip">⌘K</span><span class="wdim">buscar tarefas e projetos — de qualquer tela</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="nkey">1</span><span>O quadro nasce em <b>"Todos"</b>: chips filtram por projeto, e a contagem já diz onde tem coisa acontecendo.</span></li>
+      <li><span class="nkey">2</span><span><b>"Sua vez" atravessa projetos</b>: um clique lista só o que espera você, no estúdio inteiro.</span></li>
+      <li><span class="nkey">3</span><span>A nova tarefa <b>escolhe o projeto ali mesmo</b> — escreve primeiro, endereça depois.</span></li>
+      <li><span class="nkey">4</span><span>Cabeçalho de projeto <b>fixa no scroll</b> (sticky) — a lista continua uma só, mas cada tarefa tem dono claro.</span></li>
+      <li><span class="nkey">5</span><span>O título do editor <b>vira seletor</b>: "sua vez" primeiro, depois recentes, cada linha com o selo do projeto.</span></li>
+      <li><span class="nkey">6</span><span><b>⌘K</b> abre a mesma busca de qualquer tela — tarefa, projeto, "nova tarefa em…".</span></li>
+    </ul>
+    <div class="tradeoffs">
+      <div class="tcol">
+        <h4>Prós</h4>
+        <ul>
+          <li>A menor obra: topo e editor continuam com a estrutura de hoje.</li>
+          <li>Editor mantém a largura inteira para chat + preview.</li>
+          <li>Visão geral completa do estúdio no quadro, com filtro "sua vez".</li>
+        </ul>
+      </div>
+      <div class="tcol cons">
+        <h4>Contras</h4>
+        <ul>
+          <li>No editor nada fica permanentemente visível — o estado dos outros projetos só aparece ao abrir o seletor.</li>
+          <li>Trocar de tarefa custa 2 cliques (abrir seletor → escolher).</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ OPÇÃO C ============================ -->
+  <section id="opcao-c">
+    <p class="sec-label">Opção C</p>
+    <div class="opt-head">
+      <span class="okey">C</span>
+      <h2>Abas de trabalho + colunas por projeto</h2>
+      <span class="ef">esforço M</span>
+    </div>
+    <p class="thesis">Pensada para quem fica de babá de execuções paralelas: as tarefas que você acompanha viram <b>abas persistentes</b> (com estado ao vivo, como abas de navegador), e o quadro vira <b>colunas por projeto</b> — o paralelo fica literal.</p>
+    <div class="pair">
+      <div class="frame-block">
+        <p class="wf-cap">C · quadro — colunas por projeto</p>
+        <div class="wf">
+          <div class="wbar">
+            <span class="wlogo">In</span><b>Inhouse</b>
+            <span class="wnav"><span>Início</span><span class="on">Tarefas</span><span>Experiência</span><span>Configurações</span></span>
+            <span class="sp"></span>
+            <span class="wchip">● Claude conectado</span>
+          </div>
+          <div class="wtabs mark flush">
+            <span class="call in" style="right:5px; top:5px;">1</span>
+            <span class="wtab on"><span>⌂</span><span class="wtt">Tarefas</span></span>
+            <span class="wtab"><span class="wg">●</span><span class="wtt">Corrigir filtro de turmas…</span><span class="wbadge">L</span><span class="wx">✕</span></span>
+            <span class="wtab"><span class="wg">◐</span><span class="wtt">Ajustar cores do tema…</span><span class="wbadge">B</span><span class="wx">✕</span></span>
+            <span class="wtab">+</span>
+          </div>
+          <div class="wscroll">
+            <div class="wlanes mark" style="outline-offset:-4px;">
+              <span class="call in">2</span>
+              <div class="wlane">
+                <div class="wrow"><span class="wpic">L</span><b>leapy-web</b><span class="sp"></span><span class="wdim">2</span><span class="wbtn">+</span></div>
+                <div class="wcard mark"><span class="call" style="top:-7px; left:-7px; right:auto;">3</span>
+                  <div class="wrow"><span class="wg">◐</span><span class="wtt">Trocar texto do botão de login</span></div>
+                  <div class="wrow"><span class="wtag">SUA VEZ</span><span class="wdim">aprovar plano</span></div>
+                </div>
+                <div class="wcard">
+                  <div class="wrow"><span class="wg">●</span><span class="wtt">Corrigir filtro de turmas por data</span></div>
+                  <div class="wrow"><span class="wdim">⟳ Execução · há 4 min</span></div>
+                </div>
+              </div>
+              <div class="wlane">
+                <div class="wrow"><span class="wpic">B</span><b>backoffice</b><span class="sp"></span><span class="wdim">2</span><span class="wbtn">+</span></div>
+                <div class="wcard">
+                  <div class="wrow"><span class="wg">◐</span><span class="wtt">Ajustar cores do tema escuro</span></div>
+                  <div class="wrow"><span class="wtag">SUA VEZ</span><span class="wdim">seu teste</span></div>
+                </div>
+                <div class="wcard">
+                  <div class="wrow"><span class="wg">●</span><span class="wtt">Relatório de vendas em PDF</span></div>
+                  <div class="wrow"><span class="wdim">⟳ Verificações</span></div>
+                </div>
+              </div>
+              <div class="wlane">
+                <div class="wrow"><span class="wpic">S</span><b>site-inst</b><span class="sp"></span><span class="wdim">1</span><span class="wbtn">+</span></div>
+                <div class="wcard">
+                  <div class="wrow"><span class="wg">○</span><span class="wtt">Nova seção de depoimentos</span></div>
+                  <div class="wrow"><span class="wdim">publicada · PR aberto</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="frame-block">
+        <p class="wf-cap">C · editor — troca pela aba</p>
+        <div class="wf">
+          <div class="wbar">
+            <span class="wlogo">In</span><b>Inhouse</b>
+            <span class="wnav"><span>Início</span><span class="on">Tarefas</span><span>Experiência</span><span>Configurações</span></span>
+            <span class="sp"></span>
+            <span class="wchip">● Claude conectado</span>
+          </div>
+          <div class="wtabs">
+            <span class="wtab"><span>⌂</span><span class="wtt">Tarefas</span></span>
+            <span class="wtab on mark"><span class="call">4</span><span class="wg">●</span><span class="wtt">Corrigir filtro de turmas…</span><span class="wbadge">L</span><span class="wx">✕</span></span>
+            <span class="wtab mark"><span class="call" style="right:-6px;">5</span><span class="wg">◐</span><span class="wtt">Ajustar cores do tema…</span><span class="wbadge">B</span><span class="wx">✕</span></span>
+            <span class="wtab">+</span>
+          </div>
+          <div class="wbar">
+            <span class="wpic">L</span>
+            <span class="wtt">leapy-web · Corrigir filtro de turmas por data</span>
+            <span class="wchip">espaço 3</span>
+            <span class="sp"></span>
+            <span class="wdim">● Execução</span>
+            <span class="wbtn">Pausar</span>
+          </div>
+          <div class="wsplit">
+            <div class="wchat">
+              <div class="wmsgs">
+                <span class="wme">corrigir o filtro de turmas</span>
+                <span class="wtx" style="width:85%"></span>
+                <span class="wtool">⚙ Editando apps/web/turmas/filtro.tsx</span>
+                <span class="wtx" style="width:52%"></span>
+              </div>
+              <div class="wcomposer"><span>📎</span><span class="wph">Mensagem…</span><span class="sp"></span><span class="wbtn pri">↑</span></div>
+            </div>
+            <div class="wprev">
+              <div class="purl"><span class="dots"><i></i><i></i><i></i></span><span>localhost:3000</span></div>
+              <div class="pbody"><span class="wtx" style="width:45%"></span><span class="wtx" style="width:90%"></span><span class="wtx" style="width:84%"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <ul class="notes">
+      <li><span class="nkey">1</span><span><b>Abas de trabalho</b> vivem sob o topo em todas as telas: as tarefas que você acompanha, com glifo de estado ao vivo e selo do projeto.</span></li>
+      <li><span class="nkey">2</span><span>O quadro vira <b>colunas por projeto</b> — o "N tarefas em paralelo, cada uma no seu espaço" fica visível lado a lado.</span></li>
+      <li><span class="nkey">3</span><span>Dentro da coluna, quem <b>espera você sobe</b> para o topo.</span></li>
+      <li><span class="nkey">4</span><span><b>Trocar de tarefa = trocar de aba</b> (1 clique), sem passar pelo quadro.</span></li>
+      <li><span class="nkey">5</span><span>Quando outra tarefa pede você, <b>o glifo da aba muda na hora</b> (● → ◐) — dá para ver sem sair de onde está.</span></li>
+    </ul>
+    <div class="tradeoffs">
+      <div class="tcol">
+        <h4>Prós</h4>
+        <ul>
+          <li>Troca a 1 clique com estado sempre visível — sem abrir nada.</li>
+          <li>Editor intacto (as abas custam só uma linha).</li>
+          <li>Casa com o modelo mental do Inhouse: espaços isolados rodando em paralelo.</li>
+        </ul>
+      </div>
+      <div class="tcol cons">
+        <h4>Contras</h4>
+        <ul>
+          <li>Abas pedem gestão: abrir/fechar, limite, o que acontece ao concluir/arquivar.</li>
+          <li>Colunas apertam com 4+ projetos (scroll horizontal).</li>
+          <li>Duas superfícies novas para aprender (abas + colunas).</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ COMPARAÇÃO ============================ -->
+  <section id="comparar">
+    <p class="sec-label">Lado a lado</p>
+    <div class="opt-head"><h2>Comparação</h2></div>
+    <div class="tblwrap">
+      <table>
+        <thead>
+          <tr><th></th><th>A · Trilho lateral</th><th>B · Quadro unificado</th><th>C · Abas + colunas</th></tr>
+        </thead>
+        <tbody>
+          <tr><th>Trocar de tarefa no editor</th><td><b>1 clique</b> (trilho/flyout)</td><td>2 cliques (seletor) ou ⌘K</td><td><b>1 clique</b> (aba)</td></tr>
+          <tr><th>Estado de outros projetos, do editor</th><td><b>Sempre visível</b> (glifos no trilho)</td><td>Só ao abrir o seletor</td><td>Visível nas abas abertas</td></tr>
+          <tr><th>Visão geral no quadro</th><td>Foco num projeto + trilho ao lado</td><td><b>Todos os projetos</b>, agrupados</td><td>Colunas lado a lado</td></tr>
+          <tr><th>Espaço do editor</th><td>Perde ~44px (trilho em ícones)</td><td><b>Intacto</b></td><td>Perde 1 linha (abas)</td></tr>
+          <tr><th>Tamanho da obra</th><td>M–G (muda todas as telas)</td><td><b>P–M</b></td><td>M</td></tr>
+          <tr><th>Brilha quando…</th><td>muitos projetos vivos, troca constante</td><td>poucos projetos por vez, mudança mínima</td><td>2–4 tarefas sendo acompanhadas ao mesmo tempo</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="combo">
+      <h4>Dá para combinar</h4>
+      <ul>
+        <li>O <b>⌘K</b> (B·6) cabe em qualquer direção — vale ter mesmo escolhendo A ou C.</li>
+        <li>O <b>quadro agrupado por projeto</b> (B) pode ser o modo "Todos" dentro da direção A.</li>
+        <li>As <b>abas</b> (C) funcionam sobre o quadro de hoje, sem as colunas — dá para adotar metade da direção.</li>
+      </ul>
+    </div>
+    <div class="decide">
+      <div class="goal"><span class="gk">PERGUNTA 1</span><p>Quantos projetos ficam <b>vivos ao mesmo tempo</b>? 2–3 → B ou C · 4+ → A</p></div>
+      <div class="goal"><span class="gk">PERGUNTA 2</span><p>Você troca de tarefa <b>o tempo todo</b> (babá do paralelo → A ou C) ou <b>pontualmente</b>, quando algo pede você (→ B)?</p></div>
+      <div class="goal"><span class="gk">PERGUNTA 3</span><p>Prefere <b>algo sempre visível</b> na tela (→ A ou C) ou resolve <b>no teclado</b> com ⌘K (→ B)?</p></div>
+    </div>
+  </section>
+
+  <footer>
+    Baixa fidelidade de propósito — direção primeiro, visual depois. Escolhida a direção, a alta fidelidade segue o design system atual (Onest, accent monocromático, borda-primeiro).<br>
+    Arquivo: docs/plans/mockups/navegacao-multi-projeto/lofi-opcoes.html
+  </footer>
+</div>

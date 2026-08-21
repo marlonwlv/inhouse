@@ -14,14 +14,21 @@ describe("CSS vs atributo hidden", () => {
   const css = readFileSync(join(root, "public", "styles.css"), "utf8");
   const js = readFileSync(join(root, "public", "app.js"), "utf8");
 
-  // ids que o app.js esconde/mostra via .hidden
-  const toggledIds = [...js.matchAll(/\$\("#([a-z-]+)"\)/g)]
+  // ids que o app.js esconde/mostra via .hidden — direto no $("#id")…
+  const direto = [...js.matchAll(/\$\("#([a-z-]+)"\)/g)]
     .map((m) => m[1]!)
     .filter((id) => new RegExp(`\\$\\("#${id}"\\)[\\s\\S]{0,120}\\.hidden\\s*=`).test(js));
+  // …e via variável local (`const el = $("#id")` … `el.hidden = …` linhas depois),
+  // que a busca por proximidade acima não enxerga.
+  const porVariavel = [...js.matchAll(/(?:const|let)\s+(\w+)\s*=\s*\$\("#([a-z-]+)"\)/g)]
+    .filter((m) => new RegExp(`\\b${m[1]}\\.hidden\\s*=`).test(js))
+    .map((m) => m[2]!);
+  const toggledIds = [...new Set([...direto, ...porVariavel])];
 
   it("encontrou os elementos toggled conhecidos", () => {
     expect(toggledIds).toContain("offline-banner");
     expect(toggledIds).toContain("toast");
+    expect(toggledIds).toContain("tabstrip"); // faixa de abas (via variável local)
   });
 
   it.each([...new Set(toggledIds)])("#%s: display próprio exige companion [hidden]", (id) => {
