@@ -163,6 +163,10 @@ export function comandoDeShell(
 }
 
 let cacheBash: string | null | undefined;
+/** Esquece o Git Bash achado (depois de instalar o Git, ele passa a existir). */
+export function zerarCacheGitBash(): void {
+  cacheBash = undefined;
+}
 /** Bash do Git for Windows (o mesmo que o Claude Code usa). */
 export function acharGitBash(env: NodeJS.ProcessEnv = process.env, existe: (p: string) => boolean = existsSync): string | null {
   if (env === process.env && cacheBash !== undefined) return cacheBash;

@@ -61,6 +61,11 @@ export function claudePath(): string | null {
   return cachedClaudePath;
 }
 
+/** Esquece o caminho do Claude (depois de instalar pela tela de preparação). */
+export function zerarCacheClaudePath(): void {
+  cachedClaudePath = undefined;
+}
+
 /**
  * Ambiente para processos que falam com o Claude: NUNCA deixar vazar API key —
  * a autenticação deve vir do login do CLI (subscription). Padrão vibe-kanban.
