@@ -291,9 +291,50 @@ export interface UpdateInfo {
   checadoEm?: string;
 }
 
+// ---------- Preparação do computador (#/preparar, /api/setup/*) ----------
+
+export type SetupItemId = "node" | "git" | "gitbash" | "claude" | "claude_login" | "git_identidade" | "gh" | "gh_login";
+export const SETUP_ITENS: readonly SetupItemId[] = ["node", "git", "gitbash", "claude", "claude_login", "git_identidade", "gh", "gh_login"];
+export type SetupEstado = "ok" | "faltando" | "instalando" | "erro" | "verificando" | "aviso";
+export type SetupSO = "mac" | "windows" | "linux";
+
+export interface SetupItem {
+  id: SetupItemId;
+  /** "Git", "Claude Code", "Login no Claude"… */
+  titulo: string;
+  /** Para que serve, em uma linha. */
+  descricao: string;
+  obrigatorio: boolean;
+  estado: SetupEstado;
+  /** Versão encontrada, onde, ou o erro em português. */
+  detalhe?: string;
+  acao?: "instalar" | "login" | "identidade" | "manual";
+  progresso?: { mensagem: string; pct?: number };
+  /** Últimas linhas da instalação (máx. 40). */
+  log?: string[];
+}
+
+export interface SetupStatus {
+  so: SetupSO;
+  itens: SetupItem[];
+  /** Todos os obrigatórios ok (aviso conta como ok). */
+  prontoParaUsar: boolean;
+  instalando: boolean;
+  /** Outra janela/processo do InHouse segura a trava de instalação. */
+  ocupadoPorOutro?: boolean;
+  login?: { ativo: boolean; url?: string; pedeCodigo: boolean; mensagem?: string };
+  identidade?: { nome?: string; email?: string };
+  /** Quando a pessoa concluiu a preparação (~/.inhouse/setup.json). */
+  concluidoEm?: string;
+  mostrarAoAbrir: boolean;
+  demo?: { cenario: string; cenarios: { id: string; rotulo: string }[] };
+  verificadoEm: string;
+}
+
 // ---------- Eventos SSE (GET /api/events) ----------
 
 export type ServerEvent =
+  | { type: "setup_status"; setup: SetupStatus }
   | { type: "state"; projects: Project[]; tasks: Task[]; permissions: PermissionRequest[] }
   | { type: "task_updated"; task: Task }
   | { type: "project_updated"; project: Project }
@@ -339,6 +380,16 @@ export type ServerEvent =
 // GET  /api/eval/fontes                 -> { fontes: string[] } (origens importadas)
 // GET  /api/eval/export?transcripts=1   -> bundle JSON (dados locais, download)
 // POST /api/eval/import                 { bundle, fonte } -> { importados, pulados }
+// Preparação do computador (só Host local; POST só JSON; progresso via setup_status):
+// GET  /api/setup                       -> SetupStatus
+// POST /api/setup/verificar             -> SetupStatus (detecta de novo, sem cache)
+// POST /api/setup/instalar              { itens? } -> SetupStatus (409 se já instalando)
+// POST /api/setup/claude/login          -> SetupStatus (abre o login; URL em login.url)
+// POST /api/setup/claude/codigo         { codigo } -> SetupStatus
+// POST /api/setup/claude/cancelar       -> SetupStatus
+// POST /api/setup/identidade            { nome, email } -> SetupStatus (git config --global)
+// POST /api/setup/concluir              -> SetupStatus (409 se ainda falta algo)
+// POST /api/setup/demo                  { cenario, so } -> SetupStatus (só INHOUSE_SETUP_DEMO=1)
 
 /** Fonte única dos nomes de ação — rotas validam por aqui; a trava de tipo abaixo
  *  quebra a compilação se este array e o union TaskAction saírem de sincronia. */

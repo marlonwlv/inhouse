@@ -52,3 +52,95 @@ jobs:
 
       - name: Smoke (servidor de verdade, modelo fingido)
         run: npm run smoke
+
+      # Preparação do computador: confere e simula, sem instalar nada.
+      - name: Preparação - verificar (sai 1 se falta algo, ex. o Claude)
+        shell: bash
+        run: |
+          set +e
+          npx tsx server/setup/cli.ts verificar --json > verificar.json
+          code=$?
+          cat verificar.json
+          test "$code" -le 1 || exit "$code"
+          node -e 'const s=JSON.parse(require("fs").readFileSync("verificar.json","utf8")); if(!Array.isArray(s.itens)||!s.itens.length) process.exit(1)'
+
+      - name: Preparação - simular instalação
+        run: npx tsx server/setup/cli.ts instalar --simular
+
+      - name: Bootstrap Mac/Linux - simular
+        if: runner.os != 'Windows'
+        run: bash scripts/mac/setup.sh --simular --sem-pausa
+
+      - name: Bootstrap Windows - simular (setup.cmd)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: call setup.cmd -Simular -SemPausa
+
+  instalacao-real:
+    # Instala de verdade numa pasta temporária (nada no sistema do runner além
+    # do Claude Code em ~/.local/bin): Node portátil, Git portátil (Windows), gh.
+    name: instalação real ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      GITHUB_TOKEN: ${{ github.token }}   # a API do GitHub limita anônimos a 60/h por IP
+      INHOUSE_SETUP_VERBOSO: "1"
+      INHOUSE_FORCAR_PORTATIL: node,git,gh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: pasta temporária das ferramentas
+        shell: bash
+        run: echo "INHOUSE_TOOLS_DIR=$RUNNER_TEMP/ferramentas" >> "$GITHUB_ENV"
+
+      - name: Bootstrap Mac - Node portátil e dependências (setup.sh)
+        if: runner.os == 'macOS'
+        run: bash scripts/mac/setup.sh --basico --nao-abrir --sem-pausa
+
+      - name: Bootstrap Windows - Node portátil e dependências (setup.ps1)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/setup.ps1 -Basico -NaoAbrir -SemPausa
+
+      - name: Node portátil responde
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then n="$INHOUSE_TOOLS_DIR/node/node.exe"; else n="$INHOUSE_TOOLS_DIR/node/bin/node"; fi
+          "$n" -v | grep -E '^v24\.'
+          test -f node_modules/.inhouse-deps
+          # A mesma conferência que os lançadores fazem antes de abrir.
+          "$n" scripts/deps-ok.mjs
+
+      - name: Instalar Git portátil, Claude Code e gh (Windows)
+        if: runner.os == 'Windows'
+        run: npx tsx server/setup/cli.ts instalar --itens git,gitbash,claude,gh
+
+      - name: Instalar Claude Code e gh (Mac)
+        if: runner.os == 'macOS'
+        run: npx tsx server/setup/cli.ts instalar --itens claude,gh
+
+      - name: Ferramentas respondem
+        shell: bash
+        run: |
+          set -e
+          if [ "$RUNNER_OS" = Windows ]; then
+            "$INHOUSE_TOOLS_DIR/git/cmd/git.exe" --version
+            test -f "$INHOUSE_TOOLS_DIR/git/bin/bash.exe"
+            "$INHOUSE_TOOLS_DIR/gh/bin/gh.exe" --version
+          else
+            "$INHOUSE_TOOLS_DIR/gh/bin/gh" --version
+          fi
+          "$HOME/.local/bin/claude" --version
+
+      - name: Conferir de novo depois de instalar
+        shell: bash
+        run: npx tsx server/setup/cli.ts verificar || true

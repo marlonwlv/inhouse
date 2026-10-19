@@ -50,6 +50,8 @@ import {
   setArquivado,
 } from "../services/projects.js";
 import * as store from "../store.js";
+import { registrarRotasSetup } from "../setup/rotas.js";
+import { motorSetup } from "../setup/servico.js";
 import { applyAction, startPreparacao, startTask, steer } from "../workflow/machine.js";
 
 /** Erro com status HTTP próprio (validações de input → 400/404). */
@@ -130,6 +132,11 @@ async function cachedClaudeStatus(): Promise<Awaited<ReturnType<typeof claudeSta
   return value;
 }
 
+/** Instalou/logou algo pela preparação: o próximo /api/state confere de novo. */
+export function zerarCacheClaudeStatus(): void {
+  claudeCache = undefined;
+}
+
 const ACTIONS: ReadonlySet<string> = new Set(TASK_ACTIONS);
 
 export function buildRouter(): Router {
@@ -192,6 +199,9 @@ export function buildRouter(): Router {
 
   router.use(express.json({ limit: "1mb" }));
 
+  // Preparação do computador (#/preparar): guarda própria de Host/Origin.
+  registrarRotasSetup(router);
+
   // Painel de Debug: só existe quando o modo fake está ligado (INHOUSE_FAKE_MODEL).
   if (isFakeModelActive()) registerDebugRoutes(router);
 
@@ -231,6 +241,8 @@ export function buildRouter(): Router {
       permissions: store.listPermissions(),
     };
     res.write(`data: ${JSON.stringify(ev)}\n\n`);
+    const setup = motorSetup().ultimo();
+    if (setup) res.write(`data: ${JSON.stringify({ type: "setup_status", setup } satisfies ServerEvent)}\n\n`);
   };
   router.get("/api/stream", sse);
   router.get("/api/events", sse);
