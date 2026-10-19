@@ -594,6 +594,9 @@ async function buscar(url: string, env: NodeJS.ProcessEnv): Promise<Response> {
   if (!urlPermitida(url)) throw new ErroSetup(`Endereço de download não permitido: ${url}`);
   const res = await fetch(url, { headers: cabecalhos(url, env), redirect: "follow", signal: AbortSignal.timeout(15 * 60_000) });
   if (!urlPermitida(res.url || url)) throw new ErroSetup(`O download foi redirecionado para um endereço não permitido.`);
+  if ((res.status === 403 || res.status === 429) && new URL(url).hostname === "api.github.com") {
+    throw new ErroSetup("O GitHub limitou as consultas desta rede por agora. Espere uns minutos e tente de novo.");
+  }
   if (!res.ok) throw new ErroSetup(`O servidor de download respondeu ${res.status}. Verifique a internet e tente de novo.`);
   return res;
 }

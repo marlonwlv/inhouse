@@ -87,6 +87,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
+      GITHUB_TOKEN: ${{ github.token }}   # a API do GitHub limita anônimos a 60/h por IP
+      INHOUSE_SETUP_VERBOSO: "1"
       INHOUSE_FORCAR_PORTATIL: node,git,gh
     steps:
       - uses: actions/checkout@v4

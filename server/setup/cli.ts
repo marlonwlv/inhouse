@@ -109,6 +109,7 @@ async function main(): Promise<void> {
   const rede = redeReal(m.env);
   try {
     for (const passo of passos) {
+      const ultimasLinhas: string[] = [];
       try {
         const r = await executarPasso(passo, {
           m,
@@ -124,12 +125,19 @@ async function main(): Promise<void> {
             console.log(`     ${item}: ${texto}`);
           },
           log: (item, linha) => {
+            ultimasLinhas.push(`       ${item}| ${linha}`);
+            if (ultimasLinhas.length > 20) ultimasLinhas.shift();
             if (process.env["INHOUSE_SETUP_VERBOSO"] === "1") console.log(`       ${item}| ${linha}`);
           },
         });
         console.log(`  [ok]    ${r}`);
       } catch (err) {
         const msg = err instanceof ErroSetup ? err.message : err instanceof Error ? err.message : String(err);
+        // Os detalhes do instalador (o "Ver detalhes" da tela) ajudam quem for ajudar.
+        if (ultimasLinhas.length && process.env["INHOUSE_SETUP_VERBOSO"] !== "1") {
+          console.error("     Últimas linhas do instalador:");
+          for (const l of ultimasLinhas) console.error(l);
+        }
         sair(1, `  [erro]  ${msg}`);
       }
       aplicarAmbiente();
