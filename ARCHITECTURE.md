@@ -23,6 +23,10 @@
 7. **UI sem framework**: `public/index.html + styles.css + app.js` (ES modules).
    O visual segue o mockup aprovado (paleta verde, esteira com losangos âmbar).
 8. Servidor escuta **só em 127.0.0.1** (porta 4400). Previews em portas 4500+.
+9. **Mac, Linux e Windows.** Toda diferença de SO passa por `server/platform.ts`: nunca `shell: true`;
+   `.cmd`/`.bat` (npm, npx, corepack, claude do npm) vão por `cmd.exe /d /s /c` com escape; árvore de
+   processos cai por grupo (POSIX, `detached`) ou `taskkill /T /F` (Windows); receitas de preview rodam
+   em `/bin/sh` ou no Git Bash. Guia de uso: `docs/WINDOWS.md`. CI: Windows/macOS/Linux.
 
 ## Esteira (máquina de estados por tarefa)
 
@@ -60,6 +64,8 @@ espec → plano → aprovacao(H) → execucao → verificacoes → teste(H) → 
 - `server/workflow/machine.ts` + `phases.ts` — orquestra a esteira usando A+B. Dono: Agente C.
 - `server/api/routes.ts` + `server/index.ts` + `server/store.ts` + `server/events.ts`
   + `server/config.ts`. Dono: Agente C.
+- `server/platform.ts` — diferenças de SO (achar o claude, montar comando, matar árvore, shell
+  das receitas, rename com retry). Funções puras testadas simulando win32 em `test/platform.test.ts`.
 - `public/` — UI. Dono: Agente D.
 - `templates/app-starter/` — template embutido (Vite+React+TS + CLAUDE.md do template).
 - `test/` — mock do claude + testes de máquina de estados/gates/store. Dono: Agente E.

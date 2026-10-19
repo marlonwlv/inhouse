@@ -74,6 +74,9 @@ npm start
 **No Mac, sem terminal:** dê um duplo-clique em **`setup.command`** (prepara a máquina) e
 depois em **`inhouse.command`** (abre o app no navegador).
 
+**No Windows, sem terminal:** dê dois cliques em **`setup.cmd`** e depois em **`inhouse.cmd`**.
+O passo a passo completo (Node, Git for Windows, Claude Code) está em [`docs/WINDOWS.md`](docs/WINDOWS.md).
+
 ## O que dá para fazer
 
 - **Abrir** um repositório do GitHub ou **criar** um app novo a partir do template embutido.

@@ -133,6 +133,11 @@ function shutdown(sinal: string): void {
 }
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+// Fechar a janela do terminal (SIGHUP no Mac/Linux; no Windows o Node traduz o
+// fechar do console para SIGHUP e o Ctrl+Break para SIGBREAK): sem isso os dev
+// servers de preview ficariam órfãos segurando as portas.
+process.on("SIGHUP", () => shutdown("SIGHUP"));
+if (process.platform === "win32") process.on("SIGBREAK", () => shutdown("SIGBREAK"));
 
 // Nunca derrubar o server por uma Promise esquecida — só logar.
 process.on("unhandledRejection", (reason) => {

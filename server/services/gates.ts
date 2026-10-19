@@ -2,11 +2,11 @@
  * Verificações automáticas ("gates") rodadas no worktree após a execução:
  * TypeScript, Lint e Testes — conforme o que o projeto tiver configurado.
  */
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GateResult } from "../../shared/types.js";
 import { claudeEnv } from "../config.js";
+import { matarFilho, spawnPortatil } from "../platform.js";
 import { fakeGateResults } from "../debug/fakeModel.js";
 import { isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
@@ -80,7 +80,7 @@ function runGate(gate: { name: string; command: string[] }, cwd: string): Promis
     // CI=1 evita que test runners (vitest etc.) entrem em modo watch e nunca terminem.
     // claudeEnv(): os scripts do projeto rodam código arbitrário — não podem
     // ver ANTHROPIC_API_KEY/AUTH_TOKEN (decisão 1 da arquitetura).
-    const child = spawn(cmd ?? "", args, {
+    const child = spawnPortatil(cmd ?? "", args, {
       cwd,
       env: { ...claudeEnv(), CI: "1" },
       stdio: ["ignore", "pipe", "pipe"],
@@ -96,7 +96,7 @@ function runGate(gate: { name: string; command: string[] }, cwd: string): Promis
     let estourou = false;
     const timer = setTimeout(() => {
       estourou = true;
-      child.kill("SIGKILL");
+      matarFilho(child, "SIGKILL"); // Windows: taskkill /T (npm.cmd → cmd.exe → node)
     }, GATE_TIMEOUT_MS);
 
     const fim = (ok: boolean, extra?: string) => {

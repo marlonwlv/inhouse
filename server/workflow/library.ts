@@ -5,7 +5,8 @@
  * O `preview` NÃO faz parte do workflow — continua vindo do inhouse.config.json do repo.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { renameComRetrySync } from "../platform.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { GateConfig, InhouseConfig, SkillCatalogItem, WorkflowDef, WorkflowsState } from "../../shared/types.js";
@@ -128,7 +129,7 @@ function persist(): void {
   if (!cache) return;
   const tmp = `${FILE}.tmp`;
   writeFileSync(tmp, JSON.stringify(cache, null, 2));
-  renameSync(tmp, FILE);
+  renameComRetrySync(tmp, FILE); // Windows: EPERM/EBUSY transitório
 }
 
 /** Só para testes: força reler o arquivo. */

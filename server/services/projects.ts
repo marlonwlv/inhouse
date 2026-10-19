@@ -2,16 +2,16 @@
  * Ciclo de vida de projetos: clonar do GitHub, criar de template, abrir pasta,
  * arquivar/desarquivar e excluir (com guardrails — ver deleteProject/exclusaoInfo).
  */
-import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { cp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExclusaoInfo, Project } from "../../shared/types.js";
 import { ANEXOS_DIR, DATA_DIR, ESPACOS_DIR, PROJECTS_DIR, TRANSCRIPTS_DIR, claudeEnv, ensureDirs } from "../config.js";
 import { broadcast } from "../events.js";
+import { matarFilho, mesmoCaminho, spawnPortatil } from "../platform.js";
 import * as store from "../store.js";
 import { forgetProject } from "../workflow/library.js";
 import { withLimit } from "./limiter.js";
@@ -67,7 +67,7 @@ export async function cloneProject(url: string): Promise<Project> {
       // GIT_TERMINAL_PROMPT=0: um link errado (ou repositório privado) faz o
       // GitHub pedir usuário/senha; sem isso o git ficaria travado para sempre
       // esperando um prompt que ninguém vê — e o request nunca responderia.
-      const child = spawn("git", ["clone", "--progress", limpo, target], {
+      const child = spawnPortatil("git", ["clone", "--progress", limpo, target], {
         env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
         stdio: ["ignore", "ignore", "pipe"],
       });
@@ -199,7 +199,7 @@ export async function createFromTemplate(name: string, template: string): Promis
     if (!store.getProject(project.id)) return resolve();
     // claudeEnv(): scripts postinstall rodam código arbitrário — não podem ver
     // ANTHROPIC_API_KEY/AUTH_TOKEN (decisão 1 da arquitetura).
-    const child = spawn("npm", ["install"], {
+    const child = spawnPortatil("npm", ["install"], {
       cwd: dest,
       env: claudeEnv(),
       stdio: ["ignore", "ignore", "pipe"],
@@ -236,13 +236,7 @@ export async function createFromTemplate(name: string, template: string): Promis
 
 /** Mata todos os npm installs em background (usado no shutdown — evita órfãos). */
 export function killBackgroundInstalls(): void {
-  for (const child of backgroundInstalls) {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      // best-effort
-    }
-  }
+  for (const child of backgroundInstalls) matarFilho(child, "SIGKILL");
   backgroundInstalls.clear();
   installsPorProjeto.clear();
 }
@@ -260,14 +254,15 @@ export async function openProject(path: string): Promise<Project> {
   // Pasta pessoal (ou qualquer pasta acima dela, como "/"): abrir aqui faria
   // `git init` + `git add -A` engolir a pasta inteira do usuário — incluindo
   // chaves e segredos (~/.ssh etc.) — para dentro de um repositório. Nunca.
-  if (dentroDe(homedir(), alvo)) {
+  // Raiz de qualquer disco também (no Windows, D:\ fica fora da pasta pessoal em C:).
+  if (dentroDe(homedir(), alvo) || parse(alvo).root === alvo) {
     throw new Error(
       "Essa pasta é ampla demais (sua pasta pessoal ou uma acima dela). Escolha a pasta específica do projeto.",
     );
   }
   // Pastas internas do builder (espaços de tarefas, estado) não são projetos —
   // abri-las quebraria o ciclo de vida das tarefas.
-  if (alvo === PROJECTS_DIR || dentroDe(alvo, ESPACOS_DIR) || dentroDe(alvo, DATA_DIR)) {
+  if (mesmoCaminho(alvo, PROJECTS_DIR) || dentroDe(alvo, ESPACOS_DIR) || dentroDe(alvo, DATA_DIR)) {
     throw new Error(
       "Essa pasta é usada internamente pelo Inhouse. Escolha a pasta de um projeto específico.",
     );
@@ -281,7 +276,7 @@ export async function openProject(path: string): Promise<Project> {
   }
   if (!st.isDirectory()) throw new Error("O caminho informado não é uma pasta.");
 
-  const jaAberto = store.listProjects().find((p) => p.path === alvo);
+  const jaAberto = store.listProjects().find((p) => mesmoCaminho(p.path, alvo));
   if (jaAberto) throw new Error(`Esta pasta já está aberta como o projeto "${jaAberto.name}".`);
 
   const ehRepo = (await tryGit(alvo, "rev-parse", "--is-inside-work-tree")) === "true";
@@ -402,7 +397,7 @@ export async function deleteProject(id: string, opts: { apagarArquivos?: boolean
     await new Promise<void>((res) => {
       const done = () => res();
       inst.once("exit", done);
-      inst.kill("SIGKILL");
+      matarFilho(inst, "SIGKILL");
       setTimeout(done, 1500); // não trava se o processo já tinha morrido
     });
   }

@@ -8,13 +8,14 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "INHOUSE_DATA_DIR=\"$HOME/.inhouse-dev\" INHOUSE_PROJECTS_DIR=\"$HOME/Inhouse-dev\" INHOUSE_PORT=4410 tsx watch server/index.ts",
-    "dev:fake": "INHOUSE_FAKE_MODEL=1 INHOUSE_FAKE_DELAY_MS=400 INHOUSE_EVAL_A_CADA=1000000 INHOUSE_DATA_DIR=\"$HOME/.inhouse-debug\" INHOUSE_PROJECTS_DIR=\"$HOME/Inhouse-debug\" tsx watch server/index.ts",
+    "dev": "node scripts/dev.mjs dev",
+    "dev:fake": "node scripts/dev.mjs fake",
     "start": "tsx server/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "debug": "tsx server/debug/runJourneys.ts",
-    "build:mac": "scripts/build-mac-app.sh"
+    "build:mac": "scripts/build-mac-app.sh",
+    "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.0",

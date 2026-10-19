@@ -57,7 +57,7 @@ export function sanitizePreview(raw: unknown): PreviewConfig | undefined {
     if (files.length) out.envFiles = files.slice(0, 20);
   }
   if (Array.isArray(o.setup)) {
-    // Comandos de setup: mesma confiança do cmd (rodam via /bin/sh). Só trim + cap.
+    // Comandos de setup: mesma confiança do cmd (rodam via sh; Git Bash no Windows). Só trim + cap.
     const cmds = o.setup
       .filter((c): c is string => typeof c === "string" && c.trim().length > 0)
       .map((c) => c.trim().slice(0, 400));

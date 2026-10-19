@@ -2,13 +2,13 @@
  * "Espaços" = git worktrees isolados por tarefa (a palavra worktree/branch
  * nunca aparece na UI). Ficam em ESPACOS_DIR/<projeto>/espaco-<N>.
  */
-import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, rename, rm } from "node:fs/promises";
+import { cp, mkdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { Project } from "../../shared/types.js";
 import { ESPACOS_DIR, claudeEnv } from "../config.js";
+import { matarFilho, renameComRetry, spawnPortatil } from "../platform.js";
 import { fakeRealGates, isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
 import { loadConfigCascata } from "../workflow/config.js";
@@ -22,11 +22,7 @@ const NPM_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const installsDeEspaco = new Set<ChildProcess>();
 export function killInstallsDeEspaco(): void {
   for (const child of installsDeEspaco) {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      // best-effort
-    }
+    matarFilho(child, "SIGKILL");
   }
   installsDeEspaco.clear();
 }
@@ -95,7 +91,7 @@ async function doCreateEspaco(
       try {
         // Sem --force: com a árvore suja o git recusa remover (o que queremos).
         await tryGit(project.path, "worktree", "remove", worktreePath);
-        await rename(worktreePath, abrigo);
+        await renameComRetry(worktreePath, abrigo); // Windows: EPERM/EBUSY transitório
         await tryGit(project.path, "worktree", "prune");
         broadcast({
           type: "project_progress",
@@ -229,7 +225,7 @@ export async function ensureDeps(worktreePath: string, projectName: string): Pro
   await withLimit("install", () => new Promise<void>((resolve, reject) => {
     // claudeEnv(): scripts postinstall de dependências rodam código arbitrário
     // do projeto — não podem ver ANTHROPIC_API_KEY/AUTH_TOKEN.
-    const child = spawn(cmd, args, {
+    const child = spawnPortatil(cmd, args, {
       cwd: worktreePath,
       env: claudeEnv(),
       stdio: ["ignore", "ignore", "pipe"],
@@ -242,7 +238,7 @@ export async function ensureDeps(worktreePath: string, projectName: string): Pro
     let estourou = false;
     const timer = setTimeout(() => {
       estourou = true;
-      child.kill("SIGKILL");
+      matarFilho(child, "SIGKILL");
     }, NPM_INSTALL_TIMEOUT_MS);
     child.on("error", (err) => {
       clearTimeout(timer);

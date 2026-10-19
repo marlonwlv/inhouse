@@ -1,0 +1,17 @@
+# Finais de linha estáveis entre Mac, Linux e Windows: o repositório guarda LF.
+# Sem isso, um checkout no Windows com core.autocrlf=true troca tudo para CRLF
+# e os scripts .sh/.command quebram (bash não entende \r).
+* text=auto eol=lf
+
+# Lançadores do Windows precisam de CRLF (o cmd.exe se perde com LF puro).
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binários: nunca converter.
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.woff2 binary
+*.woff binary

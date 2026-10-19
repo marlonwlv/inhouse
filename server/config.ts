@@ -1,7 +1,7 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { resolverClaude } from "./platform.js";
 
 /** Porta da UI. Escuta APENAS em 127.0.0.1 (decisão de segurança — ver ARCHITECTURE.md). */
 export const PORT = Number(process.env.INHOUSE_PORT ?? 4400);
@@ -51,26 +51,13 @@ let cachedClaudePath: string | null | undefined;
  * Override: INHOUSE_CLAUDE_PATH. Se não achar, retorna null (UI mostra aviso).
  * Além do PATH, confere os locais comuns de instalação — essencial quando o
  * Inhouse roda como APP do macOS (lançado pelo Finder, o PATH é mínimo e o
- * `which` não enxerga ~/.local/bin nem o Homebrew).
+ * `which` não enxerga ~/.local/bin nem o Homebrew). No Windows: claude.exe
+ * (instalador nativo) ou o claude.cmd do npm, traduzido para o cli.js —
+ * detalhes em platform.ts.
  */
 export function claudePath(): string | null {
   if (cachedClaudePath !== undefined) return cachedClaudePath;
-  const override = process.env.INHOUSE_CLAUDE_PATH;
-  if (override) return (cachedClaudePath = override);
-  try {
-    const p = execFileSync("which", ["claude"], { encoding: "utf8" }).trim();
-    if (p.length > 0) return (cachedClaudePath = p);
-  } catch {
-    // segue para os locais comuns
-  }
-  const casa = homedir();
-  const comuns = [
-    join(casa, ".local", "bin", "claude"),
-    join(casa, ".claude", "local", "claude"),
-    "/opt/homebrew/bin/claude",
-    "/usr/local/bin/claude",
-  ];
-  cachedClaudePath = comuns.find((p) => existsSync(p)) ?? null;
+  cachedClaudePath = resolverClaude();
   return cachedClaudePath;
 }
 
