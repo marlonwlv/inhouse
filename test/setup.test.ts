@@ -4,6 +4,8 @@
  * trava, login do Claude, guardas das rotas e modo demonstração.
  * Nada aqui instala ou executa programas de verdade.
  */
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
@@ -585,5 +587,32 @@ describe("tela #/preparar", () => {
   it("nunca pede API key", () => {
     expect(js).not.toMatch(/ANTHROPIC_API_KEY|sk-ant-/);
     expect(js).not.toMatch(/api[\s_-]?key/i);
+  });
+});
+
+describe("scripts/deps-ok.mjs (marca das dependências nos lançadores)", () => {
+  const script = path.resolve("scripts/deps-ok.mjs");
+  const rodar = (raiz: string) => spawnSync(process.execPath, [script, raiz]).status;
+  const raiz = mkdtempSync(path.join(tmpdir(), "inh-deps-"));
+  writeFileSync(path.join(raiz, "package-lock.json"), '{"lockfileVersion":3}');
+  const hash = createHash("sha256").update(readFileSync(path.join(raiz, "package-lock.json"))).digest("hex");
+  const maior = process.versions.node.split(".")[0];
+
+  it("sem marca: precisa preparar", () => {
+    expect(rodar(raiz)).toBe(1);
+  });
+  it("marca em dia: pronto", () => {
+    mkdirSync(path.join(raiz, "node_modules"), { recursive: true });
+    writeFileSync(path.join(raiz, "node_modules", ".inhouse-deps"), `${hash}-${maior}`);
+    expect(rodar(raiz)).toBe(0);
+  });
+  it("package-lock mudou (InHouse atualizado): precisa preparar", () => {
+    writeFileSync(path.join(raiz, "package-lock.json"), '{"lockfileVersion":3,"novo":1}');
+    expect(rodar(raiz)).toBe(1);
+  });
+  it("outra versão maior do Node: precisa preparar", () => {
+    writeFileSync(path.join(raiz, "package-lock.json"), '{"lockfileVersion":3}');
+    writeFileSync(path.join(raiz, "node_modules", ".inhouse-deps"), `${hash}-22`);
+    expect(rodar(raiz)).toBe(maior === "22" ? 0 : 1);
   });
 });

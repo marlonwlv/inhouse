@@ -115,6 +115,8 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then n="$INHOUSE_TOOLS_DIR/node/node.exe"; else n="$INHOUSE_TOOLS_DIR/node/bin/node"; fi
           "$n" -v | grep -E '^v24\.'
           test -f node_modules/.inhouse-deps
+          # A mesma conferência que os lançadores fazem antes de abrir.
+          "$n" scripts/deps-ok.mjs
 
       - name: Instalar Git portátil, Claude Code e gh (Windows)
         if: runner.os == 'Windows'

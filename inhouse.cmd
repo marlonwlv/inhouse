@@ -17,7 +17,9 @@ if errorlevel 1 if exist "%FERRAMENTAS%\node\node.exe" set "PATH=%FERRAMENTAS%\n
 
 call :nodeok
 if errorlevel 1 goto preparar
-if not exist "node_modules\.inhouse-deps" goto preparar
+rem Dependencias em dia com o package-lock e com o Node (muda quando o InHouse e atualizado).
+node "%~dp0scripts\deps-ok.mjs"
+if errorlevel 1 goto preparar
 goto abrir
 
 :preparar

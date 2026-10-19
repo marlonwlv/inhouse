@@ -11,7 +11,7 @@ node_ok() { command -v node >/dev/null 2>&1 && node -e 'process.exit(Number(proc
 
 # Node do computador primeiro; o portátil do InHouse só quando não houver outro.
 if ! node_ok && [ -x "$FERRAMENTAS/node/bin/node" ]; then export PATH="$FERRAMENTAS/node/bin:$PATH"; fi
-if ! node_ok || [ ! -f node_modules/.inhouse-deps ]; then
+if ! node_ok || ! node scripts/deps-ok.mjs; then
   if ! /bin/bash scripts/mac/setup.sh --basico --nao-abrir --sem-pausa; then
     echo ""
     read -r -n1 -p "Não deu para preparar o InHouse. Aperte qualquer tecla para fechar." _
