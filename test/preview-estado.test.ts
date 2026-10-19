@@ -4,6 +4,7 @@
  * no registro e a rota reportada entrando na receita (healthPaths).
  * Sobe um dev server DE VERDADE num fixture temporário (como preview.test.ts).
  */
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,6 +49,10 @@ vi.mock("../server/store.js", () => ({
 
 const preview = await import("../server/services/preview.js");
 const { previewEvents } = await import("../server/services/previewState.js");
+
+// A checagem de dono da porta usa lsof (POSIX) ou netstat (Windows). Numa
+// máquina POSIX sem lsof ela vira "não dá para verificar" — o teste não se aplica.
+const semLsof = process.platform !== "win32" && spawnSync("lsof", ["-v"]).error !== undefined;
 
 function tarefa(id: string, worktreePath: string): Task {
   const t: Task = {
@@ -198,7 +203,7 @@ describe("estado de primeira classe", () => {
     expect(preview.previewStatus(t.id).alerta?.rota).toBe("/quebrada");
   }, 20000);
 
-  it("URL anunciada em porta de OUTRO programa → falha explicada, nunca 'No ar' falso", async () => {
+  it.skipIf(semLsof)("URL anunciada em porta de OUTRO programa → falha explicada, nunca 'No ar' falso", async () => {
     // Um servidor "intruso" (do próprio teste, fora da árvore do preview) ocupa a porta 65444.
     const { createServer } = await import("node:http");
     const intruso = createServer((_req, res) => res.end("intruso"));
@@ -238,4 +243,24 @@ describe("estado de primeira classe", () => {
     // O registro contém os DOIS boots (o de antes do reinício não foi apagado).
     expect(logs.indexOf("boot do fixture")).not.toBe(logs.lastIndexOf("boot do fixture"));
   }, 20000);
+});
+
+describe("pidsNetstat (Windows)", () => {
+  const saida = [
+    "",
+    "Active Connections",
+    "",
+    "  Proto  Local Address          Foreign Address        State           PID",
+    "  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1044",
+    "  TCP    127.0.0.1:4501         0.0.0.0:0              LISTENING       7788",
+    "  TCP    127.0.0.1:4501         127.0.0.1:52000        ESTABLISHED     7788",
+    "  TCP    127.0.0.1:52000        127.0.0.1:4501         ESTABLISHED     9000",
+    "  TCP    [::1]:4501             [::]:0                 ABHÖREN         7790",
+    "  TCP    127.0.0.1:45010        0.0.0.0:0              LISTENING       1",
+  ].join("\r\n");
+
+  it("acha só quem ESCUTA na porta exata, em qualquer idioma", () => {
+    expect(preview.pidsNetstat(saida, 4501).sort()).toEqual([7788, 7790]);
+    expect(preview.pidsNetstat(saida, 9999)).toEqual([]);
+  });
 });

@@ -6,7 +6,6 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -14,6 +13,7 @@ import { join } from "node:path";
 import type { PermissionRequest, Project, Task, TranscriptItem } from "../shared/types.js";
 import { isHumanStep } from "../shared/types.js";
 import { DATA_DIR, TRANSCRIPTS_DIR, ensureDirs } from "./config.js";
+import { renameComRetrySync } from "./platform.js";
 
 interface State {
   projects: Project[];
@@ -69,7 +69,7 @@ export function load(): void {
       }
     } catch {
       // estado corrompido: começa limpo, sem apagar o arquivo antigo
-      renameSync(STATE_FILE, `${STATE_FILE}.corrupted-${Date.now()}`);
+      renameComRetrySync(STATE_FILE, `${STATE_FILE}.corrupted-${Date.now()}`);
       state = { projects: [], tasks: [] };
     }
   }
@@ -78,7 +78,8 @@ export function load(): void {
 function persist(): void {
   const tmp = `${STATE_FILE}.tmp`;
   writeFileSync(tmp, JSON.stringify(state, null, 2));
-  renameSync(tmp, STATE_FILE);
+  // Windows: antivírus/indexador segura o arquivo por ms → EPERM/EBUSY; tenta de novo.
+  renameComRetrySync(tmp, STATE_FILE);
 }
 
 export const newId = (): string => randomUUID();

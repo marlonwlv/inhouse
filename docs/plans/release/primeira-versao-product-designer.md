@@ -78,7 +78,7 @@ Problema: o eval é 100% local (`~/.inhouse/eval/*.jsonl` + `relatorios/*.md`, ~
 - **Escala (adiado)**: multi-tester / zero-toque → auto-sync do `eval/` para um repo git privado da org (padrão gstack-artifacts); exige auth git na máquina do tester + repo compartilhado.
 
 ## Explicitamente adiado (não bloqueia a v1)
-- Windows (Mac confirmado).
+- Windows (Mac confirmado). Retomado em [InHouse no Windows](../features/suporte-windows.md) (2026-10-19).
 - Electron / instalador `.dmg` / auto-update (launcher `.command` basta).
 - Botão de reset na UI / limpeza do rebrand legado (máquina nova nasce limpa).
 - "Modo leigo" escondendo git/terminal (designer tem traquejo suficiente).

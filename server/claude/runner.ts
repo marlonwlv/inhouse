@@ -16,6 +16,7 @@ import type { TranscriptItem } from "../../shared/types.js";
 import { acumularFase } from "../eval/coleta.js";
 import type { FaseMetricas } from "../eval/coleta.js";
 import { claudeEnv, claudePath } from "../config.js";
+import { comandoDoClaude } from "../platform.js";
 import { fakeRunPhase } from "../debug/fakeModel.js";
 import { isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
@@ -489,7 +490,9 @@ export async function claudeStatus(): Promise<{ ok: boolean; version?: string; d
     return { ok: false, detail: "Claude Code não encontrado — instale e faça login" };
   }
   return await new Promise((resolve) => {
-    execFile(exe, ["--version"], { timeout: 5000, env: claudeEnv() }, (err, stdout) => {
+    // No Windows via npm o caminho é o cli.js (platform.ts) — roda pelo node.
+    const c = comandoDoClaude(exe, ["--version"]);
+    execFile(c.arquivo, c.args, { timeout: 5000, env: claudeEnv(), windowsHide: true }, (err, stdout) => {
       if (err) {
         resolve({ ok: false, detail: "O Claude Code não respondeu. Verifique a instalação." });
       } else {

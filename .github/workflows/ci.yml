@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testes:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      # Antes do checkout: mesmo comportamento de uma máquina Windows "de fábrica"
+      # (autocrlf ligado) — prova que o .gitattributes segura os finais de linha.
+      - name: git no Windows como numa máquina nova
+        if: runner.os == 'Windows'
+        run: |
+          git config --global core.autocrlf true
+          git config --global core.longpaths true
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # Os testes criam repositórios e commits de verdade.
+      - name: identidade do git
+        run: |
+          git config --global user.name "Inhouse CI"
+          git config --global user.email "ci@inhouse.local"
+          git config --global init.defaultBranch main
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Testes (vitest)
+        run: npm test
+
+      - name: Smoke (servidor de verdade, modelo fingido)
+        run: npm run smoke

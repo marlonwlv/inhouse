@@ -3,6 +3,7 @@
  * (PREVIEW_PORT_BASE + espaço) e devolve a URL para o iframe da UI.
  */
 import { execFile, spawn } from "node:child_process";
+import type { SpawnOptions } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -17,6 +18,7 @@ import { runPhase } from "../claude/runner.js";
 import { startFakePreview, stopAllFakePreviews, stopFakePreview } from "../debug/fakePreview.js";
 import { isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
+import { comandoDeShell, ehWindows, matarArvore, montarComando, spawnOpcoes } from "../platform.js";
 import * as store from "../store.js";
 import { loadConfigCascata, sanitizePreview } from "../workflow/config.js";
 import { previewSetupPrompt, systemAppend } from "../workflow/phases.js";
@@ -47,7 +49,7 @@ const RECEITAS_DIR = join(DATA_DIR, "previews");
 function pushLog(taskId: string, chunk: string): void {
   const buf = logs.get(taskId);
   if (!buf) return;
-  const limpo = chunk.replace(ANSI_RE, "");
+  const limpo = chunk.replace(ANSI_RE, "").replace(/\r\n/g, "\n"); // CRLF do Windows
   for (const l of limpo.split("\n")) buf.push(l);
   if (buf.length > LOG_MAX_LINHAS) buf.splice(0, buf.length - LOG_MAX_LINHAS);
   detectarErroNoLog(taskId, limpo);
@@ -221,10 +223,14 @@ export function autoDetectar(dir: string): { cmd: string; args: string[]; viteLi
   return { cmd, args: base, viteLike };
 }
 
-/** Mata a árvore inteira do dev server (grupo de processo — spawn com detached). */
+/**
+ * Mata a árvore inteira do dev server. POSIX: grupo de processo (spawn com
+ * detached). Windows: não há grupo — taskkill /T /F derruba cmd.exe → node → filhos.
+ */
 function matar(child: ChildProcess): void {
   const pid = child.pid;
   if (!pid) return;
+  if (ehWindows()) return matarArvore(pid);
   try {
     process.kill(-pid, "SIGTERM");
   } catch {
@@ -260,8 +266,15 @@ function portaDaUrl(url: string | undefined): number | undefined {
   }
 }
 
-/** PIDs escutando numa porta TCP (via lsof; melhor esforço — [] quando não dá). */
+/** PIDs escutando numa porta TCP (lsof no POSIX, netstat no Windows; [] quando não dá). */
 function pidsNaPorta(porta: number): Promise<number[]> {
+  if (ehWindows()) {
+    return new Promise((resolve) => {
+      execFile("netstat", ["-ano", "-p", "TCP"], { timeout: 5000, windowsHide: true }, (err, stdout) => {
+        resolve(err ? [] : pidsNetstat(stdout, porta));
+      });
+    });
+  }
   return new Promise((resolve) => {
     execFile("lsof", ["-nP", `-iTCP:${porta}`, "-sTCP:LISTEN", "-t"], { timeout: 3000 }, (err, stdout) => {
       if (err) return resolve([]);
@@ -275,17 +288,67 @@ function pidsNaPorta(porta: number): Promise<number[]> {
   });
 }
 
-/** `pid` é descendente de `ancestral`? Sobe a cadeia de ppids (via ps, máx. 12 níveis). */
-async function ehDescendente(pid: number, ancestral: number): Promise<boolean> {
+/**
+ * Lê a saída do `netstat -ano` do Windows: linhas `TCP 127.0.0.1:4501 0.0.0.0:0 LISTENING 1234`.
+ * O estado vem traduzido conforme o idioma do Windows (LISTENING / ABHÖREN / ESCUTANDO…),
+ * então em vez do texto usamos o endereço remoto "0.0.0.0:0"/"[::]:0", que só aparece em escuta.
+ */
+export function pidsNetstat(saida: string, porta: number): number[] {
+  const pids = new Set<number>();
+  for (const linha of saida.split(/\r?\n/)) {
+    const col = linha.trim().split(/\s+/);
+    if (col.length < 5 || col[0]?.toUpperCase() !== "TCP") continue;
+    const local = col[1] ?? "";
+    const remoto = col[2] ?? "";
+    if (!local.endsWith(`:${porta}`) || !/^(0\.0\.0\.0|\[::\]|\*):0$/.test(remoto)) continue;
+    const pid = Number(col[col.length - 1]);
+    if (Number.isFinite(pid) && pid > 0) pids.add(pid);
+  }
+  return [...pids];
+}
+
+/** pid → ppid de TODOS os processos do Windows, numa chamada só (sem `ps`). */
+function tabelaDePaisWindows(): Promise<Map<number, number>> {
+  return new Promise((resolve) => {
+    execFile(
+      "powershell",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }",
+      ],
+      { timeout: 15000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout) => {
+        const mapa = new Map<number, number>();
+        if (!err) {
+          for (const l of stdout.split(/\r?\n/)) {
+            const [a, b] = l.trim().split(/\s+/).map(Number);
+            if (a && b !== undefined && Number.isFinite(b)) mapa.set(a, b);
+          }
+        }
+        resolve(mapa);
+      },
+    );
+  });
+}
+
+/** ppid de um processo no POSIX (via ps; 0 quando não dá). */
+function paiPosix(pid: number): Promise<number> {
+  return new Promise<number>((resolve) => {
+    execFile("ps", ["-o", "ppid=", "-p", String(pid)], { timeout: 2000 }, (err, stdout) => {
+      resolve(err ? 0 : Number(stdout.trim()) || 0);
+    });
+  });
+}
+
+/** `pid` é descendente de `ancestral`? Sobe a cadeia de ppids (máx. 12 níveis). */
+async function ehDescendente(pid: number, ancestral: number, paiDe: (pid: number) => Promise<number>): Promise<boolean> {
   let atual = pid;
   for (let i = 0; i < 12; i++) {
     if (atual === ancestral) return true;
-    const ppid = await new Promise<number>((resolve) => {
-      execFile("ps", ["-o", "ppid=", "-p", String(atual)], { timeout: 2000 }, (err, stdout) => {
-        resolve(err ? 0 : Number(stdout.trim()) || 0);
-      });
-    });
-    if (!ppid || ppid <= 1) return false;
+    const ppid = await paiDe(atual);
+    if (!ppid || ppid <= 1 || ppid === atual) return false;
     atual = ppid;
   }
   return false;
@@ -296,14 +359,20 @@ async function ehDescendente(pid: number, ancestral: number): Promise<boolean> {
  * caso "o app anunciou uma URL cuja porta pertence a OUTRO servidor da máquina"
  * (ex.: dev script com porta fixa que já está em uso por outra instância) — sem
  * esta checagem, o preview mostraria o app errado com cara de sucesso.
- * Devolve null quando não dá para verificar (lsof indisponível) — não bloqueia.
+ * Devolve null quando não dá para verificar (lsof/netstat indisponível) — não bloqueia.
  */
 async function portaServidaPeloPreview(porta: number, childPid: number | undefined): Promise<boolean | null> {
   if (!childPid) return null;
   const pids = await pidsNaPorta(porta);
   if (pids.length === 0) return null;
+  let paiDe = paiPosix;
+  if (ehWindows()) {
+    const tabela = await tabelaDePaisWindows();
+    if (tabela.size === 0) return null; // sem como verificar: não bloqueia
+    paiDe = async (pid) => tabela.get(pid) ?? 0;
+  }
   for (const pid of pids) {
-    if (await ehDescendente(pid, childPid)) return true;
+    if (await ehDescendente(pid, childPid, paiDe)) return true;
   }
   return false;
 }
@@ -430,10 +499,13 @@ function mensagemQuebrado(s: Saude): string {
 /** Roda um comando de setup (curto, que TERMINA) antes do server. Devolve o exit code (124=timeout). */
 function execSetup(cmd: string, cwd: string, env: NodeJS.ProcessEnv): Promise<number> {
   return new Promise((resolve) => {
-    const ch = spawn("/bin/sh", ["-c", cmd], {
+    // Receita em sintaxe sh: /bin/sh no POSIX, Git Bash no Windows (platform.ts).
+    const sh = comandoDeShell(cmd);
+    const ch = spawn(sh.arquivo, sh.args, {
       cwd,
       env,
-      detached: true, // grupo próprio: matar() derruba a árvore (docker/child procs)
+      ...spawnOpcoes(), // POSIX: grupo próprio — matar() derruba a árvore (docker/child procs)
+      windowsVerbatimArguments: sh.windowsVerbatimArguments,
       stdio: ["ignore", "pipe", "pipe"],
     });
     todos.add(ch);
@@ -554,9 +626,18 @@ async function iniciarDevServer(
   // Comando: bloco/receita `cmd` (roda via shell) OU auto-detecção pelo lockfile.
   let spawnCmd: string;
   let spawnArgs: string[];
+  let extra: SpawnOptions = {};
   if (cfg?.cmd) {
-    spawnCmd = "/bin/sh";
-    spawnArgs = ["-c", cfg.cmd];
+    const sh = comandoDeShell(cfg.cmd);
+    if (sh.shell === "cmd") {
+      sistema(
+        task.id,
+        "Aviso: não achei o Git Bash nesta máquina; a receita do preview vai rodar no cmd.exe e pode não funcionar. Instale o Git for Windows.",
+      );
+    }
+    spawnCmd = sh.arquivo;
+    spawnArgs = sh.args;
+    if (sh.windowsVerbatimArguments) extra = { windowsVerbatimArguments: true };
   } else {
     const det = autoDetectar(cwd);
     if (!det) {
@@ -569,13 +650,18 @@ async function iniciarDevServer(
     spawnArgs = [...det.args];
     // Vite/Astro ignoram a variável PORT — forçam-se pela flag.
     if (det.viteLike) spawnArgs.push("--", "--port", String(porta), "--strictPort");
-    spawnCmd = det.cmd;
+    // Windows: npm/corepack/bun são .cmd → cmd.exe /d /s /c (sem shell:true).
+    const m = montarComando(det.cmd, spawnArgs, { env: baseEnv, cwd });
+    spawnCmd = m.arquivo;
+    spawnArgs = m.args;
+    if (m.windowsVerbatimArguments) extra = { windowsVerbatimArguments: true };
   }
 
   const child = spawn(spawnCmd, spawnArgs, {
     cwd,
     env: baseEnv,
-    detached: true, // grupo de processo próprio: dá para matar a árvore toda
+    ...spawnOpcoes(), // POSIX: grupo de processo próprio — dá para matar a árvore toda
+    ...extra,
     stdio: ["ignore", "pipe", "pipe"],
   });
   todos.add(child);

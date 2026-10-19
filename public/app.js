@@ -1519,6 +1519,9 @@ function projectCardHtml(p) {
   </div>`;
 }
 
+// O navegador roda na mesma máquina do servidor: o sistema dele é o do usuário.
+const NO_WINDOWS = /Windows/i.test(navigator.userAgent);
+
 // Painel de primeiros passos quando o Claude não está conectado: sem ele,
 // nenhuma tarefa roda, então bloqueamos criar/clonar e explicamos o passo-a-passo.
 // O chip fica verde sozinho assim que o login terminar (evento SSE claude_status).
@@ -1528,7 +1531,9 @@ function primeirosPassosHtml() {
     <div class="ob-head"><span class="warn-dot"></span><b>Conecte o Claude para começar</b></div>
     <p>O Inhouse trabalha com o Claude Code deste computador, usando a sua assinatura. Enquanto ele não estiver conectado, abrir projetos e criar apps fica desabilitado.${detalhe ? ` <span class="ob-detail">(${detalhe})</span>` : ""}</p>
     <ol class="ob-steps">
-      <li>Abra o app <b>Terminal</b> (aperte <kbd>⌘</kbd>+<kbd>Espaço</kbd>, digite <b>Terminal</b> e Enter).</li>
+      <li>${NO_WINDOWS
+        ? `Abra o <b>PowerShell</b> (aperte a tecla <kbd>Windows</kbd>, digite <b>PowerShell</b> e Enter).`
+        : `Abra o app <b>Terminal</b> (aperte <kbd>⌘</kbd>+<kbd>Espaço</kbd>, digite <b>Terminal</b> e Enter).`}</li>
       <li>Digite <code>claude</code> e tecle Enter; se ele pedir, faça o login que abre no navegador.</li>
       <li>Pronto — volte aqui. Assim que conectar, tudo se habilita sozinho, sem recarregar.</li>
     </ol>

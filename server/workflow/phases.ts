@@ -477,6 +477,8 @@ export function previewSetupPrompt(): string {
     "```",
     'Regras: todos os campos são opcionais; em "healthPaths" liste as ROTAS que esta tarefa toca e as',
     'telas de entrada (começando com "/"); em "setup" só comandos que TERMINAM (nunca o servidor de dev).',
+    '"cmd" e "setup" rodam num shell sh (no Windows, o Git Bash): use sintaxe sh portátil ($PORT, &&),',
+    "sem caminhos absolutos desta máquina — a receita é versionada e vale para Mac e Windows.",
   ].join("\n");
 }
 

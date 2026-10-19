@@ -3,6 +3,7 @@
  * Nunca usamos shell:true — argumentos sempre em array (segurança contra injeção).
  */
 import { execFile } from "node:child_process";
+import { montarComando } from "../platform.js";
 
 export interface RunOpts {
   cwd?: string;
@@ -30,10 +31,14 @@ export class RunError extends Error {
 
 export function run(cmd: string, args: string[], opts: RunOpts = {}): Promise<RunResult> {
   return new Promise((resolve, reject) => {
+    // No Windows, .cmd/.bat (npm, npx…) vão por cmd.exe — ver platform.ts.
+    const m = montarComando(cmd, args, { env: opts.env, cwd: opts.cwd });
     execFile(
-      cmd,
-      args,
+      m.arquivo,
+      m.args,
       {
+        windowsHide: true,
+        windowsVerbatimArguments: m.windowsVerbatimArguments,
         cwd: opts.cwd,
         env: opts.env ?? process.env,
         timeout: opts.timeoutMs ?? 120_000,
@@ -57,7 +62,9 @@ export async function git(cwd: string, ...args: string[]): Promise<string> {
   // GIT_TERMINAL_PROMPT=0: o servidor não tem ninguém olhando o terminal — um
   // repositório privado sem credenciais deve falhar na hora, com erro claro,
   // em vez de travar esperando usuário/senha num prompt invisível.
-  const { stdout } = await run("git", args, {
+  // core.longpaths: no Windows, node_modules fundos estouram os 260 caracteres.
+  const prefixo = process.platform === "win32" ? ["-c", "core.longpaths=true"] : [];
+  const { stdout } = await run("git", [...prefixo, ...args], {
     cwd,
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
   });
@@ -103,6 +110,6 @@ export async function gitCommit(cwd: string, message: string, extraArgs: string[
 
 /** Últimas `n` linhas de um texto (para mostrar erros sem despejar tudo). */
 export function lastLines(text: string, n: number): string {
-  const lines = text.split("\n");
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
   return lines.slice(Math.max(0, lines.length - n)).join("\n").trim();
 }
