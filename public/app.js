@@ -467,6 +467,7 @@ function handleEvent(ev) {
       break;
     }
     case "setup_status": {
+      setupUltimoSse = Date.now();
       aoMudarSetup(ev.setup);
       break;
     }
@@ -932,6 +933,25 @@ function aoMudarSetup(s) {
   state.setup = s;
   renderClaudeChip();
   if (route().name === "preparar") renderPreparar();
+  setupAgendarConsulta();
+}
+
+/* Reserva para quando o SSE não chega (antivírus, proxy, túnel que segura a resposta):
+ * enquanto algo está em andamento, consulta /api/setup a cada 2 s se o SSE ficou calado. */
+let setupConsultaTimer = null;
+let setupUltimoSse = 0;
+function setupAgendarConsulta() {
+  const s = state.setup;
+  const andamento = s && (s.instalando || s.login?.ativo || s.itens.some((i) => i.estado === "verificando"));
+  if (!andamento) { clearTimeout(setupConsultaTimer); setupConsultaTimer = null; return; }
+  if (setupConsultaTimer) return;
+  setupConsultaTimer = setTimeout(async () => {
+    setupConsultaTimer = null;
+    if (Date.now() - setupUltimoSse < 2500) { setupAgendarConsulta(); return; }
+    const r = await fetch("/api/setup", { cache: "no-store" }).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+    if (r && r.itens) aoMudarSetup(r);
+    else setupAgendarConsulta();
+  }, 2000);
 }
 
 function setupIcone(estado, obrigatorio) {
