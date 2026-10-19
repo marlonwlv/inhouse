@@ -24,6 +24,7 @@ import type { Maquina, ResultadoExec } from "../server/setup/detectar.js";
 import { detectarTudo, itemBase, prontoParaUsar } from "../server/setup/detectar.js";
 import {
   acharGh,
+  envParaPowerShell,
   acharNodeNoShasums,
   acharPortableGit,
   adquirirTrava,
@@ -615,5 +616,13 @@ describe("scripts/deps-ok.mjs (marca das dependências nos lançadores)", () => 
     writeFileSync(path.join(raiz, "package-lock.json"), '{"lockfileVersion":3}');
     writeFileSync(path.join(raiz, "node_modules", ".inhouse-deps"), `${hash}-22`);
     expect(rodar(raiz)).toBe(maior === "22" ? 0 : 1);
+  });
+});
+
+describe("envParaPowerShell", () => {
+  it("tira o PSModulePath herdado do PowerShell 7 e mantém o resto", () => {
+    const e = envParaPowerShell({ PSModulePath: "C:\\pwsh7\\Modules", Path: "C:\\x", USERPROFILE: "C:\\Users\\ana" });
+    expect(e).toEqual({ Path: "C:\\x", USERPROFILE: "C:\\Users\\ana" });
+    expect(envParaPowerShell({ PSMODULEPATH: "y" })).toEqual({});
   });
 });

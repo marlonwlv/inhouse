@@ -186,6 +186,18 @@ export interface Rede {
   baixar(url: string, destino: string, aoProgredir?: (pct: number) => void): Promise<string>;
 }
 
+/**
+ * Ambiente para chamar o Windows PowerShell 5.1. Aberto de dentro do PowerShell 7
+ * (o terminal padrão de muita gente, e o do CI), ele herda o PSModulePath do 7 e não
+ * acha os módulos de sempre (Get-FileHash some e o instalador do Claude quebra).
+ * Sem a variável, o 5.1 monta o caminho padrão dele.
+ */
+export function envParaPowerShell(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const e = { ...env };
+  for (const k of Object.keys(e)) if (k.toLowerCase() === "psmodulepath") delete e[k];
+  return e;
+}
+
 export interface OpcoesRodar {
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
@@ -430,7 +442,11 @@ export async function instalarClaude(ctx: ContextoInstalacao): Promise<string> {
     await ctx.rede.baixar(url, script);
     ctx.progresso("claude", "Instalando o Claude Code… (leva uns minutos)");
     const r = win
-      ? await ctx.rodar("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], { timeoutMs: 10 * 60_000, aoLinha: (l) => ctx.log("claude", l) })
+      ? await ctx.rodar("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], {
+          timeoutMs: 10 * 60_000,
+          env: envParaPowerShell(ctx.m.env),
+          aoLinha: (l) => ctx.log("claude", l),
+        })
       : await ctx.rodar("bash", [script], { timeoutMs: 10 * 60_000, aoLinha: (l) => ctx.log("claude", l) });
     if (r.code !== 0) {
       throw new ErroSetup(
