@@ -4,68 +4,55 @@ Guia para instalar e usar o Inhouse num computador com Windows 10 ou 11, sem
 precisar saber programar. No fim tem uma lista de conferência para quem for
 testar o Inhouse numa máquina Windows de verdade.
 
-> No Mac continua tudo igual: `setup.command` e `inhouse.command` (ou o app de
-> menu bar). Este guia é só para o Windows.
+> No Mac o jeito é o mesmo, com `setup.command` e `inhouse.command`: veja
+> [`docs/MAC.md`](MAC.md).
 
-## O que você vai instalar (uma vez só)
+## Em resumo: dois cliques
 
-| Programa | Para que serve | Obrigatório? |
-|---|---|---|
-| **Node.js 24** | roda o Inhouse | sim |
-| **Git for Windows** | guarda as versões do app e traz o **Git Bash**, que o Claude e o preview usam | sim |
-| **Claude Code** | o "cérebro" que faz as mudanças, usando a sua assinatura do Claude | sim |
-| GitHub CLI (`gh`) | abre Pull Requests sozinho | não |
+1. **Baixe o InHouse** (com quem cuida do projeto, ou no GitHub em **Code → Download ZIP**) e
+   extraia a pasta num lugar fácil, por exemplo `Documentos\inhouse`.
+2. Dê **dois cliques em `inhouse.cmd`**.
 
-## Passo a passo
+Pronto. Na primeira vez, o InHouse se prepara sozinho: baixa o Node 24 e as
+dependências, e abre no navegador a tela **Preparar o computador**. Ali você vê
+um checklist e clica em **Instalar o que falta**. Ele instala o Git (com o Git Bash),
+o Claude Code e, se você quiser, o GitHub CLI. Depois:
 
-### 1. Instale o Node.js 24
+- **Entrar no Claude:** o botão abre a página do Claude. Você entra com a sua conta e cola
+  o código que aparecer. O InHouse usa a sua assinatura, nunca uma chave de API.
+- **Seu nome no Git:** nome e e-mail que aparecem nas versões salvas. Não precisa de
+  conta no GitHub, e nada é enviado para esse e-mail.
 
-1. Abra <https://nodejs.org> e baixe a versão **24** (ou a marcada como "LTS", se for 24 ou maior) **para Windows**.
-2. Abra o arquivo baixado e clique em **Next** até terminar. Pode deixar todas as opções como vieram.
+Quando tudo fica verde, clique em **Começar a usar**. Das próximas vezes o
+`inhouse.cmd` abre direto nos seus apps.
 
-### 2. Instale o Git for Windows
+> Evite colocar a pasta dentro do OneDrive: a sincronização segura os arquivos e
+> deixa tudo mais lento.
 
-1. Abra <https://git-scm.com/download/win> e baixe o instalador.
-2. Abra o arquivo e clique em **Next** até terminar, sem mudar nada. É importante deixar marcado o **Git Bash** (ele já vem marcado).
+> Se o Windows mostrar "O Windows protegeu o computador", clique em **Mais informações →
+> Executar assim mesmo**. Isso aparece porque o arquivo veio da internet.
 
-### 3. Instale o Claude Code e faça o login
+### Sem senha de administrador
 
-1. Aperte a tecla **Windows**, digite **PowerShell** e aperte Enter.
-2. Na janela azul que abrir, cole a linha abaixo e aperte Enter:
+O Node, o Git portátil e o GitHub CLI ficam em `C:\Users\<você>\.inhouse\ferramentas`.
+O Claude Code vai para `C:\Users\<você>\.local\bin` pelo instalador oficial. Se o
+computador tiver o **winget**, o Git for Windows é instalado por ele (o Windows pode
+perguntar "Sim"); se não der, o InHouse usa o Git portátil. Todo download vem do site
+oficial e é conferido pelo SHA-256 antes de instalar.
 
-   ```powershell
-   irm https://claude.ai/install.ps1 | iex
-   ```
+### `setup.cmd`: preparar tudo de uma vez
 
-3. Quando terminar, **feche essa janela e abra outra** (do mesmo jeito do item 1).
-4. Digite `claude` e aperte Enter. Ele abre o navegador para você entrar com a sua conta do Claude. Faça o login e volte.
-5. Pode fechar a janela.
+O `setup.cmd` faz a preparação inteira numa janela, sem abrir a tela: Node, dependências,
+Git, Claude Code e gh. No fim ele abre o InHouse. Pode rodar quantas vezes quiser: o que já
+está pronto é pulado. O login no Claude e o nome no Git continuam na tela do InHouse.
 
-> Se a sua empresa usa o Claude Code instalado pelo npm (`npm install -g @anthropic-ai/claude-code`), também funciona: o Inhouse acha os dois jeitos.
+### Abrir o InHouse
 
-### 4. Baixe o Inhouse
+Dê **dois cliques em `inhouse.cmd`**. Uma janela preta abre e, em alguns segundos, o navegador abre o InHouse.
 
-Pegue a pasta do Inhouse com quem cuida do projeto (ou baixe do GitHub em **Code → Download ZIP** e extraia).
-Coloque a pasta num lugar fácil, por exemplo `Documentos\inhouse`.
-
-> Evite colocar dentro de uma pasta sincronizada com OneDrive: a sincronização
-> segura os arquivos e deixa tudo mais lento.
-
-### 5. Prepare a máquina
-
-Dentro da pasta do Inhouse, dê **dois cliques em `setup.cmd`**.
-
-Ele confere o Node, o Git, o Git Bash e o Claude, e instala o que o Inhouse precisa. Se faltar algo, ele explica em português o que fazer. No fim aparece **"Tudo pronto!"**.
-
-> Se o Windows mostrar "O Windows protegeu o computador", clique em **Mais informações → Executar assim mesmo**. Isso aparece porque o arquivo veio da internet.
-
-### 6. Abra o Inhouse
-
-Dê **dois cliques em `inhouse.cmd`**. Uma janela preta abre e, em alguns segundos, o navegador abre o Inhouse em <http://127.0.0.1:4400>.
-
-- **Deixe a janela preta aberta** enquanto usa o Inhouse.
-- Para fechar o Inhouse, feche a janela preta.
-- Na primeira vez, o Windows pode perguntar se o **Node.js** pode usar a rede. Escolha **Permitir** (só redes privadas basta). O Inhouse só escuta no seu próprio computador.
+- **Deixe a janela preta aberta** enquanto usa o InHouse.
+- Para fechar o InHouse, feche a janela preta.
+- Na primeira vez, o Windows pode perguntar se o **Node.js** pode usar a rede. Escolha **Permitir** (só redes privadas basta). O InHouse só escuta no seu próprio computador.
 
 Seus apps ficam em `C:\Users\<você>\Inhouse` e o estado do Inhouse em `C:\Users\<você>\.inhouse`.
 
@@ -73,9 +60,9 @@ Seus apps ficam em `C:\Users\<você>\Inhouse` e o estado do Inhouse em `C:\Users
 
 | O que aparece | O que fazer |
 |---|---|
-| "Não encontrei o Node 24" | Instale o Node 24 (passo 1) e rode o `setup.cmd` de novo. |
-| "Claude Code não encontrado" no Inhouse | Faça o passo 3 de novo. Depois feche e reabra o `inhouse.cmd`. |
-| O preview diz que não achou o Git Bash | Reinstale o Git for Windows (passo 2) sem desmarcar o Git Bash. |
+| "Sem internet para baixar o Node" | Confira a conexão e dê dois cliques no `inhouse.cmd` de novo. |
+| Algo ficou vermelho na tela Preparar o computador | Clique em **Tentar de novo**. O botão **Ver detalhes** mostra o que aconteceu. |
+| O preview diz que não achou o Git Bash | Abra a tela Preparar o computador (menu do InHouse) e instale o Git de novo. |
 | "Filename too long" | Rode o `setup.cmd` de novo: ele liga o suporte a caminhos longos no git. |
 | A porta 4400 está ocupada | Já tem um Inhouse aberto: procure a outra janela preta. |
 
@@ -88,15 +75,20 @@ Seus apps ficam em `C:\Users\<você>\Inhouse` e o estado do Inhouse em `C:\Users
 - Encerrar o preview derruba a árvore de processos inteira com `taskkill /T /F`.
 - O git roda com `core.longpaths=true` e o `state.json` é gravado com nova tentativa quando o antivírus segura o arquivo (EPERM/EBUSY).
 - O CI (`.github/workflows/ci.yml`) roda typecheck, vitest e o smoke em `windows-latest`, `macos-latest` e `ubuntu-latest`.
+- Preparação por linha de comando: `npx tsx server/setup/cli.ts verificar [--json]` e `instalar [--itens node,git,gitbash,claude,gh] [--simular]`. `INHOUSE_TOOLS_DIR` muda a pasta das ferramentas e `INHOUSE_FORCAR_PORTATIL=node,git,gh` força as versões portáteis (o CI usa os dois numa pasta temporária).
+- `setup.ps1` aceita `-Verificar`, `-Simular`, `-Basico`, `-NaoAbrir` e `-SemPausa`.
 - Ainda não existe app empacotado (instalador) para Windows. Por enquanto o uso é com os `.cmd`.
 
 ## Checklist de teste manual (máquina Windows de verdade)
 
 Use uma conta de Windows "normal" (sem ser desenvolvedor), de preferência com o nome de usuário **com espaço ou acento** (ex.: `João Silva`), que é o caso mais difícil. Marque cada item:
 
-**Instalação**
-- [ ] `setup.cmd` com dois cliques: mostra Node, git, Git Bash e Claude com `[ok]` e termina em "Tudo pronto!".
-- [ ] Sem o Node instalado, o `setup.cmd` explica o que fazer, não fecha sozinho e não mostra erro em inglês.
+**Instalação (computador sem Node, sem Git e sem Claude)**
+- [ ] `inhouse.cmd` com dois cliques: baixa o Node portátil, instala as dependências e abre a tela "Preparar o computador".
+- [ ] "Instalar o que falta" instala Git, Git Bash e Claude Code sem pedir senha de administrador.
+- [ ] "Entrar no Claude": a página abre, o código colado é aceito e o item fica verde.
+- [ ] "Seu nome no Git": salvar nome e e-mail deixa o item verde; "Começar a usar" leva aos apps.
+- [ ] `setup.cmd` rodado de novo pula tudo com `[ok]`.
 - [ ] Os acentos aparecem certos na janela (sem `Ã©` no lugar de `é`).
 
 **Abrir**

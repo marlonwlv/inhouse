@@ -55,13 +55,14 @@ flowchart LR
 
 ## Começando
 
-**Você precisa de:**
+**Sem terminal (Mac ou Windows):** baixe a pasta e dê dois cliques em **`inhouse.command`**
+(Mac) ou **`inhouse.cmd`** (Windows). Na primeira vez ele se prepara sozinho: baixa o Node 24,
+instala as dependências e abre a tela **Preparar o computador**, que instala o Git, o Claude
+Code e o `gh`, guia o login no Claude (sua assinatura, nunca chave de API) e o seu nome no Git.
+Nada pede senha de administrador. Guias: [`docs/MAC.md`](docs/MAC.md) e
+[`docs/WINDOWS.md`](docs/WINDOWS.md).
 
-1. **Node 24+**
-2. **Claude Code logado** (plano Pro/Max) — abra o terminal, rode `claude` e faça o login
-3. **git** (e `gh` logado, se quiser abrir Pull Requests)
-
-**Rodar:**
+**Pelo terminal** (Node 24+, git e o Claude Code logado):
 
 ```bash
 git clone https://github.com/marlonwlv/inhouse
@@ -70,12 +71,6 @@ npm install
 npm start
 # abra http://127.0.0.1:4400
 ```
-
-**No Mac, sem terminal:** dê um duplo-clique em **`setup.command`** (prepara a máquina) e
-depois em **`inhouse.command`** (abre o app no navegador).
-
-**No Windows, sem terminal:** dê dois cliques em **`setup.cmd`** e depois em **`inhouse.cmd`**.
-O passo a passo completo (Node, Git for Windows, Claude Code) está em [`docs/WINDOWS.md`](docs/WINDOWS.md).
 
 ## O que dá para fazer
 

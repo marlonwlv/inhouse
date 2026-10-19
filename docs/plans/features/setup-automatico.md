@@ -373,6 +373,34 @@ Título "Preparando o seu computador"; botões "Instalar o que falta", "Instalan
 ### Fora do escopo de design
 Ilustração/mascote, animação de celebração, onboarding em várias páginas (wizard). Uma tela, uma lista, um botão.
 
+## Implementação e decisões durante a entrega (2026-10-19)
+
+- **Bootstrap:** `inhouse.command`/`inhouse.cmd` viraram a porta única. Sem Node ≥24 ou sem a marca
+  `node_modules/.inhouse-deps` (sha256 do lock + major do Node), chamam `scripts/mac/setup.sh --basico`
+  / `scripts/windows/setup.ps1 -Basico`, que baixam o Node portátil do nodejs.org (SHASUMS256 conferido,
+  troca atômica com `.old`) e rodam `npm install`. Git, Claude e gh ficam com a tela `#/preparar`.
+  `setup.command`/`setup.cmd` fazem tudo de uma vez (`cli.ts instalar`) e abrem o InHouse.
+- **Node do sistema primeiro:** os scripts usam o Node do sistema se for ≥24; o portátil entra no
+  começo do PATH só quando falta. No servidor (`ambiente.ts`) o portátil vai para o FIM do PATH por
+  causa do Node embutido no app de menu bar.
+- **Sem "Pular" nos opcionais:** gh e login no GitHub mostram "Opcional" e não bloqueiam o
+  "Começar a usar"; um botão de pular só somaria um clique.
+- **Git + Git Bash juntos só no Windows:** no Mac não existe Git Bash; no Windows a UI mostra os dois
+  itens, mas um único passo (winget ou PortableGit) resolve ambos.
+- **SSE com plano B:** se o `setup_status` não chega pelo SSE (proxy, aba em segundo plano), a tela
+  consulta `GET /api/setup` em intervalo (`setupAgendarConsulta`) enquanto houver instalação ou login.
+- **Feedback do Marlon na validação da UI:** (1) a tela ganhou uma **jornada** no topo (Baixar →
+  Abrir com dois cliques → Preparar o computador → Criar seu primeiro app) com "Você está aqui";
+  (2) o cartão "Seu nome no Git" explica para quem nunca usou Git (não precisa de conta, fica no
+  computador, use o e-mail do GitHub se tiver). Aprovado por ele em 2026-10-19.
+- **Demo de validação:** servidor com `INHOUSE_SETUP_DEMO=1` + proxy + cloudflared como serviços
+  `systemd --user` com `Restart=always` (processos do turno morrem no fim de cada turno).
+- **CI:** job `testes` (3 SOs) roda `cli.ts verificar --json`, `instalar --simular` e o bootstrap em
+  `--simular`; job `instalacao-real` (windows/macos) instala de verdade em `$RUNNER_TEMP/ferramentas`
+  com `INHOUSE_FORCAR_PORTATIL=node,git,gh` e confere `--version` de cada ferramenta.
+- **Não validado sem máquina real:** janela da Apple (`xcode-select --install`), winget com UAC,
+  Gatekeeper/SmartScreen no arquivo baixado, login do Claude com conta real pela tela.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
