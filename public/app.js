@@ -990,10 +990,19 @@ function setupLoginCard(s) {
 
 function setupIdentidadeCard(s) {
   const id = s.identidade || {};
-  return `<form class="pp-card pp-form col" data-form="setup-identidade" id="pp-ident-card">
-    <label class="pp-campo"><span>Seu nome</span><input id="pp-nome" type="text" autocomplete="name" maxlength="100" required value="${esc(id.nome || "")}"></label>
-    <label class="pp-campo"><span>Seu e-mail</span><input id="pp-email" type="email" autocomplete="email" maxlength="200" required value="${esc(id.email || "")}">
-      <small>De preferência o mesmo e-mail da sua conta do GitHub.</small></label>
+  return `<form class="pp-card pp-form col" data-form="setup-identidade" id="pp-ident-card" aria-describedby="pp-ident-ajuda">
+    <div class="pp-explica" id="pp-ident-ajuda">
+      <p><b>Nunca usou o Git? Tudo bem.</b> O Git guarda cada versão dos seus apps, como o histórico de alterações de um documento. Ele só precisa saber quem você é para assinar cada versão.</p>
+      <ul>
+        <li>Não precisa criar conta nem instalar mais nada: é só preencher abaixo.</li>
+        <li>O nome e o e-mail ficam só neste computador e aparecem no histórico dos seus apps.</li>
+        <li>Se um dia publicar no GitHub, use o mesmo e-mail da conta de lá. Se não tem conta, use o e-mail que você mais usa.</li>
+      </ul>
+    </div>
+    <label class="pp-campo"><span>Seu nome</span><input id="pp-nome" type="text" autocomplete="name" maxlength="100" required placeholder="Ex.: Ana Souza" value="${esc(id.nome || "")}">
+      <small>Do jeito que você quer que apareça. Pode ter espaço e acento.</small></label>
+    <label class="pp-campo"><span>Seu e-mail</span><input id="pp-email" type="email" autocomplete="email" maxlength="200" required placeholder="Ex.: ana@empresa.com" value="${esc(id.email || "")}">
+      <small>Não enviamos nada para esse e-mail.</small></label>
     <div><button class="btn primary sm" type="submit" ${state.busy["setup-identidade"] ? "disabled" : ""}>Salvar</button></div>
   </form>`;
 }
@@ -1031,6 +1040,7 @@ function setupDemoBar(s) {
   const opts = s.demo.cenarios.map((c) => `<option value="${esc(c.id)}" ${c.id === s.demo.cenario ? "selected" : ""}>${esc(c.rotulo)}</option>`).join("");
   return `<div class="pp-demo" role="note">
     <b>Demonstração · nada é instalado</b>
+    <span>Quando aparece: na primeira vez que a pessoa abre o InHouse depois de baixar, e de novo se algo sumir do computador.</span>
     <label>Cenário <select id="pp-demo-cenario">${opts}</select></label>
     <label>Sistema <select id="pp-demo-so">
       <option value="windows" ${s.so === "windows" ? "selected" : ""}>Windows</option>
@@ -1039,10 +1049,27 @@ function setupDemoBar(s) {
   </div>`;
 }
 
+// Onde a pessoa está na jornada: baixou, abriu, prepara o computador e começa a usar.
+function setupJornada(s) {
+  const pronto = !!s?.prontoParaUsar;
+  const etapas = [
+    { t: "Baixar o InHouse", feito: true },
+    { t: "Abrir com dois cliques", feito: true },
+    { t: "Preparar o computador", feito: pronto, atual: !pronto },
+    { t: "Criar seu primeiro app", atual: pronto },
+  ];
+  const ok = `<svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>`;
+  return `<nav class="pp-jornada" aria-label="Sua jornada no InHouse">
+    <ol>${etapas.map((e, i) => `<li class="${e.feito ? "feito" : ""} ${e.atual ? "atual" : ""}" ${e.atual ? 'aria-current="step"' : ""}>
+      <span class="pp-j-num">${e.feito ? ok : i + 1}</span><span class="pp-j-txt">${esc(e.t)}${e.atual ? '<small>Você está aqui</small>' : ""}</span>
+    </li>`).join("")}</ol>
+  </nav>`;
+}
+
 function renderPreparar() {
   const s = state.setup;
-  const cab = `<h2>Preparando o seu computador</h2>
-    <p class="hello-sub">O InHouse precisa de alguns programas. Instalamos tudo para você, sem pedir senha.</p>`;
+  const cab = `${setupJornada(s)}<h2>Preparando o seu computador</h2>
+    <p class="hello-sub">Antes do primeiro uso, o InHouse instala os programas de que precisa, sem pedir senha. Você só faz isso uma vez: depois ele abre direto nos seus apps.</p>`;
   if (!s) {
     if (!state.busy["setup-carregando"]) { state.busy["setup-carregando"] = true; fetchSetup().finally(() => { delete state.busy["setup-carregando"]; }); }
     const esqueleto = Array.from({ length: 6 }, () => `<li class="pp-item pp-skel"><span class="pp-ico falta"></span><div class="pp-txt"><span class="sk-l w40"></span><span class="sk-l w70"></span></div></li>`).join("");
