@@ -52,10 +52,9 @@ function stepsAtivos(t) {
   return out;
 }
 
-const DOCS_URL = "https://docs.claude.com/en/docs/claude-code/overview";
 
 // ---------- Estado ----------
-const UI_VERSION = "0.26.0";
+const UI_VERSION = "0.27.0";
 console.log(`Inhouse UI v${UI_VERSION}`);
 
 // Diagnóstico de conexão: histórico dos últimos eventos do canal (SSE/polling)
@@ -114,6 +113,9 @@ const state = {
   fake: false, // modo debug (INHOUSE_FAKE_MODEL) ligado no server
   debugScenarios: null, // catálogo de cenários de debug (carregado sob demanda)
   debugAutoDrive: true, // auto-piloto: aprova as porteiras sozinho
+  setup: null, // SetupStatus da preparação do computador (#/preparar)
+  setupRedirecionado: false, // já levamos a pessoa para #/preparar nesta carga
+  setupFoco: "", // último alvo de foco da preparação (não roubar foco a cada SSE)
 };
 
 // ---------- Utilidades ----------
@@ -464,6 +466,10 @@ function handleEvent(ev) {
       if (antes !== ev.ok && (route().name === "home" || route().name === "board")) render();
       break;
     }
+    case "setup_status": {
+      aoMudarSetup(ev.setup);
+      break;
+    }
     case "update_status": {
       state.update = ev.update;
       renderUpdatePill();
@@ -566,6 +572,7 @@ function route() {
   if (h.startsWith("#/tarefas")) return { name: "board" };
   if (h.startsWith("#/experiencia")) return { name: "experiencia" };
   if (h.startsWith("#/configuracoes")) return { name: "configuracoes" };
+  if (h.startsWith("#/preparar")) return { name: "preparar" };
   return { name: "home" };
 }
 
@@ -860,6 +867,242 @@ function renderConfiguracoes() {
   ${state.wfDrawer ? wfDrawerHtml() : ""}`);
 }
 
+// ---------- PREPARAR (preparação do computador, #/preparar) ----------
+// Checklist do que o InHouse precisa (Node, Git, Claude Code, login, nome no
+// Git, GitHub opcional). Instala só no clique; o progresso chega pela SSE
+// (setup_status). Spec: docs/plans/features/setup-automatico.md.
+const SETUP_PESO = { erro: 5, instalando: 4, verificando: 3, faltando: 2, aviso: 1, ok: 0 };
+
+/* Linhas visuais: no Windows, Git e Git Bash viram um item só ("Git e Git Bash"). */
+function setupLinhas(s) {
+  const itens = s.itens.slice();
+  const git = itens.find((i) => i.id === "git");
+  const bash = itens.find((i) => i.id === "gitbash");
+  if (git && bash) {
+    const pior = SETUP_PESO[bash.estado] > SETUP_PESO[git.estado] ? bash : git;
+    const junto = {
+      ...pior,
+      id: "git",
+      ids: ["git", "gitbash"],
+      titulo: "Git e Git Bash",
+      descricao: "Guarda as versões do seu projeto (o Claude Code usa no Windows).",
+      log: [...(git.log || []), ...(bash.log || [])],
+      acao: git.acao || bash.acao,
+    };
+    return itens.filter((i) => i.id !== "gitbash").map((i) => (i.id === "git" ? junto : { ...i, ids: [i.id] }));
+  }
+  return itens.map((i) => ({ ...i, ids: [i.id] }));
+}
+
+function setupFaltaInstalar(s) {
+  return s.itens.some((i) => i.obrigatorio && i.acao === "instalar" && (i.estado === "faltando" || i.estado === "erro"));
+}
+
+function setupItem(s, id) { return s?.itens.find((i) => i.id === id); }
+
+/* O que o botão principal faz agora (sempre a próxima coisa). */
+function setupProximo(s) {
+  if (s.ocupadoPorOutro) return { rotulo: "Instalar o que falta", desabilitado: true };
+  if (s.instalando) return { rotulo: "Instalando…", desabilitado: true, girando: true };
+  if (setupFaltaInstalar(s)) return { rotulo: "Instalar o que falta", act: "setup-instalar" };
+  const login = setupItem(s, "claude_login");
+  if (login && login.estado !== "ok" && login.acao === "login") {
+    if (s.login?.ativo) return null; // o cartão do login conduz
+    return { rotulo: "Fazer login do Claude", act: "setup-login" };
+  }
+  const ident = setupItem(s, "git_identidade");
+  if (ident && ident.estado !== "ok" && ident.acao === "identidade") return null; // o cartão conduz
+  if (s.prontoParaUsar) return { rotulo: "Começar a usar o InHouse", act: "setup-concluir" };
+  return null;
+}
+
+async function fetchSetup() {
+  const s = await api("/api/setup");
+  if (!s) return;
+  aoMudarSetup(s);
+  // Primeira abertura (ou falta algo): a preparação aparece sozinha, uma vez por carga.
+  if (!state.setupRedirecionado && s.mostrarAoAbrir && route().name !== "preparar") {
+    state.setupRedirecionado = true;
+    location.hash = "#/preparar";
+  }
+  state.setupRedirecionado = true;
+}
+
+function aoMudarSetup(s) {
+  state.setup = s;
+  renderClaudeChip();
+  if (route().name === "preparar") renderPreparar();
+}
+
+function setupIcone(estado, obrigatorio) {
+  if (estado === "ok") return `<span class="pp-ico ok" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-7"/></svg></span>`;
+  if (estado === "erro") return `<span class="pp-ico erro" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><rect x="7" y="3" width="2.2" height="6.5" rx="1.1"/><circle cx="8.1" cy="12.3" r="1.3"/></svg></span>`;
+  if (estado === "aviso") return `<span class="pp-ico aviso" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><rect x="7" y="3" width="2.2" height="6.5" rx="1.1"/><circle cx="8.1" cy="12.3" r="1.3"/></svg></span>`;
+  if (estado === "instalando" || estado === "verificando") return `<span class="pp-ico gira"><span class="spinner" role="img" aria-label="Instalando"></span></span>`;
+  return `<span class="pp-ico ${obrigatorio ? "falta" : "opc"}" aria-hidden="true"></span>`;
+}
+
+const SETUP_ESTADO_TXT = { ok: "pronto", aviso: "pronto, com aviso", faltando: "falta", instalando: "instalando", verificando: "conferindo", erro: "erro" };
+
+function setupLoginCard(s) {
+  const l = s.login;
+  if (!l?.ativo) return "";
+  const passo1 = l.url
+    ? `<a class="btn sm${l.pedeCodigo ? "" : " primary"}" href="${esc(l.url)}" target="_blank" rel="noreferrer noopener">Abrir o login no navegador</a>`
+    : `<span class="pp-espera"><span class="spinner"></span> ${esc(l.mensagem || "Preparando o login…")}</span>`;
+  const passo2 = l.pedeCodigo
+    ? `<form class="pp-form" data-form="setup-codigo">
+        <label class="pp-campo"><span>Cole aqui o código que apareceu</span>
+          <input id="pp-codigo" type="text" autocomplete="off" spellcheck="false" required maxlength="2000"></label>
+        <button class="btn primary sm" type="submit" ${state.busy["setup-codigo"] ? "disabled" : ""}>Confirmar</button>
+      </form>`
+    : l.url ? `<p class="pp-ajuda">${esc(l.mensagem || "Entre na sua conta na página que abriu.")}</p>` : "";
+  const conferindo = !l.pedeCodigo && l.url && /confer|confirm/i.test(l.mensagem || "")
+    ? `<span class="pp-espera"><span class="spinner"></span> ${esc(l.mensagem)}</span>` : "";
+  return `<div class="pp-card" id="pp-login-card">
+    <ol class="pp-passos">
+      <li><b>1.</b> ${passo1}</li>
+      ${l.url ? `<li><b>2.</b> ${conferindo || passo2 || `<span class="pp-ajuda">Depois de entrar, volte aqui.</span>`}</li>` : ""}
+    </ol>
+    <button class="btn ghost xs" data-act="setup-login-cancelar">Cancelar o login</button>
+  </div>`;
+}
+
+function setupIdentidadeCard(s) {
+  const id = s.identidade || {};
+  return `<form class="pp-card pp-form col" data-form="setup-identidade" id="pp-ident-card">
+    <label class="pp-campo"><span>Seu nome</span><input id="pp-nome" type="text" autocomplete="name" maxlength="100" required value="${esc(id.nome || "")}"></label>
+    <label class="pp-campo"><span>Seu e-mail</span><input id="pp-email" type="email" autocomplete="email" maxlength="200" required value="${esc(id.email || "")}">
+      <small>De preferência o mesmo e-mail da sua conta do GitHub.</small></label>
+    <div><button class="btn primary sm" type="submit" ${state.busy["setup-identidade"] ? "disabled" : ""}>Salvar</button></div>
+  </form>`;
+}
+
+function setupLinhaHtml(s, it) {
+  const ids = it.ids.join(",");
+  let extra = "";
+  let acoes = "";
+  if (it.estado === "erro") {
+    if (it.acao === "instalar") acoes = `<button class="btn sm" data-act="setup-instalar" data-itens="${esc(ids)}" ${s.instalando || s.ocupadoPorOutro ? "disabled" : ""}>Tentar de novo</button>`;
+    if (it.acao === "login" && !s.login?.ativo) acoes = `<button class="btn sm" data-act="setup-login">Tentar de novo</button>`;
+  } else if (!it.obrigatorio && it.acao === "instalar" && it.estado === "faltando") {
+    acoes = `<button class="btn sm ghost" data-act="setup-instalar" data-itens="${esc(ids)}" ${s.instalando || s.ocupadoPorOutro ? "disabled" : ""}>Instalar</button>`;
+  }
+  if (it.id === "claude_login") extra = setupLoginCard(s);
+  if (it.id === "git_identidade" && it.estado !== "ok" && it.acao === "identidade" && !s.instalando) extra = setupIdentidadeCard(s);
+  const detalhe = it.estado === "instalando" && it.progresso?.mensagem ? it.progresso.mensagem : it.detalhe;
+  const log = it.estado === "erro" && it.log?.length
+    ? `<details class="pp-log"><summary>Ver detalhes</summary><pre>${esc(it.log.slice(-40).join("\n"))}</pre></details>` : "";
+  return `<li class="pp-item est-${esc(it.estado)}" data-item="${esc(it.id)}">
+    ${setupIcone(it.estado, it.obrigatorio)}
+    <div class="pp-txt">
+      <div class="pp-tit"><b>${esc(it.titulo)}</b><span class="sr-only"> (${SETUP_ESTADO_TXT[it.estado] || it.estado})</span></div>
+      <div class="pp-desc">${esc(it.descricao)}</div>
+      ${detalhe ? `<div class="pp-det">${esc(detalhe)}</div>` : ""}
+      ${log}
+      ${extra}
+    </div>
+    ${acoes ? `<div class="pp-acts">${acoes}</div>` : ""}
+  </li>`;
+}
+
+function setupDemoBar(s) {
+  if (!s.demo) return "";
+  const opts = s.demo.cenarios.map((c) => `<option value="${esc(c.id)}" ${c.id === s.demo.cenario ? "selected" : ""}>${esc(c.rotulo)}</option>`).join("");
+  return `<div class="pp-demo" role="note">
+    <b>Demonstração · nada é instalado</b>
+    <label>Cenário <select id="pp-demo-cenario">${opts}</select></label>
+    <label>Sistema <select id="pp-demo-so">
+      <option value="windows" ${s.so === "windows" ? "selected" : ""}>Windows</option>
+      <option value="mac" ${s.so === "mac" ? "selected" : ""}>Mac</option>
+    </select></label>
+  </div>`;
+}
+
+function renderPreparar() {
+  const s = state.setup;
+  const cab = `<h2>Preparando o seu computador</h2>
+    <p class="hello-sub">O InHouse precisa de alguns programas. Instalamos tudo para você, sem pedir senha.</p>`;
+  if (!s) {
+    if (!state.busy["setup-carregando"]) { state.busy["setup-carregando"] = true; fetchSetup().finally(() => { delete state.busy["setup-carregando"]; }); }
+    const esqueleto = Array.from({ length: 6 }, () => `<li class="pp-item pp-skel"><span class="pp-ico falta"></span><div class="pp-txt"><span class="sk-l w40"></span><span class="sk-l w70"></span></div></li>`).join("");
+    renderPage(`<div class="view view-page"><div class="pp-wrap" aria-busy="true">${cab}<div class="pp-resumo">Conferindo o que já está instalado…</div><ol class="pp-lista">${esqueleto}</ol></div></div>`);
+    return;
+  }
+  const linhas = setupLinhas(s);
+  const obrig = linhas.filter((l) => l.obrigatorio);
+  const opc = linhas.filter((l) => !l.obrigatorio);
+  const prontos = obrig.filter((l) => l.estado === "ok" || l.estado === "aviso").length;
+  const tudo = prontos === obrig.length;
+  const resumo = tudo
+    ? `<span class="pp-ico ok" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-7"/></svg></span> <b>Tudo pronto</b>`
+    : `<b>${prontos} de ${obrig.length} prontos</b>${s.instalando ? ` <span class="pp-tempo">· Isso leva uns 3 a 5 minutos. Pode deixar a janela aberta.</span>` : ""}`;
+  const prox = setupProximo(s);
+  const botao = prox
+    ? `<button class="btn primary pp-principal" id="pp-principal" ${prox.act ? `data-act="${prox.act}"` : ""} ${prox.desabilitado || state.busy["setup-acao"] ? "disabled" : ""}>${prox.girando ? `<span class="spinner"></span> ` : ""}${esc(prox.rotulo)}</button>`
+    : "";
+  const faixas = [
+    !state.online ? `<div class="pp-faixa">Perdemos a conexão com o InHouse. Tentando de novo…</div>` : "",
+    s.ocupadoPorOutro ? `<div class="pp-faixa">Outra janela do InHouse está instalando. Espere ela terminar.</div>` : "",
+  ].join("");
+  const manual = !prox && !s.prontoParaUsar && !s.login?.ativo && !obrig.some((l) => l.acao === "identidade" && l.estado !== "ok")
+    ? `<p class="pp-ajuda">Falta um passo que o InHouse não consegue fazer sozinho neste computador. Veja o item acima.</p>` : "";
+  renderPage(`<div class="view view-page">
+    ${setupDemoBar(s)}
+    <div class="pp-wrap">
+      ${cab}
+      ${faixas}
+      <div class="pp-resumo" aria-live="polite">${resumo}</div>
+      <ol class="pp-lista">${obrig.map((l) => setupLinhaHtml(s, l)).join("")}</ol>
+      ${opc.length ? `<div class="pp-divisor"><span>Opcional</span></div><ol class="pp-lista">${opc.map((l) => setupLinhaHtml(s, l)).join("")}</ol>` : ""}
+      <div class="pp-rodape">
+        ${botao}
+        ${manual}
+        <button class="btn ghost sm" data-act="setup-verificar" ${s.instalando ? "disabled" : ""}>Conferir de novo</button>
+      </div>
+    </div>
+  </div>`);
+  setupFoco(s, prox);
+}
+
+/* Foco: cartão de login/identidade quando abre; botão principal quando um passo termina. */
+function setupFoco(s, prox) {
+  const alvo = s.login?.pedeCodigo ? "pp-codigo"
+    : $("#pp-ident-card") ? "pp-nome"
+    : prox && !prox.desabilitado ? "pp-principal" : null;
+  const chave = `${alvo}|${prox?.rotulo || ""}`;
+  if (chave === state.setupFoco) return;
+  state.setupFoco = chave;
+  const ativo = document.activeElement;
+  if (ativo && ativo !== document.body && $("#app").contains(ativo) && /INPUT|SELECT|TEXTAREA/.test(ativo.tagName)) return;
+  if (alvo) document.getElementById(alvo)?.focus({ preventScroll: alvo === "pp-principal" });
+}
+
+async function setupPost(caminho, corpo, chave = "setup-acao") {
+  if (state.busy[chave]) return null;
+  state.busy[chave] = true;
+  if (route().name === "preparar") renderPreparar();
+  const r = await api(caminho, corpo ?? {});
+  delete state.busy[chave];
+  if (r && r.itens) aoMudarSetup(r);
+  else if (route().name === "preparar") renderPreparar();
+  return r;
+}
+
+const setupActions = {
+  "setup-instalar": (btn) => setupPost("/api/setup/instalar", btn.dataset.itens ? { itens: btn.dataset.itens.split(",") } : {}),
+  "setup-login": () => setupPost("/api/setup/claude/login"),
+  "setup-login-cancelar": () => setupPost("/api/setup/claude/cancelar"),
+  "setup-verificar": () => setupPost("/api/setup/verificar"),
+  "setup-concluir": async () => {
+    const r = await setupPost("/api/setup/concluir");
+    if (r) {
+      location.hash = "#/";
+      toast("Tudo pronto. Bem-vindo ao InHouse.");
+    }
+  },
+};
+
 // ---------- Render raiz ----------
 function render() {
   renderClaudeChip();
@@ -873,6 +1116,7 @@ function render() {
   else if (r.name === "board") renderBoard();
   else if (r.name === "experiencia") renderExperiencia();
   else if (r.name === "configuracoes") renderConfiguracoes();
+  else if (r.name === "preparar") renderPreparar();
   else renderEditor(r.id);
 }
 
@@ -898,7 +1142,7 @@ function renderPage(html) {
   if (focusId) {
     const el = document.getElementById(focusId);
     if (el) {
-      el.focus();
+      el.focus({ preventScroll: true }); // já estava em foco: não rolar a página a cada atualização
       if (selStart !== null) { try { el.setSelectionRange(selStart, selStart); } catch { /* tipos sem seleção */ } }
     }
   }
@@ -911,6 +1155,18 @@ function renderClaudeChip() {
     el.className = "chip";
     el.textContent = "verificando…";
     el.title = "";
+  } else if (state.setup && !state.setup.prontoParaUsar) {
+    // Falta algo da preparação: o chip leva direto para #/preparar.
+    const s = state.setup;
+    const instalaveisOk = s.itens.every((i) => !i.obrigatorio || i.acao !== "instalar" || i.estado === "ok" || i.estado === "aviso");
+    const login = s.itens.find((i) => i.id === "claude_login");
+    const texto = s.instalando ? "Instalando…"
+      : !instalaveisOk ? "Falta instalar"
+      : login && login.estado !== "ok" ? "Faça o login"
+      : "Falta seu nome no Git";
+    el.className = `chip ${s.instalando || instalaveisOk ? "wait" : "bad"} chip-link`;
+    el.innerHTML = `<a href="#/preparar">${texto}</a>`;
+    el.title = "Abrir a preparação do computador";
   } else if (state.claude.ok) {
     el.className = "chip ok";
     el.innerHTML = `<span class="dot"></span> Claude conectado`;
@@ -1520,24 +1776,16 @@ function projectCardHtml(p) {
 }
 
 // O navegador roda na mesma máquina do servidor: o sistema dele é o do usuário.
-const NO_WINDOWS = /Windows/i.test(navigator.userAgent);
 
 // Painel de primeiros passos quando o Claude não está conectado: sem ele,
 // nenhuma tarefa roda, então bloqueamos criar/clonar e explicamos o passo-a-passo.
 // O chip fica verde sozinho assim que o login terminar (evento SSE claude_status).
 function primeirosPassosHtml() {
-  const detalhe = state.claude.detail ? esc(state.claude.detail) : "";
   return `<div class="onboarding" role="status" aria-live="polite">
     <div class="ob-head"><span class="warn-dot"></span><b>Conecte o Claude para começar</b></div>
-    <p>O Inhouse trabalha com o Claude Code deste computador, usando a sua assinatura. Enquanto ele não estiver conectado, abrir projetos e criar apps fica desabilitado.${detalhe ? ` <span class="ob-detail">(${detalhe})</span>` : ""}</p>
-    <ol class="ob-steps">
-      <li>${NO_WINDOWS
-        ? `Abra o <b>PowerShell</b> (aperte a tecla <kbd>Windows</kbd>, digite <b>PowerShell</b> e Enter).`
-        : `Abra o app <b>Terminal</b> (aperte <kbd>⌘</kbd>+<kbd>Espaço</kbd>, digite <b>Terminal</b> e Enter).`}</li>
-      <li>Digite <code>claude</code> e tecle Enter; se ele pedir, faça o login que abre no navegador.</li>
-      <li>Pronto — volte aqui. Assim que conectar, tudo se habilita sozinho, sem recarregar.</li>
-    </ol>
-    <div class="ob-foot"><a href="${DOCS_URL}" target="_blank" rel="noreferrer">Ainda não instalou o Claude? Veja como</a></div>
+    <p>O InHouse trabalha com o Claude Code deste computador, usando a sua assinatura. Enquanto ele não estiver pronto, abrir projetos e criar apps fica desabilitado.</p>
+    <p>A preparação instala o que falta e faz o login com você, sem precisar de terminal.</p>
+    <div><a class="btn primary sm" href="#/preparar">Preparar o computador</a></div>
   </div>`;
 }
 
@@ -1546,8 +1794,8 @@ function claudeFootHtml() {
   if (state.claude.ok) {
     return `<span class="dot"></span> Claude conectado · sua assinatura${state.claude.version ? ` · v${esc(state.claude.version)}` : ""}`;
   }
-  return `<span class="warn-dot"></span> Claude Code não encontrado — instale e rode <code>claude login</code>.
-    <a href="${DOCS_URL}" target="_blank" rel="noreferrer">Como instalar</a>`;
+  return `<span class="warn-dot"></span> O Claude ainda não está pronto neste computador.
+    <a href="#/preparar">Preparar o computador</a>`;
 }
 
 // ---------- TAREFAS (quadro) ----------
@@ -2788,6 +3036,7 @@ function decidePermission(id, allow) {
 }
 
 const actions = {
+  ...setupActions,
   "proj-menu": (btn) => {
     const pop = document.getElementById(`proj-menu-${btn.dataset.project}`);
     if (!pop) return;
@@ -3346,6 +3595,9 @@ document.addEventListener("change", (e) => {
   } else if (el.id === "debug-scenario") {
     state.debugSel = el.value; // re-renderiza para atualizar o resumo do cenário
     render();
+  } else if (el.id === "pp-demo-cenario" || el.id === "pp-demo-so") {
+    state.setupFoco = "";
+    setupPost("/api/setup/demo", { cenario: $("#pp-demo-cenario").value, so: $("#pp-demo-so").value });
   } else if (el.id === "debug-autodrive") {
     state.debugAutoDrive = el.checked;
   } else if (el.id === "debug-project") {
@@ -3365,6 +3617,21 @@ document.addEventListener("submit", async (e) => {
   if (!form) return;
   e.preventDefault();
   const kind = form.dataset.form;
+
+  if (kind === "setup-codigo") {
+    const codigo = $("#pp-codigo")?.value.trim();
+    if (!codigo) return;
+    await setupPost("/api/setup/claude/codigo", { codigo }, "setup-codigo");
+    return;
+  }
+  if (kind === "setup-identidade") {
+    const nome = $("#pp-nome")?.value.trim();
+    const email = $("#pp-email")?.value.trim();
+    if (!nome || !email) return;
+    const r = await setupPost("/api/setup/identidade", { nome, email }, "setup-identidade");
+    if (r) toast("Nome e e-mail salvos no Git.");
+    return;
+  }
 
   if (kind === "new-task") {
     const input = $("#new-task-desc");
@@ -3592,4 +3859,5 @@ window.addEventListener("hashchange", () => {
 window.addEventListener("hashchange", render);
 connectSSE();
 fetchState();
+fetchSetup();
 render();

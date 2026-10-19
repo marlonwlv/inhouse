@@ -264,7 +264,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   border-color: var(--brand);
 }
 
-input[type="text"], input[type="url"], select {
+input[type="text"], input[type="url"], input[type="email"], select {
   font: inherit;
   color: var(--ink);
   background: var(--surface);
@@ -1473,3 +1473,75 @@ input::placeholder { color: var(--faint); }
 .wf-ia-form:focus-within { border-color: var(--faint); }
 .wf-ia-form .grow-area { flex: 1; font-size: 13.5px; }
 .wf-ia-foot { margin: 10px 0 0; font-size: 11.5px; color: var(--faint); }
+
+/* ---------- Preparar o computador (#/preparar) ---------- */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.pp-wrap { width: 100%; max-width: 640px; margin: 0 auto; padding: 40px 22px 60px; }
+.pp-wrap h2 { margin: 0 0 6px; font-size: 22px; font-weight: 650; letter-spacing: -.01em; }
+.pp-wrap .hello-sub { margin-bottom: 22px; }
+.pp-resumo { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; color: var(--ink); margin: 0 0 12px; }
+.pp-resumo b { font-weight: 650; }
+.pp-tempo { color: var(--muted); font-size: 13px; }
+.pp-lista { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.pp-item { display: flex; align-items: flex-start; gap: 13px; padding: 14px 16px; border-top: 1px solid var(--line); }
+.pp-item:first-child { border-top: 0; }
+.pp-txt { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.pp-tit b { font-weight: 600; font-size: 14px; color: var(--ink); }
+.pp-desc { font-size: 12.5px; color: var(--muted); }
+.pp-det { font-size: 12.5px; color: var(--faint); overflow-wrap: anywhere; }
+.est-erro .pp-det { color: var(--danger); }
+.est-aviso .pp-det { color: var(--amber); }
+.est-instalando .pp-det { color: var(--ink); font-variant-numeric: tabular-nums; }
+.pp-acts { flex: none; display: flex; gap: 6px; align-self: center; }
+.pp-ico { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; margin-top: 1px; }
+.pp-ico.ok { background: var(--ink); color: var(--surface); }
+.pp-ico.erro { background: var(--danger); color: #fff; }
+.pp-ico.aviso { background: var(--amber); color: var(--surface); }
+.pp-ico.falta { border: 1.5px solid var(--faint); }
+.pp-ico.opc { border: 1.5px dashed var(--faint); }
+.pp-ico.gira { color: var(--ink); }
+.pp-ico.gira .spinner { width: 16px; height: 16px; }
+.pp-divisor { display: flex; align-items: center; gap: 10px; margin: 22px 0 10px; color: var(--faint); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.pp-divisor::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.pp-rodape { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 22px; }
+.pp-principal { padding: 10px 20px; font-size: 14px; }
+.pp-ajuda { margin: 0; font-size: 12.5px; color: var(--muted); }
+.pp-espera { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.pp-faixa { background: var(--amber-soft); border: 1px solid var(--amber-line); color: var(--amber); border-radius: var(--r-md); padding: 10px 14px; font-size: 13px; font-weight: 550; margin: 0 0 14px; }
+.pp-card { margin-top: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--ground); display: grid; gap: 10px; justify-items: start; }
+.pp-passos { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; width: 100%; }
+.pp-passos li { display: flex; align-items: flex-start; gap: 8px; }
+.pp-passos li > b { font-size: 12.5px; color: var(--faint); padding-top: 6px; }
+.pp-form { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; flex: 1; }
+.pp-form.col { flex-direction: column; align-items: stretch; justify-items: stretch; }
+.pp-campo { display: grid; gap: 4px; flex: 1; min-width: 200px; font-size: 12.5px; color: var(--muted); font-weight: 550; }
+.pp-campo input { width: 100%; }
+.pp-campo small { font-weight: 400; color: var(--faint); font-size: 11.5px; }
+.pp-log summary { cursor: pointer; font-size: 12px; color: var(--muted); margin-top: 4px; }
+.pp-log pre { margin: 6px 0 0; max-height: 220px; overflow: auto; font-family: var(--mono); font-size: 11px; line-height: 1.5; background: var(--surface-2); border-radius: var(--r-sm); padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.pp-skel .sk-l { display: block; height: 10px; border-radius: 4px; background: var(--surface-2); margin: 4px 0; }
+.pp-skel .sk-l.w40 { width: 40%; } .pp-skel .sk-l.w70 { width: 70%; }
+.pp-demo { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 8px 22px; background: var(--surface-2); border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.pp-demo b { color: var(--ink); font-weight: 600; }
+.pp-demo label { display: inline-flex; align-items: center; gap: 6px; }
+.pp-demo select { font-size: 12.5px; padding: 3px 26px 3px 8px; }
+.chip.chip-link { padding: 0; }
+.chip.chip-link a { color: inherit; text-decoration: none; padding: 3px 11px; border-radius: inherit; }
+.chip.chip-link a:hover { text-decoration: underline; text-underline-offset: 2px; }
+@media (max-width: 640px) {
+  .pp-wrap { padding: 26px 16px 48px; }
+  .pp-item { flex-wrap: wrap; }
+  .pp-acts { width: 100%; padding-left: 35px; }
+  .pp-principal { width: 100%; justify-content: center; }
+  .pp-passos li { flex-wrap: wrap; }
+  /* Topo estreito: a navegação rola de lado em vez de alargar a página. */
+  #appbar { min-width: 0; }
+  #appbar .nav { overflow-x: auto; min-width: 0; flex: 1 1 auto; scrollbar-width: none; }
+  #appbar .nav a { white-space: nowrap; }
+  #claude-chip { white-space: nowrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pp-ico.gira .spinner { animation: none; border: 0; width: auto; height: auto; }
+  .pp-ico.gira .spinner::after { content: "…"; }
+  .pp-rodape .spinner, .pp-espera .spinner { animation: none; }
+}

@@ -380,6 +380,16 @@ export type ServerEvent =
 // GET  /api/eval/fontes                 -> { fontes: string[] } (origens importadas)
 // GET  /api/eval/export?transcripts=1   -> bundle JSON (dados locais, download)
 // POST /api/eval/import                 { bundle, fonte } -> { importados, pulados }
+// Preparação do computador (só Host local; POST só JSON; progresso via setup_status):
+// GET  /api/setup                       -> SetupStatus
+// POST /api/setup/verificar             -> SetupStatus (detecta de novo, sem cache)
+// POST /api/setup/instalar              { itens? } -> SetupStatus (409 se já instalando)
+// POST /api/setup/claude/login          -> SetupStatus (abre o login; URL em login.url)
+// POST /api/setup/claude/codigo         { codigo } -> SetupStatus
+// POST /api/setup/claude/cancelar       -> SetupStatus
+// POST /api/setup/identidade            { nome, email } -> SetupStatus (git config --global)
+// POST /api/setup/concluir              -> SetupStatus (409 se ainda falta algo)
+// POST /api/setup/demo                  { cenario, so } -> SetupStatus (só INHOUSE_SETUP_DEMO=1)
 
 /** Fonte única dos nomes de ação — rotas validam por aqui; a trava de tipo abaixo
  *  quebra a compilação se este array e o union TaskAction saírem de sincronia. */
