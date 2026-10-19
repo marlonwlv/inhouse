@@ -3,6 +3,7 @@
 - **Categoria:** features
 - **Data:** 2026-10-19
 - **Status:** Em andamento
+- **PR:** [#12](https://github.com/marlonwlv/inhouse/pull/12) (CI verde em Windows, macOS e Linux; falta o roteiro manual de `docs/WINDOWS.md` num Windows real)
 
 ## Contexto
 
