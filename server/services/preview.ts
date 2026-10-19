@@ -614,7 +614,7 @@ async function iniciarDevServer(
   const baseEnv = { ...claudeEnv(), PORT: String(porta) };
 
   // Setup da receita: comandos curtos/idempotentes ANTES do server (docker, migrations…).
-  // Mesmo nível de confiança do `cmd` (ambos via /bin/sh); best-effort (só avisa se falhar).
+  // Mesmo nível de confiança do `cmd` (ambos via sh; Git Bash no Windows); best-effort (só avisa se falhar).
   if (cfg?.setup?.length) {
     for (const c of cfg.setup) {
       sistema(task.id, `Preparando o ambiente do preview: \`${c}\``);

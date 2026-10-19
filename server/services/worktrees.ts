@@ -4,11 +4,11 @@
  */
 import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, rename, rm } from "node:fs/promises";
+import { cp, mkdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { Project } from "../../shared/types.js";
 import { ESPACOS_DIR, claudeEnv } from "../config.js";
-import { matarFilho, spawnPortatil } from "../platform.js";
+import { matarFilho, renameComRetry, spawnPortatil } from "../platform.js";
 import { fakeRealGates, isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
 import { loadConfigCascata } from "../workflow/config.js";
@@ -91,7 +91,7 @@ async function doCreateEspaco(
       try {
         // Sem --force: com a árvore suja o git recusa remover (o que queremos).
         await tryGit(project.path, "worktree", "remove", worktreePath);
-        await rename(worktreePath, abrigo);
+        await renameComRetry(worktreePath, abrigo); // Windows: EPERM/EBUSY transitório
         await tryGit(project.path, "worktree", "prune");
         broadcast({
           type: "project_progress",

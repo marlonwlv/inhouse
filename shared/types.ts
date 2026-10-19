@@ -449,7 +449,7 @@ export interface PreviewConfig {
   /**
    * Comandos CURTOS e idempotentes (que TERMINAM) rodados pelo Inhouse ANTES do
    * `cmd` a cada start — ex.: ["docker compose up -d"]. Mesmo nível de confiança do
-   * `cmd` (ambos via /bin/sh). NÃO coloque o servidor de dev aqui (esse é o `cmd`).
+   * `cmd` (ambos via sh: /bin/sh no Mac/Linux, Git Bash no Windows). NÃO coloque o servidor de dev aqui (esse é o `cmd`).
    */
   setup?: string[];
   /**
