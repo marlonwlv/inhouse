@@ -328,6 +328,51 @@ dois cliques ─▶ inhouse.cmd / inhouse.command
 Sem banco. A detecção roda até 8 subprocessos com timeout de 10s cada, em paralelo, com cache de 20s.
 Broadcast de progresso limitado a 4 por segundo por item; log com no máximo 40 linhas por item.
 
+## Revisão de design (/plan-design-review, 2026-10-19)
+
+Sem DESIGN.md; o sistema visual é o de `public/styles.css` (neutros Linear, accent monocromático, Onest, borda-primeiro, tema escuro por `[data-theme="dark"]`). Revisão só em texto (sem mockup gerado; suposição: a validação visual real é a do Marlon pelo túnel, que vale mais que um mockup). Nota inicial 4/10 (a spec dizia "checklist com estados" e pouco mais); nota final 9/10 com as decisões abaixo.
+
+### 1. Arquitetura da informação (4 → 9)
+- Rota própria `#/preparar`, tela cheia dentro do layout atual (sem a sidebar de projetos competindo). Coluna única centrada, `max-width: 640px`.
+- Ordem vertical: título "Preparando o seu computador" + uma frase ("O InHouse precisa de alguns programas. Instalamos tudo para você, sem pedir senha.") → **barra de resumo** ("3 de 6 prontos") → **lista de itens** → **rodapé de ação** (botão principal único).
+- Ordem dos itens = ordem de dependência: Node.js · Git (no Windows: "Git e Git Bash" num item só, visualmente) · Claude Code · Login do Claude · Seu nome no git · GitHub (opcional, separado por um divisor "Opcional").
+- Um botão principal por tela, sempre a próxima coisa a fazer: "Instalar o que falta" → (durante) desabilitado "Instalando…" → "Fazer login do Claude" → "Começar a usar o InHouse". Ações por item só aparecem no item com erro ("Tentar de novo") ou que pede entrada (login, identidade).
+
+### 2. Estados (3 → 9)
+Cada item tem ícone + rótulo + linha de detalhe; nunca só cor (a11y).
+| Estado | Ícone | Detalhe (exemplo) |
+|---|---|---|
+| ok | ✓ em círculo, `--ink` | "Pronto · v24.11.0" |
+| faltando | círculo vazio, `--faint` | "Ainda não instalado" |
+| instalando | spinner pequeno | última linha útil do log, ex.: "Baixando… 42%" |
+| erro | ! em círculo, `--danger` | mensagem humana + "Tentar de novo" + "Ver detalhes" (log em `<details>`, mono, 40 linhas) |
+| aviso | ! em círculo, `--amber` | "Versão antiga, mas funciona" (conta como ok) |
+| opcional faltando | círculo tracejado | "Opcional · pule se não usa GitHub" |
+- Tela inteira: **carregando** (skeleton das 6 linhas, sem layout pulando), **tudo pronto** (resumo vira "Tudo pronto" com ✓ e o botão "Começar a usar o InHouse"), **outra janela instalando** (faixa âmbar no topo com a frase do 409, botão desabilitado), **servidor caiu** (faixa "Perdemos a conexão com o InHouse. Tentando de novo…" usando o reconnect do SSE).
+
+### 3. Jornada e emoção (5 → 9)
+- Nada assusta: nenhuma palavra "terminal", "PATH", "admin", "comando". Termos técnicos ficam só no "Ver detalhes".
+- Tempo esperado no resumo durante a instalação: "Isso leva uns 3 a 5 minutos. Pode deixar a janela aberta."
+- Login do Claude em cartão inline dentro do item: passo 1 "Abrir o login no navegador" (botão, abre a URL do CLI em nova aba), passo 2 campo "Cole aqui o código que apareceu" + "Confirmar". Código inválido: o item vai a erro com "Código não aceito. Gere outro e cole de novo" e o cartão volta ao passo 1. Sucesso: ✓ e "Claude conectado · sua assinatura".
+- Identidade do git: cartão inline com "Seu nome" e "Seu e-mail" (o e-mail do GitHub de preferência, dito na ajuda do campo), botão "Salvar". Pré-preenche se o git já tiver algo.
+- Ao concluir, `/concluir` e volta para `#/` com o toast existente "Tudo pronto. Bem-vindo ao InHouse."
+
+### 4. Microcopy (fixada)
+Título "Preparando o seu computador"; botões "Instalar o que falta", "Instalando…", "Tentar de novo", "Fazer login do Claude", "Salvar", "Pular" (só no opcional), "Começar a usar o InHouse". Erros genéricos: "Não deu para instalar o {item}. Verifique a internet e tente de novo." Chip da barra: "Faça o login" (claude_login faltando), "Falta instalar" (outro item obrigatório faltando), clicando leva a `#/preparar`.
+
+### 5. Responsivo e plataforma
+- ≤640px: itens empilham ação embaixo do detalhe; botão principal largura total. A tela roda no navegador do próprio computador, então o caso real é a janela estreita, não celular; o celular importa só para a validação pelo túnel.
+- Windows e Mac mostram os mesmos itens, com o nome do item Git variando ("Git e Git Bash" no Windows). Nenhuma instrução de teclado específica de SO na tela.
+
+### 6. Acessibilidade
+- Lista como `<ol>` com `aria-live="polite"` no resumo (não na lista inteira, para não narrar cada linha de log). Spinner com `aria-label="Instalando"`. Foco vai para o cartão de login/identidade quando ele abre e para o botão principal quando um passo termina. Contraste AA nos dois temas (`--amber` e `--danger` já são AA). `prefers-reduced-motion` troca spinner por "…".
+
+### 7. Modo demo
+- Com `INHOUSE_SETUP_DEMO=1`, uma barra fina no topo (estilo do painel debug existente) com seletor de cenário: "Falta tudo (Windows)", "Falta tudo (Mac)", "Instalando", "Erro no Git", "Login do Claude", "Código inválido", "Outra janela instalando", "Tudo pronto". Os botões da tela funcionam nos cenários (instalar avança a simulação), sem instalar nada de verdade. A barra diz "Demonstração · nada é instalado".
+
+### Fora do escopo de design
+Ilustração/mascote, animação de celebração, onboarding em várias páginas (wizard). Uma tela, uma lista, um botão.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
@@ -335,10 +380,10 @@ Broadcast de progresso limitado a 4 por segundo por item; log com no máximo 40 
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
 | Outside Review | codex exec (plan-review) | Independent 2nd opinion | 1 | completed | 19 findings, todos incorporados |
 | Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES OPEN (mapeados e aceitos) | 19 issues, 0 critical gaps |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| Design Review | `/plan-design-review` | UI/UX gaps | 1 | CLEAR | nota 4 → 9, 7 passes, 0 decisões abertas |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
 
 - **OUTSIDE COVERAGE:** Codex, plan-review, completo; 19 achados (11 High, 7 Medium, 1 Low), todos com decisão acima.
-- **VERDICT:** ENG revisado com as correções aceitas no plano; pronto para implementar após /plan-design-review.
+- **VERDICT:** ENG + DESIGN revisados; pronto para implementar. Validação visual final pelo Marlon via túnel antes do /ship.
 
 NO UNRESOLVED DECISIONS
