@@ -85,7 +85,7 @@ instalar_node() {
   esperado="${linha%% *}"; arquivo="${linha##* }"
   if [ "$SIMULAR" = 1 ]; then info "Baixaria ${URL_NODE}${arquivo} (SHA-256 ${esperado:0:12}…) para $FERRAMENTAS/node"; return 0; fi
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/inhouse-node.XXXXXX")" || return 1
-  echo "  [...]   Baixando $arquivo…"
+  echo "  [...]   Baixando ${arquivo}…"
   if ! curl -fL --retry 3 --progress-bar -o "$tmp/$arquivo" "${URL_NODE}${arquivo}"; then
     falha "O download do Node falhou. Confira a internet e tente de novo."; rm -rf "$tmp"; return 1
   fi

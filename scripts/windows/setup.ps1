@@ -87,7 +87,7 @@ function InstalarNode {
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ("inhouse-node-" + [Guid]::NewGuid().ToString('N').Substring(0, 8))
   New-Item -ItemType Directory -Force -Path $tmp | Out-Null
   try {
-    Passo "Baixando $arquivo…"
+    Passo "Baixando $($arquivo)…"
     $zip = Join-Path $tmp $arquivo
     try { Invoke-WebRequest -UseBasicParsing -Uri "$urlNode$arquivo" -OutFile $zip -ErrorAction Stop }
     catch { Falha 'O download do Node falhou. Confira a internet e tente de novo.'; return $false }

@@ -35,6 +35,7 @@ export const URL_GIT_RELEASE = "https://api.github.com/repos/git-for-windows/git
 const DOMINIOS = new Set([
   "nodejs.org",
   "claude.ai",
+  "downloads.claude.ai", // claude.ai/install.* redireciona para cá
   "api.github.com",
   "github.com",
   "objects.githubusercontent.com",

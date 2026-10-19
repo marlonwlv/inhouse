@@ -33,8 +33,8 @@ export function arquitetura(so: SO, env: NodeJS.ProcessEnv, unameM?: string): "x
   return null;
 }
 
-export function pastaFerramentas(env: NodeJS.ProcessEnv = process.env, casa: string = homedir()): string {
-  return env["INHOUSE_TOOLS_DIR"] || path.join(casa, ".inhouse", "ferramentas");
+export function pastaFerramentas(env: NodeJS.ProcessEnv = process.env, casa: string = homedir(), p: path.PlatformPath = path): string {
+  return env["INHOUSE_TOOLS_DIR"] || p.join(casa, ".inhouse", "ferramentas");
 }
 
 /** Nome real da variável PATH no objeto (no Windows costuma ser "Path"). */
@@ -64,7 +64,7 @@ export function pastasDeFerramenta(
   existe: (p: string) => boolean = existsSync,
 ): PastasDeFerramenta {
   const p = so === "windows" ? path.win32 : path.posix;
-  const f = pastaFerramentas(env, casa);
+  const f = pastaFerramentas(env, casa, p);
   const antes: string[] = [];
   const depois: string[] = [];
   antes.push(p.join(casa, ".local", "bin"));

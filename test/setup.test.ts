@@ -173,6 +173,7 @@ describe("parsers dos downloads oficiais", () => {
   it("só baixa de domínios oficiais por https", () => {
     expect(urlPermitida("https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt")).toBe(true);
     expect(urlPermitida("https://github.com/cli/cli/releases/download/v2/gh.zip")).toBe(true);
+    expect(urlPermitida("https://downloads.claude.ai/claude-code-releases/bootstrap.ps1")).toBe(true);
     expect(urlPermitida("http://nodejs.org/x")).toBe(false);
     expect(urlPermitida("https://nodejs.org.evil.com/x")).toBe(false);
     expect(urlPermitida("nada")).toBe(false);
