@@ -66,7 +66,6 @@ export class MotorDemo implements MotorSetup {
   private ocupado = false;
   private login: SetupStatus["login"];
   private concluidoEm?: string;
-  private falharGit = false;
   private timers = new Set<NodeJS.Timeout>();
   private ultimoStatus: SetupStatus | null = null;
 
@@ -96,7 +95,6 @@ export class MotorDemo implements MotorSetup {
     this.ocupado = false;
     this.login = undefined;
     this.concluidoEm = undefined;
-    this.falharGit = false;
     this.ident = {};
     const ids = itensDoSO(so);
     const set = (falta: SetupItemId[]) => {
@@ -205,15 +203,6 @@ export class MotorDemo implements MotorSetup {
       const log: string[] = [`baixando o instalador de ${id} (demonstração: nada é instalado)`];
       const tique = () => {
         pct += 20;
-        if (id === "git" && this.falharGit && pct >= 60) {
-          this.falharGit = false;
-          this.mudarItem("git", "erro", { detalhe: "Não deu para instalar o Git. Verifique a internet e tente de novo.", log: [...log, ...LOG_ERRO.slice(1)] });
-          if (this.so === "windows" && ids.includes("gitbash")) this.mudarItem("gitbash", "faltando", { detalhe: "Ainda não instalado." });
-          this.instalando = false;
-          fila.length = 0;
-          this.publicar();
-          return;
-        }
         if (pct >= 100) {
           this.itens.set(id, ok(id, this.ident));
           this.publicar();

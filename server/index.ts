@@ -2,11 +2,14 @@
  * Entrada do servidor do Inhouse.
  * Escuta APENAS em 127.0.0.1 (decisão de segurança — ver ARCHITECTURE.md).
  */
+// Primeiro: põe as ferramentas que o InHouse instala (Node, Git, Claude, gh) no
+// PATH deste processo antes de qualquer módulo procurar por elas.
+import "./setup/ambiente.js";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
-import { buildRouter } from "./api/routes.js";
+import { buildRouter, zerarCacheClaudeStatus } from "./api/routes.js";
 import { abortPhase, claudeStatus } from "./claude/runner.js";
 import { HOST, PORT, ensureDirs } from "./config.js";
 import { broadcast } from "./events.js";
@@ -17,7 +20,8 @@ import { killInstallsDeEspaco } from "./services/worktrees.js";
 import { checarUpdate } from "./services/update.js";
 import { iniciarSondagemRevisoes } from "./workflow/machine.js";
 import { backfillSeVazio } from "./eval/coleta.js";
-import { listTasks, load } from "./store.js";
+import { listProjects, listTasks, load } from "./store.js";
+import { configurarSetup, encerrarSetup, motorSetup } from "./setup/servico.js";
 
 load();
 // Primeira subida com eval: tarefas históricas viram dados (backfill idempotente).
@@ -37,6 +41,20 @@ for (const t of listTasks()) {
 // Sondagem das revisões (PRs em Revisão/Publicar): o time revisou/mergeou no
 // GitHub → o Inhouse noticia no chat e move a esteira (inclusive a festa 🚀).
 iniciarSondagemRevisoes();
+
+// Preparação do computador: avisa a UI por SSE e, quando instala/loga algo,
+// zera os caches de quem usa o Claude (chip verde sem esperar 30s).
+configurarSetup({
+  emitir: (setup) => broadcast({ type: "setup_status", setup }),
+  temProjetos: () => listProjects().length > 0,
+  aoMudarFerramentas: () => {
+    zerarCacheClaudeStatus();
+    void verificarClaude();
+  },
+});
+void motorSetup()
+  .status()
+  .catch(() => undefined);
 
 const app = express();
 app.use(buildRouter());
@@ -125,6 +143,7 @@ function shutdown(sinal: string): void {
   stopAllPreviews();
   killBackgroundInstalls();
   killInstallsDeEspaco();
+  encerrarSetup();
   for (const t of listTasks()) if (t.status === "rodando") abortPhase(t.id);
   server.close();
   server6.close();
