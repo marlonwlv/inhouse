@@ -233,3 +233,112 @@ o Git do winget e o Claude Code são instalações normais do sistema e continua
   "Paste code here if prompted").
 - Windows 10 1803+ (traz `tar.exe` e `curl.exe`); PowerShell 5.1.
 - A tela de setup não substitui o `claude_status` existente (chip do topo), só o complementa.
+
+## Revisão de engenharia (/plan-eng-review, 2026-10-19)
+
+Alvo: este arquivo. Sessão autônoma: cada decisão abaixo foi auto-escolhida pela recomendação
+(o pedido autorizou) e fica registrada aqui. Segunda opinião: Codex (read-only), 19 achados, todos tratados.
+
+Evidência coletada:
+- `claude auth login --claudeai` com stdin em pipe, sem TTY e HOME temporário: imprime a URL, lê o
+  código do stdin, responde `Invalid code. Please make sure the full code was copied.` e fica parado
+  (não pede de novo). `auth status --json` sem login: `{"loggedIn":false,...}` com saída 1.
+- `tsconfig.build.json` inclui `server/**/*.ts`: `server/setup/` entra no build do app Mac. O app copia
+  só `public/`, `templates/` e o servidor compilado, então o servidor **não pode** depender de `scripts/`.
+- `menubar.m` usa o Node embutido no `.app` e monta o PATH dele; `tsx` está em `devDependencies`.
+
+### Achados e decisões (todas aceitas)
+
+```
+[P1] (9/10) bootstrap Windows: PATH do PowerShell filho não volta ao .cmd
+     → os .cmd prependem %USERPROFILE%\.inhouse\ferramentas\node antes de `where node`; o .ps1 só instala.
+[P1] (9/10) Git do winget não aparece no servidor já aberto
+     → localizarGit(): PATH + %ProgramFiles%\Git\cmd + %LOCALAPPDATA%\Programs\Git\cmd + ferramentas\git\cmd;
+       o dir achado é prependido ao process.env.PATH e o cache do Git Bash é zerado.
+[P1] (8/10) Git sem Git Bash não tinha reparo → item gitbash instala o PortableGit (traz bash.exe).
+[P1] (9/10) Mac: /usr/bin/git é shim que abre o diálogo das CLT
+     → se `xcode-select -p` falha, git = faltando SEM executar git; senão `git --version` com timeout 10s.
+[P1] (8/10) extração portátil indefinida
+     → baixa e extrai em ferramentas/.tmp-<id>, acha a única pasta de topo, troca atômica (rename; a antiga
+       vai para .old-<id> e é removida). Node: .tar.gz (Mac, tar) / .zip (Windows, tar.exe do Windows 10+).
+       gh: .zip/.tar.gz. PortableGit: o .7z.exe autoextraível com `-o<dir> -y`.
+       Validação final executando `--version` do binário instalado.
+[P1] (9/10) login: código inválido trava o processo → ao ler "Invalid code" o servidor mata o processo,
+       o item fica `erro` com "Código não aceito. Gere outro e cole de novo" e o botão reabre o login.
+[P1] (8/10) instalador do Claude sem contrato → timeout 10 min, stdin fechado, saída no log do item,
+       código de saída checado, depois zerar caches e validar com `claude --version`.
+[P1] (8/10) duas instâncias/CLI instalando juntas → lock entre processos `ferramentas/.lock` (pid + hora;
+       vencido se o pid morreu ou > 30 min); 409 "Outra janela do InHouse está instalando".
+[P1] (8/10) DNS rebinding: Host não é validado → `/api/setup/*` (GET e POST) exige Host 127.0.0.1,
+       localhost ou [::1]. Validação global de Host fica como TODO (fora do escopo).
+[P2] (8/10) demo exposto por túnel → o proxy do túnel (fora do repo) só deixa passar estáticos,
+       GET /api/state, /api/setup*, /api/events e reescreve Host para 127.0.0.1; o resto dá 404.
+       O demo roda com INHOUSE_FAKE_MODEL=1 e dados em pasta própria.
+[P2] (8/10) ambiente montado tarde → server/setup/ambiente.ts é o PRIMEIRO import de server/index.ts
+       e de server/setup/cli.ts (efeito no import: PATH + CLAUDE_CODE_GIT_BASH_PATH).
+[P2] (7/10) "Claude ok" contraditório → claude_status segue "instalado"; o chip passa a mostrar
+       "Faça o login" quando setup.claude_login = faltando.
+[P2] (8/10) SSE perde estado ao reconectar → ao conectar o servidor manda o último setup_status,
+       e a tela faz GET /api/setup ao abrir.
+[P2] (8/10) shutdown não mata instaladores/login → filhos registrados e mortos com matarArvore.
+[P2] (7/10) idempotência das deps → `npm install --include=dev --no-audit --no-fund`; marcador
+       node_modules/.inhouse-deps com o hash do package-lock; reinstala se diferente ou ausente.
+[P2] (8/10) app Mac: Node portátil prependido trocaria o runtime → a pasta do Node portátil é ANEXADA
+       ao fim do PATH; ~/.local/bin, git e gh são prependidos.
+[P3] (8/10) arquitetura → Mac: arm64 | x86_64→x64; Windows: PROCESSOR_ARCHITEW6432 ?? PROCESSOR_ARCHITECTURE
+       (AMD64→x64, ARM64→arm64); outra = erro "computador não suportado".
+[P3] (7/10) CI não prova máquina limpa → CI prova download+checksum+extração+validação em pasta temp;
+       a matriz manual (Mac e Windows limpos) fica no guia e no relatório do PR.
+[P3] (7/10) rollback exagerado → reverter o PR não desfaz git config global, core.longpaths, CLT nem
+       ~/.local/bin/claude; documentado aqui.
+```
+
+### Arquitetura (fluxo)
+
+```
+dois cliques ─▶ inhouse.cmd / inhouse.command
+                 │ PATH += ~/.inhouse/ferramentas/node
+                 │ sem Node 24? ─▶ setup.ps1 / setup.sh --basico (Node portátil + npm install)
+                 └▶ npm start ─▶ server/index.ts
+                                   import "./setup/ambiente.js"  (PATH, Git Bash)
+                                   /api/setup/* ─▶ server/setup/servico.ts (estado, lock, SSE)
+                                                     ├ detectar.ts  (Ambiente injetável: so, env, existe, exec)
+                                                     ├ instalar.ts  (baixar + sha256 + extrair + validar)
+                                                     ├ login.ts     (claude auth login, código, 10 min)
+                                                     └ demo.ts      (cenários, só INHOUSE_SETUP_DEMO=1)
+                 navegador ─▶ #/preparar  ◀── SSE setup_status
+```
+
+### Testes exigidos (unitários, vitest, mocks por SO)
+
+- detectar: Node ausente/antigo/ok; git no Mac sem CLT (não executa git) e com CLT; git no Windows no
+  PATH, só em Program Files, só portátil; Git Bash ausente; claude ausente/presente; login ok/faltando/
+  CLI antigo (aviso); identidade vazia/ok; gh e gh_login; arquitetura.
+- instalar: URL por SO/arch; checksum confere/diverge (aborta, não troca a pasta); troca atômica
+  mantém a versão antiga se a extração falha; lock ocupado/vencido; ordem git→claude no Windows.
+- login: captura a URL; "Invalid code" vira erro; sucesso confirmado por auth status; timeout.
+- rotas: 415 sem JSON, 403 com Origin/Host de fora, 409 instalando, 400 item/identidade inválidos,
+  404 demo fora do modo; /concluir 409 sem prontoParaUsar.
+- demo: todos os cenários geram SetupStatus válido nos dois SOs.
+- CI: `verificar --json` e `instalar --simular` nos 3 SOs; job real (node, claude, gh e PortableGit no
+  Windows) em pasta temp com INHOUSE_FORCAR_PORTATIL.
+
+### Desempenho
+
+Sem banco. A detecção roda até 8 subprocessos com timeout de 10s cada, em paralelo, com cache de 20s.
+Broadcast de progresso limitado a 4 por segundo por item; log com no máximo 40 linhas por item.
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Outside Review | codex exec (plan-review) | Independent 2nd opinion | 1 | completed | 19 findings, todos incorporados |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES OPEN (mapeados e aceitos) | 19 issues, 0 critical gaps |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **OUTSIDE COVERAGE:** Codex, plan-review, completo; 19 achados (11 High, 7 Medium, 1 Low), todos com decisão acima.
+- **VERDICT:** ENG revisado com as correções aceitas no plano; pronto para implementar após /plan-design-review.
+
+NO UNRESOLVED DECISIONS
