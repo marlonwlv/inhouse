@@ -5,7 +5,7 @@
  */
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, parse } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Task } from "../shared/types.js";
 
@@ -90,6 +90,11 @@ describe("openProject: barreiras de caminho", () => {
   it('recusa "/" e qualquer pasta acima da pessoal', async () => {
     await expect(projects.openProject("/")).rejects.toThrow(/ampla demais/);
     await expect(projects.openProject(dirname(homedir()))).rejects.toThrow(/ampla demais/);
+  });
+
+  it("recusa a raiz de qualquer disco (no Windows, D:\\ fica fora da pasta pessoal)", async () => {
+    await expect(projects.openProject(parse(process.cwd()).root)).rejects.toThrow(/ampla demais/);
+    await expect(projects.openProject(parse(tmpdir()).root)).rejects.toThrow(/ampla demais/);
   });
 
   it("recusa as pastas internas do builder (espaços e estado)", async () => {

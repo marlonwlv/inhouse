@@ -6,7 +6,7 @@ import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { cp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExclusaoInfo, Project } from "../../shared/types.js";
 import { ANEXOS_DIR, DATA_DIR, ESPACOS_DIR, PROJECTS_DIR, TRANSCRIPTS_DIR, claudeEnv, ensureDirs } from "../config.js";
@@ -254,7 +254,8 @@ export async function openProject(path: string): Promise<Project> {
   // Pasta pessoal (ou qualquer pasta acima dela, como "/"): abrir aqui faria
   // `git init` + `git add -A` engolir a pasta inteira do usuário — incluindo
   // chaves e segredos (~/.ssh etc.) — para dentro de um repositório. Nunca.
-  if (dentroDe(homedir(), alvo)) {
+  // Raiz de qualquer disco também (no Windows, D:\ fica fora da pasta pessoal em C:).
+  if (dentroDe(homedir(), alvo) || parse(alvo).root === alvo) {
     throw new Error(
       "Essa pasta é ampla demais (sua pasta pessoal ou uma acima dela). Escolha a pasta específica do projeto.",
     );
