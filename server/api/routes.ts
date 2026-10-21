@@ -42,7 +42,8 @@ import {
 } from "../workflow/library.js";
 import { gerarWorkflow } from "../workflow/gerar.js";
 import {
-  cloneProject,
+  cloneJob,
+  iniciarClone,
   createFromTemplate,
   deleteProject,
   exclusaoInfo,
@@ -253,7 +254,21 @@ export function buildRouter(): Router {
     "/api/projects/clone",
     h(async (req, res) => {
       const url = texto(req.body, "url", "o endereço do repositório no GitHub");
-      res.json(await cloneProject(url));
+      try {
+        res.status(202).json(iniciarClone(url));
+      } catch (err) {
+        // Link inválido, nome já em uso ou já baixando: erro do pedido, não do servidor.
+        throw new HttpError(400, err instanceof Error ? err.message : "Link inválido.");
+      }
+    }),
+  );
+
+  router.get(
+    "/api/projects/clone/:id",
+    h(async (req, res) => {
+      const job = cloneJob(String(req.params["id"]));
+      if (!job) throw new HttpError(404, "Esse download não existe mais. Tente baixar de novo.");
+      res.json(job);
     }),
   );
 

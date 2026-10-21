@@ -212,6 +212,53 @@ async function api(path, body) {
   try { return await res.json(); } catch { return {}; }
 }
 
+/* Espera o fim de um clone em segundo plano: o SSE (clone_status) avisa na
+ * hora; a consulta a cada 1,5 s cobre SSE calado (proxy/antivírus). Falha de
+ * rede na consulta não derruba a espera — o download continua no servidor. */
+const cloneEsperas = new Map();
+function esperarClone(id) {
+  return new Promise((resolve) => {
+    let feito = false;
+    const acabar = (job) => {
+      if (feito) return;
+      feito = true;
+      cloneEsperas.delete(id);
+      resolve(job);
+    };
+    cloneEsperas.set(id, acabar);
+    const consultar = async () => {
+      if (feito) return;
+      try {
+        const res = await fetch(`/api/projects/clone/${encodeURIComponent(id)}`, { cache: "no-store" });
+        if (res.status === 404) {
+          return acabar({ estado: "erro", erro: { tipo: "outro", mensagem: "O InHouse reiniciou durante o download. Tente baixar de novo." } });
+        }
+        const job = res.ok ? await res.json() : null;
+        if (job && job.estado !== "baixando") return acabar(job);
+      } catch { /* servidor ocupado ou reconectando: tenta de novo */ }
+      setTimeout(consultar, 1500);
+    };
+    setTimeout(consultar, 1500);
+  });
+}
+
+function cloneErroHtml() {
+  const e = state.cloneErro;
+  if (!e) return "";
+  const ghOk = setupItem(state.setup, "gh_login")?.estado === "ok";
+  const acao = e.tipo === "sem_login"
+    ? ghOk
+      ? `<p class="clone-erro-ok">GitHub conectado. Clique em <b>Baixar e abrir</b> de novo.</p>`
+      : `<a class="btn sm" href="#/preparar">Entrar no GitHub</a>`
+    : "";
+  const det = e.detalhe ? `<details class="pp-log"><summary>Ver detalhes</summary><pre>${esc(e.detalhe)}</pre></details>` : "";
+  return `<div class="clone-erro" role="alert">
+    <p>${esc(e.mensagem)}</p>
+    ${acao}
+    ${det}
+  </div>`;
+}
+
 let toastTimer;
 function toast(msg) {
   const el = $("#toast");
@@ -391,6 +438,11 @@ function handleEvent(ev) {
       state.tasks = state.tasks.filter((t) => t.projectId !== ev.projectId);
       render();
       break;
+    case "clone_status": {
+      const acabar = cloneEsperas.get(ev.job.id);
+      if (acabar && ev.job.estado !== "baixando") acabar(ev.job);
+      break;
+    }
     case "project_progress":
       state.progress[ev.name] = { projectId: ev.projectId, message: ev.message, pct: ev.pct };
       if (route().name === "home") render();
@@ -933,6 +985,7 @@ function aoMudarSetup(s) {
   state.setup = s;
   renderClaudeChip();
   if (route().name === "preparar") renderPreparar();
+  else if (route().name === "home" && state.cloneErro?.tipo === "sem_login") render();
   setupAgendarConsulta();
 }
 
@@ -1717,10 +1770,11 @@ function renderHome() {
           <div class="rh"><span class="gh-ico">gh</span><b>Abrir do GitHub</b></div>
           <p>Cole o endereço do repositório. O download acontece sozinho, com barra de progresso.</p>
           <div class="field-row">
-            <input id="clone-url" type="url" placeholder="https://github.com/seu-usuario/…" autocomplete="off" ${busyClone || claudeOff ? "disabled" : ""} required>
+            <input id="clone-url" type="url" placeholder="https://github.com/seu-usuario/…" autocomplete="off" value="${esc(state.cloneErro?.url || "")}" ${busyClone || claudeOff ? "disabled" : ""} required>
             <button class="btn sm primary" type="submit" ${busyClone || claudeOff ? "disabled" : ""}>${busyClone ? `<span class="spinner"></span> Baixando…` : "Baixar e abrir"}</button>
           </div>
           ${progressHtml}
+          ${busyClone ? "" : cloneErroHtml()}
         </form>
 
         <form class="repo-card" data-form="create-app">
@@ -3702,16 +3756,22 @@ document.addEventListener("submit", async (e) => {
     const url = input.value.trim();
     if (!url || state.busy.clone) return;
     state.busy.clone = true;
+    state.cloneErro = null;
     render();
-    const p = await api("/api/projects/clone", { url });
+    // O servidor responde na hora e baixa em segundo plano (repo grande leva
+    // minutos; um request pendurado caía por timeout e parecia "fora do ar").
+    const job = await api("/api/projects/clone", { url });
+    const fim = job && job.id ? await esperarClone(job.id) : null;
     delete state.busy.clone;
-    if (p && p.id) {
+    if (fim && fim.estado === "ok" && fim.project) {
+      const p = fim.project;
       upsert(state.projects, p);
       clearProgressFor(p);
       const el = $("#clone-url");
       if (el) el.value = "";
       toast(`Projeto “${p.name}” pronto para usar.`);
     } else {
+      if (fim && fim.erro) state.cloneErro = { ...fim.erro, url };
       // Clone falhou: remove as barras de progresso órfãs (ainda sem projectId).
       for (const k of Object.keys(state.progress)) {
         if (!state.progress[k].projectId) delete state.progress[k];

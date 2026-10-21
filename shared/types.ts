@@ -331,6 +331,24 @@ export interface SetupStatus {
   verificadoEm: string;
 }
 
+// ---------- Download de repositório (POST /api/projects/clone) ----------
+
+/** Tipo da falha do clone (decide o que a UI oferece: login, pedir acesso, rede…). */
+export type TipoErroClone = "sem_login" | "sem_acesso" | "rede" | "timeout" | "disco" | "outro";
+
+/**
+ * O clone roda em segundo plano: um repositório grande leva minutos e um
+ * request pendurado esse tempo todo cai por timeout do navegador (o Safari
+ * desiste em ~60 s) — e a UI acusava "servidor fora do ar".
+ */
+export interface CloneJob {
+  id: string;
+  name: string;
+  estado: "baixando" | "ok" | "erro";
+  project?: Project;
+  erro?: { tipo: TipoErroClone; mensagem: string; detalhe?: string };
+}
+
 // ---------- Eventos SSE (GET /api/events) ----------
 
 export type ServerEvent =
@@ -340,6 +358,7 @@ export type ServerEvent =
   | { type: "project_updated"; project: Project }
   | { type: "project_removed"; projectId: string }
   | { type: "project_progress"; projectId?: string; name: string; message: string; pct?: number }
+  | { type: "clone_status"; job: CloneJob }
   | { type: "chat_delta"; taskId: string; text: string } // streaming do texto do assistente
   | { type: "transcript"; taskId: string; item: TranscriptItem }
   | { type: "gate_result"; taskId: string; gate: GateResult }
@@ -354,7 +373,8 @@ export type ServerEvent =
 // ---------- API REST ----------
 // GET  /api/state                       -> { projects, tasks, permissions, claude: {ok, version} }
 // GET  /api/events                      -> SSE de ServerEvent
-// POST /api/projects/clone              { url } -> Project (progresso via project_progress)
+// POST /api/projects/clone              { url } -> CloneJob (202; roda em segundo plano, progresso via project_progress)
+// GET  /api/projects/clone/:id          -> CloneJob (fim via clone_status também)
 // POST /api/projects/from-template     { name, template: "app-starter" } -> Project
 // POST /api/projects/open               { path } -> Project (registra pasta existente)
 // GET  /api/tasks/:id/transcript        -> TranscriptItem[]

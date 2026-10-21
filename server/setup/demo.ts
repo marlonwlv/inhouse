@@ -45,7 +45,7 @@ function faltando(id: SetupItemId): SetupItem {
     case "gh":
       return itemBase(id, { estado: "faltando", acao: "instalar", detalhe: "Opcional · pule se não usa o GitHub." });
     case "gh_login":
-      return itemBase(id, { estado: "faltando", acao: "manual", detalhe: "Opcional. Para conectar, rode gh auth login uma vez (o guia explica)." });
+      return itemBase(id, { estado: "faltando", acao: "manual", detalhe: "Opcional. Necessário para baixar repositórios privados. Para conectar, rode gh auth login uma vez no Terminal (o guia explica)." });
     default:
       return itemBase(id, { estado: "faltando", acao: "instalar", detalhe: "Ainda não instalado." });
   }
