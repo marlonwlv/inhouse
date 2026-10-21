@@ -1563,3 +1563,34 @@ input::placeholder { color: var(--faint); }
   .pp-ico.gira .spinner::after { content: "…"; }
   .pp-rodape .spinner, .pp-espera .spinner { animation: none; }
 }
+
+/* ---------- GitHub mágico: checklist do download e login por código ---------- */
+.clone-lista { margin: 4px 0 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.clone-lista .pp-item { padding: 10px 12px; gap: 10px; }
+.clone-lista .pp-tit b { font-size: 13px; font-weight: 600; }
+.clone-passo.est-pendente .pp-tit b, .clone-passo.est-pulado .pp-tit b { color: var(--muted); font-weight: 500; }
+.clone-passo.est-pulado .pp-det { color: var(--faint); }
+.clone-passo.est-andando .pp-det, .clone-passo.est-aguardando .pp-det { color: var(--ink); font-variant-numeric: tabular-nums; }
+.clone-passo .progress { margin-top: 6px; }
+.clone-passo .pp-txt { min-width: 0; flex: 1; }
+.clone-demo-fim { margin-top: 8px; }
+.gh-card { gap: 8px; }
+.gh-card-tit { margin: 0; font-size: 12.5px; color: var(--muted); }
+.gh-codigo-linha { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gh-codigo { font-family: var(--mono); font-size: 28px; font-weight: 600; letter-spacing: 0.08em; color: var(--ink); font-variant-numeric: tabular-nums; user-select: all; line-height: 1.1; }
+.clone-erro .clone-erro-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.gh-pronto { display: grid; gap: 6px; justify-items: start; }
+.gh-pronto-tit { font-size: 12.5px; }
+.gh-pronto-txt { margin: 0; width: 100%; box-sizing: border-box; white-space: pre-wrap; font-family: var(--ui); font-size: 12.5px; line-height: 1.5; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; user-select: all; }
+.gh-manual { margin: 0; padding-left: 20px; display: grid; gap: 8px; font-size: 12.5px; line-height: 1.45; }
+.gh-cmd { display: flex; align-items: center; gap: 6px; margin-top: 4px; min-width: 0; }
+.gh-cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; user-select: all; }
+@media (max-width: 560px) {
+  .gh-codigo { font-size: 22px; }
+  .clone-erro .clone-erro-acts { flex-direction: column; align-items: stretch; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .clone-passo .pp-ico.gira .spinner { animation: none; border: 0; width: auto; height: auto; }
+  .clone-passo .pp-ico.gira .spinner::after { content: "…"; }
+  .gh-card .spinner { animation: none; }
+}

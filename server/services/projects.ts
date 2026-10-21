@@ -8,7 +8,7 @@ import { cp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CloneJob, ExclusaoInfo, Project } from "../../shared/types.js";
+import type { ExclusaoInfo, Project } from "../../shared/types.js";
 import { ANEXOS_DIR, DATA_DIR, ESPACOS_DIR, PROJECTS_DIR, TRANSCRIPTS_DIR, claudeEnv, ensureDirs } from "../config.js";
 import { broadcast } from "../events.js";
 import { matarFilho, mesmoCaminho, spawnPortatil } from "../platform.js";
@@ -38,7 +38,7 @@ async function detectDefaultBranch(repoPath: string): Promise<string> {
   return "main";
 }
 
-interface AlvoClone {
+export interface AlvoClone {
   limpo: string;
   name: string;
   target: string;
@@ -47,7 +47,7 @@ interface AlvoClone {
 }
 
 /** Validação rápida (sem rede) do link; erros aqui voltam 400 na hora. */
-function validarClone(url: string): AlvoClone {
+export function validarClone(url: string): AlvoClone {
   ensureDirs();
   const limpo = url.trim();
   let parsed: URL;
@@ -90,158 +90,131 @@ export function _configurarCloneParaTestes(o: { estadoGh?: () => Promise<EstadoG
 /** Nomes com clone em andamento (dois cliques não baixam o mesmo repo duas vezes). */
 const baixando = new Set<string>();
 
-async function executarClone(alvo: AlvoClone): Promise<Project> {
+/** Reserva o nome antes do primeiro await (o segundo clique cai no 400). */
+export function reservarNome(name: string, sim: boolean): void {
+  if (sim) baixando.add(name);
+  else baixando.delete(name);
+}
+
+/** Roda o git clone. Quem chama reserva e libera o nome (reservarNome). */
+export async function executarClone(alvo: AlvoClone, aoProgresso?: (mensagem: string, pct?: number) => void): Promise<Project> {
   const { limpo, name, target, repo } = alvo;
-  baixando.add(name);
+  // Repositório privado precisa de credencial: usamos a conta do gh, se logado.
+  const gh = await obterEstadoGh().catch((): EstadoGh => ({ gh: null, logado: false }));
+  const cred = gh.gh && gh.logado ? argsCredencialGh(gh.gh) : [];
+  // core.longpaths: monorepo no Windows estoura os 260 caracteres de caminho.
+  const prefixo = process.platform === "win32" ? ["-c", "core.longpaths=true"] : [];
+
   try {
-    // Repositório privado precisa de credencial: usamos a conta do gh, se logado.
-    const gh = await obterEstadoGh().catch((): EstadoGh => ({ gh: null, logado: false }));
-    const cred = gh.gh && gh.logado ? argsCredencialGh(gh.gh) : [];
-    // core.longpaths: monorepo no Windows estoura os 260 caracteres de caminho.
-    const prefixo = process.platform === "win32" ? ["-c", "core.longpaths=true"] : [];
-
-    try {
-      await new Promise<void>((resolvePromise, reject) => {
-        // GIT_TERMINAL_PROMPT=0: sem credencial o GitHub pede usuário/senha; sem
-        // isso o git ficaria travado esperando um prompt que ninguém vê.
-        const child = spawnPortatil("git", [...prefixo, ...cred, "clone", "--progress", limpo, target], {
-          env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GH_NO_UPDATE_NOTIFIER: "1", GH_PROMPT_DISABLED: "1" },
-          stdio: ["ignore", "ignore", "pipe"],
-        });
-        let resto = "";
-        let stderrAll = "";
-        let ultimaMsg = "";
-        let ultimoPct = -1;
-        let parado = false;
-        // Vigia: download sem NENHUMA saída por muito tempo = conexão pendurada.
-        let vigia: NodeJS.Timeout | undefined;
-        const rearmar = () => {
-          if (vigia) clearTimeout(vigia);
-          vigia = setTimeout(() => {
-            parado = true;
-            matarFilho(child, "SIGKILL");
-          }, paradoMs);
-          vigia.unref?.();
-        };
-        rearmar();
-        const emitir = (message: string, pct?: number) => {
-          if (message === ultimaMsg && (pct ?? -1) === ultimoPct) return;
-          ultimaMsg = message;
-          ultimoPct = pct ?? -1;
-          broadcast({ type: "project_progress", name, message, pct });
-        };
-        const lerLinha = (line: string) => {
-          const rec = /Receiving objects:\s+(\d+)%/.exec(line);
-          if (rec) return emitir("Baixando os arquivos do projeto…", Number(rec[1]));
-          if (/Resolving deltas:/.test(line)) return emitir("Organizando o histórico do projeto…");
-          if (/Updating files:/.test(line)) return emitir("Colocando os arquivos na pasta…");
-          if (/^Cloning into/.test(line)) return emitir("Começando o download…");
-        };
-        child.stderr?.on("data", (d: Buffer) => {
-          rearmar();
-          const texto = String(d);
-          // Sem trim por pedaço: o "\n" do fim de um pedaço sumiria e grudaria
-          // a linha seguinte (o "fatal: …" ficava colado no "Cloning into…").
-          stderrAll = (stderrAll + texto).slice(-16_000);
-          resto += texto;
-          // git usa \r para reescrever a linha de progresso
-          const partes = resto.split(/[\r\n]/);
-          resto = partes.pop() ?? "";
-          for (const p of partes) lerLinha(p);
-        });
-        child.on("error", (err) => {
-          if (vigia) clearTimeout(vigia);
-          reject(new Error("Não foi possível rodar o git nesta máquina. Fale com o time técnico.", { cause: err }));
-        });
-        child.on("close", (code) => {
-          if (vigia) clearTimeout(vigia);
-          if (code === 0 && !parado) {
-            resolvePromise();
-            return;
-          }
-          const info = classificarErroClone(lastLines(stderrAll, 40), {
-            ghLogado: cred.length > 0,
-            ...(gh.conta ? { conta: gh.conta } : {}),
-            repo,
-            parado,
-          });
-          console.error(`[clone] ${repo} falhou (${info.tipo}): ${info.detalhe}`);
-          reject(new ErroClone(info));
-        });
+    await new Promise<void>((resolvePromise, reject) => {
+      // GIT_TERMINAL_PROMPT=0: sem credencial o GitHub pede usuário/senha; sem
+      // isso o git ficaria travado esperando um prompt que ninguém vê.
+      const child = spawnPortatil("git", [...prefixo, ...cred, "clone", "--progress", limpo, target], {
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GH_NO_UPDATE_NOTIFIER: "1", GH_PROMPT_DISABLED: "1" },
+        stdio: ["ignore", "ignore", "pipe"],
       });
-    } catch (err) {
-      // Não deixa clone pela metade travando uma nova tentativa.
-      await rm(target, { recursive: true, force: true });
-      throw err;
-    }
-
-    // fetch/push deste projeto (e dos worktrees dele) também usam a conta do gh —
-    // na config LOCAL do repo, nunca na global da pessoa. Best-effort.
-    if (gh.gh && gh.logado) {
-      const pares = configLocalGh(gh.gh);
-      for (const [i, [chave, valor]] of pares.entries()) {
-        await tryGit(target, "config", ...(i === 0 ? [] : ["--add"]), chave, valor);
-      }
-    }
-
-    broadcast({ type: "project_progress", name, message: "Projeto baixado.", pct: 100 });
-
-    const project: Project = {
-      id: store.newId(),
-      name,
-      kind: "repo",
-      path: target,
-      originUrl: limpo,
-      defaultBranch: await detectDefaultBranch(target),
-      createdAt: new Date().toISOString(),
-    };
-    store.addProject(project);
-    broadcast({ type: "project_updated", project });
-    return project;
-  } finally {
-    baixando.delete(name);
+      let resto = "";
+      let stderrAll = "";
+      let ultimaMsg = "";
+      let ultimoPct = -1;
+      let parado = false;
+      // Vigia: download sem NENHUMA saída por muito tempo = conexão pendurada.
+      let vigia: NodeJS.Timeout | undefined;
+      const rearmar = () => {
+        if (vigia) clearTimeout(vigia);
+        vigia = setTimeout(() => {
+          parado = true;
+          matarFilho(child, "SIGKILL");
+        }, paradoMs);
+        vigia.unref?.();
+      };
+      rearmar();
+      const emitir = (message: string, pct?: number) => {
+        if (message === ultimaMsg && (pct ?? -1) === ultimoPct) return;
+        ultimaMsg = message;
+        ultimoPct = pct ?? -1;
+        broadcast({ type: "project_progress", name, message, pct });
+        aoProgresso?.(message, pct);
+      };
+      const lerLinha = (line: string) => {
+        const rec = /Receiving objects:\s+(\d+)%/.exec(line);
+        if (rec) return emitir("Baixando os arquivos do projeto…", Number(rec[1]));
+        if (/Resolving deltas:/.test(line)) return emitir("Organizando o histórico do projeto…");
+        if (/Updating files:/.test(line)) return emitir("Colocando os arquivos na pasta…");
+        if (/^Cloning into/.test(line)) return emitir("Começando o download…");
+      };
+      child.stderr?.on("data", (d: Buffer) => {
+        rearmar();
+        const texto = String(d);
+        // Sem trim por pedaço: o "\n" do fim de um pedaço sumiria e grudaria
+        // a linha seguinte (o "fatal: …" ficava colado no "Cloning into…").
+        stderrAll = (stderrAll + texto).slice(-16_000);
+        resto += texto;
+        // git usa \r para reescrever a linha de progresso
+        const partes = resto.split(/[\r\n]/);
+        resto = partes.pop() ?? "";
+        for (const p of partes) lerLinha(p);
+      });
+      child.on("error", (err) => {
+        if (vigia) clearTimeout(vigia);
+        reject(new Error("Não foi possível rodar o git nesta máquina. Fale com o time técnico.", { cause: err }));
+      });
+      child.on("close", (code) => {
+        if (vigia) clearTimeout(vigia);
+        if (code === 0 && !parado) {
+          resolvePromise();
+          return;
+        }
+        const info = classificarErroClone(lastLines(stderrAll, 40), {
+          ghLogado: cred.length > 0,
+          ...(gh.conta ? { conta: gh.conta } : {}),
+          repo,
+          parado,
+        });
+        console.error(`[clone] ${repo} falhou (${info.tipo}): ${info.detalhe}`);
+        reject(new ErroClone(info));
+      });
+    });
+  } catch (err) {
+    // Não deixa clone pela metade travando uma nova tentativa.
+    await rm(target, { recursive: true, force: true });
+    throw err;
   }
+
+  // fetch/push deste projeto (e dos worktrees dele) também usam a conta do gh —
+  // na config LOCAL do repo, nunca na global da pessoa. Best-effort.
+  if (gh.gh && gh.logado) {
+    const pares = configLocalGh(gh.gh);
+    for (const [i, [chave, valor]] of pares.entries()) {
+      await tryGit(target, "config", ...(i === 0 ? [] : ["--add"]), chave, valor);
+    }
+  }
+
+  broadcast({ type: "project_progress", name, message: "Projeto baixado.", pct: 100 });
+
+  const project: Project = {
+    id: store.newId(),
+    name,
+    kind: "repo",
+    path: target,
+    originUrl: limpo,
+    defaultBranch: await detectDefaultBranch(target),
+    createdAt: new Date().toISOString(),
+  };
+  store.addProject(project);
+  broadcast({ type: "project_updated", project });
+  return project;
 }
 
 /** Clona e espera terminar (usado nos testes e por quem pode esperar). */
 export async function cloneProject(url: string): Promise<Project> {
-  return executarClone(validarClone(url));
-}
-
-const jobs = new Map<string, CloneJob>();
-const JOB_TTL_MS = 30 * 60_000;
-
-/**
- * Valida o link na hora e clona em SEGUNDO PLANO: um repositório grande leva
- * minutos, e um request pendurado esse tempo todo cai por timeout do navegador
- * (a UI mostrava "servidor fora do ar" no meio do download). A UI consulta
- * GET /api/projects/clone/:id e também recebe clone_status pelo SSE.
- */
-export function iniciarClone(url: string): CloneJob {
   const alvo = validarClone(url);
-  const job: CloneJob = { id: store.newId(), name: alvo.name, estado: "baixando" };
-  jobs.set(job.id, job);
-  const fim = (j: CloneJob) => {
-    jobs.set(j.id, j);
-    broadcast({ type: "clone_status", job: j });
-    setTimeout(() => jobs.delete(j.id), JOB_TTL_MS).unref?.();
-  };
-  // Reserva o nome já (antes do primeiro await), para o segundo clique cair no 400.
-  baixando.add(alvo.name);
-  void executarClone(alvo)
-    .then((project) => fim({ ...job, estado: "ok", project }))
-    .catch((err: unknown) => {
-      const erro =
-        err instanceof ErroClone
-          ? { tipo: err.tipo, mensagem: err.message, detalhe: err.detalhe }
-          : { tipo: "outro" as const, mensagem: err instanceof Error && err.message ? err.message : "Não foi possível baixar o projeto." };
-      fim({ ...job, estado: "erro", erro });
-    });
-  return job;
-}
-
-export function cloneJob(id: string): CloneJob | undefined {
-  return jobs.get(id);
+  reservarNome(alvo.name, true);
+  try {
+    return await executarClone(alvo);
+  } finally {
+    reservarNome(alvo.name, false);
+  }
 }
 
 export async function createFromTemplate(name: string, template: string): Promise<Project> {
