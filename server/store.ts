@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { PermissionRequest, Project, Task, TranscriptItem } from "../shared/types.js";
-import { isHumanStep } from "../shared/types.js";
+import { aguardaGente } from "../shared/types.js";
 import { DATA_DIR, TRANSCRIPTS_DIR, ensureDirs } from "./config.js";
 import { renameComRetrySync } from "./platform.js";
 
@@ -52,6 +52,8 @@ let state: State = { projects: [], tasks: [] };
 /** Pedidos de permissão são efêmeros (não sobrevivem a restart — o claude filho já terá morrido). */
 const permissions = new Map<string, PermissionRequest>();
 
+const ERRO_REINICIO = "O Inhouse foi reiniciado no meio deste passo. Clique em Tentar de novo.";
+
 export function load(): void {
   ensureDirs();
   if (existsSync(STATE_FILE)) {
@@ -62,9 +64,20 @@ export function load(): void {
       // "Aguardando" num passo automático = esperava permissão (efêmera, Map em
       // memória): após o restart não há processo claude nem pedido vivo — vira retry.
       for (const t of state.tasks) {
-        if (t.status === "rodando" || (t.status === "aguardando" && !isHumanStep(t.step))) {
+        if (t.status === "rodando" || (t.status === "aguardando" && !aguardaGente(t.step))) {
           t.status = "falhou";
-          t.error = "O Inhouse foi reiniciado no meio deste passo. Clique em Tentar de novo.";
+          t.error = ERRO_REINICIO;
+        } else if (
+          t.status === "falhou" &&
+          t.step === "revisao" &&
+          t.error === ERRO_REINICIO &&
+          !t.arquivadaEm &&
+          existsSync(t.worktreePath)
+        ) {
+          // Conserto: versões antigas derrubavam a Revisão em todo reinício
+          // (sumia o "Ver no GitHub" e a sondagem parava). Volta a aguardar.
+          t.status = "aguardando";
+          t.error = undefined;
         }
       }
     } catch {

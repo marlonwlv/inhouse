@@ -110,6 +110,38 @@ describe("store: persistência", () => {
     expect(store2.getTask("b")?.status).toBe("aguardando");
   });
 
+  it("Revisão aguardando o time sobrevive ao restart (mantém PR, botão e sondagem)", async () => {
+    const store = await freshStore();
+    const pr = "https://github.com/acme/app/pull/42";
+    store.addTask(tarefa({ id: "a", step: "revisao", status: "aguardando", prUrl: pr, revisao: { estado: "aguardando" } }));
+    // Revisão ainda não enviada também é espera da pessoa.
+    store.addTask(tarefa({ id: "b", step: "revisao", status: "aguardando" }));
+
+    const store2 = await restart();
+    expect(store2.getTask("a")?.status).toBe("aguardando");
+    expect(store2.getTask("a")?.prUrl).toBe(pr);
+    expect(store2.getTask("b")?.status).toBe("aguardando");
+  });
+
+  it("conserta Revisão derrubada por restart em versão antiga: volta a aguardar", async () => {
+    const store = await freshStore();
+    const erro = "O Inhouse foi reiniciado no meio deste passo. Clique em Tentar de novo.";
+    const espaco = mkdtempSync(join(tmpdir(), "inhouse-espaco-"));
+    store.addTask(tarefa({ id: "a", step: "revisao", status: "falhou", error: erro, worktreePath: espaco, prUrl: "https://github.com/acme/app/pull/1", revisao: { estado: "aguardando" } }));
+    // Falha de verdade na Revisão (ex.: GitHub recusou) continua visível.
+    store.addTask(tarefa({ id: "b", step: "revisao", status: "falhou", error: "Sem permissão de escrita.", worktreePath: espaco }));
+    // Arquivada (espaço já apagado) não ressuscita.
+    store.addTask(tarefa({ id: "c", step: "revisao", status: "falhou", error: erro, worktreePath: espaco, arquivadaEm: "2026-10-20T10:00:00.000Z" }));
+    store.addTask(tarefa({ id: "d", step: "revisao", status: "falhou", error: erro, worktreePath: join(espaco, "sumiu") }));
+
+    const store2 = await restart();
+    expect(store2.getTask("a")?.status).toBe("aguardando");
+    expect(store2.getTask("a")?.error).toBeUndefined();
+    expect(store2.getTask("b")?.status).toBe("falhou");
+    expect(store2.getTask("c")?.status).toBe("falhou");
+    expect(store2.getTask("d")?.status).toBe("falhou");
+  });
+
   it("state.json corrompido: guarda backup, começa limpo e volta a persistir", async () => {
     const lixo = "{isso não é json";
     const store = await freshStore((dir) => {
