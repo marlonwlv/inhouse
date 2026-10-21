@@ -1585,6 +1585,11 @@ input::placeholder { color: var(--faint); }
 .gh-manual { margin: 0; padding-left: 20px; display: grid; gap: 8px; font-size: 12.5px; line-height: 1.45; }
 .gh-cmd { display: flex; align-items: center; gap: 6px; margin-top: 4px; min-width: 0; }
 .gh-cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; user-select: all; }
+/* Toque: botões do login e da ajuda com 44px de alvo no celular. */
+@media (max-width: 560px), (pointer: coarse) {
+  .gh-card .btn, .clone-erro .btn, .gh-cmd .btn { min-height: 44px; }
+  .clone-erro summary { padding: 13px 0; }
+}
 @media (max-width: 560px) {
   .gh-codigo { font-size: 22px; }
   .clone-erro .clone-erro-acts { flex-direction: column; align-items: stretch; }
