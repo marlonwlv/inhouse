@@ -326,7 +326,7 @@ function ghCodigoCard(l, onde, cancelar) {
     <p class="gh-card-tit">${confirmando ? "Pronto. Só conferindo…" : "Digite este código na página do GitHub:"}</p>
     <div class="gh-codigo-linha">
       <span class="gh-codigo" aria-label="Código ${esc(soletrado)}">${esc(l.codigo)}</span>
-      <button type="button" class="btn sm ghost" data-act="copiar" data-texto="${esc(l.codigo)}">Copiar</button>
+      <button type="button" class="btn sm" data-act="copiar" data-texto="${esc(l.codigo)}">Copiar</button>
     </div>
     ${confirmando
       ? `<span class="pp-espera"><span class="spinner"></span> ${esc(l.mensagem || "Confirmando o login…")}</span>`
