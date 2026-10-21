@@ -117,3 +117,15 @@ Notas por passe (antes → depois): Arquitetura de informação 4 → 9; Estados
 VERDICT: pronto para implementar. OUTSIDE COVERAGE: não rodado (sem revisor humano para escolher).
 
 NO UNRESOLVED DECISIONS
+
+## /design-review (2026-10-21, demo ao vivo)
+
+Revisado no modo demonstração, em 1200px e 375px, em todos os cenários. Três achados corrigidos, um commit cada:
+
+- **FINDING-001** (médio, hierarquia): o "Copiar" ao lado do código era só texto; virou botão secundário.
+- **FINDING-002** (médio, toque): os botões do card de código e do painel de ajuda tinham 25 a 32px; agora têm 44px no celular e em telas de toque.
+- **FINDING-003** (alto, responsivo): em 375px o cartão Abrir do GitHub e a barra de demonstração estouravam a largura; agora cabem, sem rolagem lateral.
+
+Também saíram antes as duas repetições: a mensagem de erro aparecia no passo e no painel, e o aviso de demonstração aparecia duas vezes.
+
+Fica de fora (já existia antes deste trabalho): no cabeçalho, em 375px, o link "Início" é cortado.
