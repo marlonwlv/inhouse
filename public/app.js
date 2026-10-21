@@ -234,12 +234,181 @@ function esperarClone(id) {
           return acabar({ estado: "erro", erro: { tipo: "outro", mensagem: "O InHouse reiniciou durante o download. Tente baixar de novo." } });
         }
         const job = res.ok ? await res.json() : null;
+        if (job && state.cloneJob?.id === id && JSON.stringify(job) !== JSON.stringify(state.cloneJob)) {
+          state.cloneJob = job; // SSE calado: o checklist anda pela consulta
+          if (route().name === "home") render();
+        }
         if (job && job.estado !== "baixando") return acabar(job);
       } catch { /* servidor ocupado ou reconectando: tenta de novo */ }
       setTimeout(consultar, 1500);
     };
     setTimeout(consultar, 1500);
   });
+}
+
+/* Segue um download (novo ou retomado) até o fim e aplica o resultado na tela. */
+async function acompanharClone(job, url) {
+  if (job && job.id) state.cloneJob = job;
+  state.busy.clone = true;
+  render();
+  const fim = job && job.id ? await esperarClone(job.id) : null;
+  delete state.busy.clone;
+  if (fim && fim.id) state.cloneJob = fim;
+  if (fim && fim.estado === "ok" && fim.project) {
+    const p = fim.project;
+    upsert(state.projects, p);
+    clearProgressFor(p);
+    state.cloneJob = null;
+    const el = $("#clone-url");
+    if (el) el.value = "";
+    toast(`Projeto “${p.name}” pronto para usar.`);
+  } else if (fim && fim.estado === "ok") {
+    toast("Demonstração: o download terminou. Aqui o projeto abriria.");
+  } else {
+    if (fim && fim.erro) state.cloneErro = { ...fim.erro, url };
+    else if (!fim) state.cloneJob = null; // o pedido nem começou (o toast já explicou)
+    // Clone falhou: remove as barras de progresso órfãs (ainda sem projectId).
+    for (const k of Object.keys(state.progress)) {
+      if (!state.progress[k].projectId) delete state.progress[k];
+    }
+  }
+  render();
+}
+
+/* Foco no botão do código quando ele aparece (uma vez por código). */
+function focarCodigoGh(onde, codigo) {
+  if (!codigo || state.ghFocoCodigo === `${onde}|${codigo}`) return;
+  state.ghFocoCodigo = `${onde}|${codigo}`;
+  document.getElementById(`gh-abrir-${onde}`)?.focus({ preventScroll: false });
+}
+
+/* Copia texto com fallback para página sem HTTPS (onde navigator.clipboard não existe). */
+async function copiarTexto(t) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(t); return true; }
+  } catch { /* cai no fallback */ }
+  const ta = document.createElement("textarea");
+  ta.value = t;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;top:-1000px;opacity:0";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { ok = false; }
+  ta.remove();
+  return ok;
+}
+
+function marcarCopiado(btn, ok) {
+  if (!btn) return;
+  const original = btn.dataset.rotulo || btn.textContent;
+  btn.dataset.rotulo = original;
+  btn.textContent = ok ? "Copiado" : "Selecione e copie";
+  clearTimeout(btn._copiadoTimer);
+  btn._copiadoTimer = setTimeout(() => { btn.textContent = original; }, 2000);
+  const viva = $("#copiado-aviso");
+  if (viva) viva.textContent = ok ? "Copiado." : "Não deu para copiar. Selecione o texto e copie.";
+}
+
+/* Cartão do login por código do GitHub: o mesmo na home (download) e em Preparar.
+ * `onde` separa os ids ("clone" | "setup"); `cancelar` é o data-act do Cancelar. */
+function ghCodigoCard(l, onde, cancelar) {
+  if (!l) return "";
+  if (!l.codigo) {
+    return `<div class="pp-card gh-card">
+      <span class="pp-espera"><span class="spinner"></span> ${esc(l.mensagem || "Pedindo um código ao GitHub…")}</span>
+      ${cancelar ? `<button type="button" class="btn ghost xs" data-act="${cancelar}">Cancelar</button>` : ""}
+    </div>`;
+  }
+  const soletrado = l.codigo.replace(/-/g, ", ").split("").join(" ");
+  const confirmando = l.fase === "confirmando";
+  return `<div class="pp-card gh-card" id="gh-card-${onde}">
+    <p class="gh-card-tit">${confirmando ? "Pronto. Só conferindo…" : "Digite este código na página do GitHub:"}</p>
+    <div class="gh-codigo-linha">
+      <span class="gh-codigo" aria-label="Código ${esc(soletrado)}">${esc(l.codigo)}</span>
+      <button type="button" class="btn sm" data-act="copiar" data-texto="${esc(l.codigo)}">Copiar</button>
+    </div>
+    ${confirmando
+      ? `<span class="pp-espera"><span class="spinner"></span> ${esc(l.mensagem || "Confirmando o login…")}</span>`
+      : `<button type="button" class="btn sm primary" id="gh-abrir-${onde}" data-act="gh-copiar-abrir" data-codigo="${esc(l.codigo)}" data-url="${esc(l.url || "https://github.com/login/device")}">Copiar e abrir o GitHub</button>
+        <p class="pp-ajuda">Na página do GitHub, cole o código e clique em <b>Continue</b> e depois em <b>Authorize</b>. Confira no canto de cima se é a conta certa.</p>
+        <span class="pp-espera"><span class="spinner"></span> Esperando você autorizar no GitHub. Esta tela anda sozinha.</span>`}
+    ${cancelar && !confirmando ? `<button type="button" class="btn ghost xs" data-act="${cancelar}">Cancelar o login</button>` : ""}
+  </div>`;
+}
+
+const CLONE_ICONE = { ok: "ok", erro: "erro", andando: "instalando", aguardando: "instalando" };
+function clonePassoIcone(p) {
+  if (CLONE_ICONE[p.estado]) return setupIcone(CLONE_ICONE[p.estado], true);
+  return setupIcone("faltando", p.estado !== "pulado");
+}
+
+/* Checklist ao vivo do download, no visual de Preparar o computador. */
+function cloneChecklistHtml(job) {
+  if (!job?.passos?.length) return "";
+  const passos = job.passos.map((p) => {
+    const ativo = p.estado === "andando" || p.estado === "aguardando";
+    const pct = p.estado === "andando" && typeof p.pct === "number"
+      ? `<div class="progress"><i style="width:${Math.max(2, Math.min(100, p.pct))}%"></i></div>` : "";
+    const extra = p.id === "login" && p.estado === "aguardando" && job.login ? ghCodigoCard(job.login, "clone", "clone-gh-cancelar") : "";
+    const ajuda = p.estado === "erro" && job.estado === "erro" ? cloneAjudaHtml(job) : "";
+    // Com o painel de ajuda aberto, a mensagem fica só nele (sem repetir).
+    const det = ajuda ? "" : p.estado === "pulado" ? (p.detalhe || "Não precisa.") : p.detalhe;
+    return `<li class="pp-item clone-passo est-${esc(p.estado)}" ${ativo ? 'aria-current="step"' : ""}>
+      ${clonePassoIcone(p)}
+      <div class="pp-txt">
+        <div class="pp-tit"><b>${esc(p.titulo)}</b><span class="sr-only"> (${esc(CLONE_ESTADO_TXT[p.estado] || p.estado)})</span></div>
+        ${det ? `<div class="pp-det" ${ativo ? 'aria-live="polite"' : ""}>${esc(det)}</div>` : ""}
+        ${pct}
+        ${extra}
+        ${ajuda}
+      </div>
+    </li>`;
+  }).join("");
+  // Erro sem passo marcado (link inválido, servidor reiniciou): painel solto.
+  const solto = job.estado === "erro" && !job.passos.some((p) => p.estado === "erro") ? cloneAjudaHtml(job) : "";
+  return `<ol class="pp-lista clone-lista" aria-label="Passos do download">${passos}</ol>${solto}`;
+}
+const CLONE_ESTADO_TXT = { pendente: "a seguir", andando: "em andamento", aguardando: "esperando você", ok: "pronto", pulado: "não precisa", erro: "erro" };
+
+/* Painel de falha que ensina: texto pronto de pedido de acesso, outra conta,
+ * passo a passo manual e Tentar de novo. */
+function cloneAjudaHtml(job) {
+  const e = job.erro;
+  if (!e) return "";
+  const a = e.ajuda || {};
+  const pedido = a.pedidoAcesso
+    ? `<div class="gh-pronto">
+        <p class="gh-pronto-tit">Mande este texto para ${a.dono ? `<b>${esc(a.dono)}</b> (dono do repositório) ou um administrador` : "o dono do repositório"}:</p>
+        <pre class="gh-pronto-txt">${esc(a.pedidoAcesso)}</pre>
+        <button type="button" class="btn sm" data-act="copiar" data-texto="${esc(a.pedidoAcesso)}">Copiar texto</button>
+      </div>` : "";
+  const manual = a.manual?.length
+    ? `<ol class="gh-manual">${a.manual.map((m) => `<li><span>${esc(m.texto)}</span>${m.comando
+        ? `<div class="gh-cmd"><code>${esc(m.comando)}</code><button type="button" class="btn xs ghost" data-act="copiar" data-texto="${esc(m.comando)}">Copiar</button></div>` : ""}</li>`).join("")}</ol>` : "";
+  const botoes = [
+    a.podeTrocarConta ? `<button type="button" class="btn sm" data-act="clone-retomar" data-trocar="1">Entrar com outra conta</button>` : "",
+    job.id ? `<button type="button" class="btn sm ${a.podeTrocarConta ? "ghost" : "primary"}" data-act="clone-retomar">Tentar de novo</button>` : "",
+  ].join("");
+  const det = e.detalhe ? `<details class="pp-log"><summary>Ver detalhes</summary><pre>${esc(e.detalhe)}</pre></details>` : "";
+  return `<div class="clone-erro" role="alert">
+    <p>${esc(e.mensagem)}</p>
+    ${pedido}
+    ${manual}
+    ${botoes ? `<div class="clone-erro-acts">${botoes}</div>` : ""}
+    ${det}
+  </div>`;
+}
+
+function cloneDemoBar() {
+  const d = state.cloneDemo;
+  if (!state.setup?.demo || !d) return "";
+  const opts = d.cenarios.map((c) => `<option value="${esc(c.id)}" ${c.id === d.cenario ? "selected" : ""}>${esc(c.rotulo)}</option>`).join("");
+  return `<div class="pp-demo" role="note">
+    <b>Demonstração · nada é baixado</b>
+    <span>Cole qualquer link do GitHub e clique em Baixar e abrir.</span>
+    <label>Cenário do download <select id="clone-demo-cenario">${opts}</select></label>
+  </div>`;
 }
 
 function cloneErroHtml() {
@@ -440,6 +609,11 @@ function handleEvent(ev) {
       break;
     case "clone_status": {
       const acabar = cloneEsperas.get(ev.job.id);
+      // Atualizações no meio do caminho alimentam o checklist ao vivo.
+      if (state.cloneJob?.id === ev.job.id) {
+        state.cloneJob = ev.job;
+        if (route().name === "home") render();
+      }
       if (acabar && ev.job.estado !== "baixando") acabar(ev.job);
       break;
     }
@@ -995,7 +1169,7 @@ let setupConsultaTimer = null;
 let setupUltimoSse = 0;
 function setupAgendarConsulta() {
   const s = state.setup;
-  const andamento = s && (s.instalando || s.login?.ativo || s.itens.some((i) => i.estado === "verificando"));
+  const andamento = s && (s.instalando || s.login?.ativo || s.loginGh?.ativo || s.itens.some((i) => i.estado === "verificando"));
   if (!andamento) { clearTimeout(setupConsultaTimer); setupConsultaTimer = null; return; }
   if (setupConsultaTimer) return;
   setupConsultaTimer = setTimeout(async () => {
@@ -1067,10 +1241,14 @@ function setupLinhaHtml(s, it) {
   if (it.estado === "erro") {
     if (it.acao === "instalar") acoes = `<button class="btn sm" data-act="setup-instalar" data-itens="${esc(ids)}" ${s.instalando || s.ocupadoPorOutro ? "disabled" : ""}>Tentar de novo</button>`;
     if (it.acao === "login" && !s.login?.ativo) acoes = `<button class="btn sm" data-act="setup-login">Tentar de novo</button>`;
+    if (it.acao === "login_gh" && !s.loginGh?.ativo) acoes = `<button class="btn sm" data-act="setup-gh-login" ${s.instalando ? "disabled" : ""}>Tentar de novo</button>`;
+  } else if (it.acao === "login_gh" && it.estado === "faltando" && !s.loginGh?.ativo) {
+    acoes = `<button class="btn sm ghost" data-act="setup-gh-login" ${s.instalando || state.busy["setup-acao"] ? "disabled" : ""}>Entrar no GitHub</button>`;
   } else if (!it.obrigatorio && it.acao === "instalar" && it.estado === "faltando") {
     acoes = `<button class="btn sm ghost" data-act="setup-instalar" data-itens="${esc(ids)}" ${s.instalando || s.ocupadoPorOutro ? "disabled" : ""}>Instalar</button>`;
   }
   if (it.id === "claude_login") extra = setupLoginCard(s);
+  if (it.id === "gh_login" && s.loginGh?.ativo) extra = ghCodigoCard(s.loginGh, "setup", "setup-gh-cancelar");
   if (it.id === "git_identidade" && it.estado !== "ok" && it.acao === "identidade" && !s.instalando) extra = setupIdentidadeCard(s);
   const detalhe = it.estado === "instalando" && it.progresso?.mensagem ? it.progresso.mensagem : it.detalhe;
   const log = it.estado === "erro" && it.log?.length
@@ -1163,6 +1341,7 @@ function renderPreparar() {
     </div>
   </div>`);
   setupFoco(s, prox);
+  focarCodigoGh("setup", s.loginGh?.codigo);
 }
 
 /* Foco: cartão de login/identidade quando abre; botão principal quando um passo termina. */
@@ -1193,6 +1372,8 @@ const setupActions = {
   "setup-instalar": (btn) => setupPost("/api/setup/instalar", btn.dataset.itens ? { itens: btn.dataset.itens.split(",") } : {}),
   "setup-login": () => setupPost("/api/setup/claude/login"),
   "setup-login-cancelar": () => setupPost("/api/setup/claude/cancelar"),
+  "setup-gh-login": () => setupPost("/api/setup/github/login"),
+  "setup-gh-cancelar": () => setupPost("/api/setup/github/cancelar"),
   "setup-verificar": () => setupPost("/api/setup/verificar"),
   "setup-concluir": async () => {
     const r = await setupPost("/api/setup/concluir");
@@ -1212,7 +1393,7 @@ function render() {
     const active = a.dataset.nav === r.name || (r.name === "editor" && a.dataset.nav === "board");
     a.classList.toggle("active", active);
   });
-  if (r.name === "home") renderHome();
+  if (r.name === "home") { renderHome(); focarCodigoGh("clone", state.cloneJob?.login?.codigo); }
   else if (r.name === "board") renderBoard();
   else if (r.name === "experiencia") renderExperiencia();
   else if (r.name === "configuracoes") renderConfiguracoes();
@@ -1750,7 +1931,16 @@ function renderHome() {
       <div class="progress ${typeof pr.pct === "number" ? "" : "indet"}"><i style="width:${typeof pr.pct === "number" ? Math.max(2, Math.min(100, pr.pct)) : 40}%"></i></div>
     </div>`).join("");
 
+  if (state.setup?.demo && !state.cloneDemo && !state.busy["clone-demo"]) {
+    state.busy["clone-demo"] = true;
+    fetch("/api/projects/clone/demo", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).then((d) => {
+      delete state.busy["clone-demo"];
+      if (d) { state.cloneDemo = d; if (route().name === "home") render(); }
+    }).catch(() => { delete state.busy["clone-demo"]; });
+  }
+
   renderPage(`
+  ${cloneDemoBar()}
   <div class="view view-page view-home">
     <div class="home-main">
       <h2 class="hello">Bom te ver.</h2>
@@ -1773,8 +1963,7 @@ function renderHome() {
             <input id="clone-url" type="url" placeholder="https://github.com/seu-usuario/…" autocomplete="off" value="${esc(state.cloneErro?.url || "")}" ${busyClone || claudeOff ? "disabled" : ""} required>
             <button class="btn sm primary" type="submit" ${busyClone || claudeOff ? "disabled" : ""}>${busyClone ? `<span class="spinner"></span> Baixando…` : "Baixar e abrir"}</button>
           </div>
-          ${progressHtml}
-          ${busyClone ? "" : cloneErroHtml()}
+          ${state.cloneJob?.passos ? cloneChecklistHtml(state.cloneJob) : `${progressHtml}${busyClone ? "" : cloneErroHtml()}`}
         </form>
 
         <form class="repo-card" data-form="create-app">
@@ -3138,6 +3327,28 @@ function decidePermission(id, allow) {
 
 const actions = {
   ...setupActions,
+  copiar: async (btn) => marcarCopiado(btn, await copiarTexto(btn.dataset.texto || "")),
+  "gh-copiar-abrir": (btn) => {
+    // Abre já no clique (o navegador bloqueia janela aberta depois de um await).
+    const w = window.open(btn.dataset.url || "https://github.com/login/device", "_blank");
+    if (w) w.opener = null;
+    void copiarTexto(btn.dataset.codigo || "").then((ok) => {
+      marcarCopiado(btn, ok);
+      if (!w) toast("Abra github.com/login/device e cole o código.");
+    });
+  },
+  "clone-gh-cancelar": () => api("/api/setup/github/cancelar", {}),
+  "clone-retomar": async (btn) => {
+    const id = state.cloneJob?.id;
+    if (!id || state.busy.clone) return;
+    const url = state.cloneErro?.url || state.cloneJob?.url || "";
+    state.cloneErro = null;
+    state.busy.clone = true;
+    render();
+    const job = await api(`/api/projects/clone/${encodeURIComponent(id)}/retomar`, { trocarConta: btn.dataset.trocar === "1" });
+    if (!job) { delete state.busy.clone; state.cloneJob = null; render(); return; }
+    await acompanharClone(job, url);
+  },
   "proj-menu": (btn) => {
     const pop = document.getElementById(`proj-menu-${btn.dataset.project}`);
     if (!pop) return;
@@ -3696,6 +3907,13 @@ document.addEventListener("change", (e) => {
   } else if (el.id === "debug-scenario") {
     state.debugSel = el.value; // re-renderiza para atualizar o resumo do cenário
     render();
+  } else if (el.id === "clone-demo-cenario") {
+    api("/api/projects/clone/demo", { cenario: el.value }).then((d) => {
+      if (d) state.cloneDemo = d;
+      state.cloneJob = null;
+      state.cloneErro = null;
+      render();
+    });
   } else if (el.id === "pp-demo-cenario" || el.id === "pp-demo-so") {
     state.setupFoco = "";
     setupPost("/api/setup/demo", { cenario: $("#pp-demo-cenario").value, so: $("#pp-demo-so").value });
@@ -3757,27 +3975,12 @@ document.addEventListener("submit", async (e) => {
     if (!url || state.busy.clone) return;
     state.busy.clone = true;
     state.cloneErro = null;
+    state.cloneJob = null;
     render();
     // O servidor responde na hora e baixa em segundo plano (repo grande leva
     // minutos; um request pendurado caía por timeout e parecia "fora do ar").
     const job = await api("/api/projects/clone", { url });
-    const fim = job && job.id ? await esperarClone(job.id) : null;
-    delete state.busy.clone;
-    if (fim && fim.estado === "ok" && fim.project) {
-      const p = fim.project;
-      upsert(state.projects, p);
-      clearProgressFor(p);
-      const el = $("#clone-url");
-      if (el) el.value = "";
-      toast(`Projeto “${p.name}” pronto para usar.`);
-    } else {
-      if (fim && fim.erro) state.cloneErro = { ...fim.erro, url };
-      // Clone falhou: remove as barras de progresso órfãs (ainda sem projectId).
-      for (const k of Object.keys(state.progress)) {
-        if (!state.progress[k].projectId) delete state.progress[k];
-      }
-    }
-    render();
+    await acompanharClone(job, url);
   } else if (kind === "create-app") {
     const input = $("#new-app-name");
     const name = input.value.trim();

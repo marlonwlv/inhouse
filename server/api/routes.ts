@@ -42,8 +42,15 @@ import {
 } from "../workflow/library.js";
 import { gerarWorkflow } from "../workflow/gerar.js";
 import {
+  CENARIOS_CLONE,
+  cenarioCloneAtual,
+  cenarioCloneValido,
   cloneJob,
   iniciarClone,
+  retomarClone,
+  trocarCenarioClone,
+} from "../services/abrirGithubDeps.js";
+import {
   createFromTemplate,
   deleteProject,
   exclusaoInfo,
@@ -52,7 +59,7 @@ import {
 } from "../services/projects.js";
 import * as store from "../store.js";
 import { registrarRotasSetup } from "../setup/rotas.js";
-import { motorSetup } from "../setup/servico.js";
+import { modoDemo, motorSetup } from "../setup/servico.js";
 import { applyAction, startPreparacao, startTask, steer } from "../workflow/machine.js";
 
 /** Erro com status HTTP próprio (validações de input → 400/404). */
@@ -259,6 +266,37 @@ export function buildRouter(): Router {
       } catch (err) {
         // Link inválido, nome já em uso ou já baixando: erro do pedido, não do servidor.
         throw new HttpError(400, err instanceof Error ? err.message : "Link inválido.");
+      }
+    }),
+  );
+
+  // Modo demonstração: escolhe o cenário do próximo download (nada é baixado).
+  router.get(
+    "/api/projects/clone/demo",
+    h(async (_req, res) => {
+      if (!modoDemo()) throw new HttpError(404, "Rota não encontrada.");
+      res.json({ cenario: cenarioCloneAtual(), cenarios: CENARIOS_CLONE });
+    }),
+  );
+  router.post(
+    "/api/projects/clone/demo",
+    h(async (req, res) => {
+      if (!modoDemo()) throw new HttpError(404, "Rota não encontrada.");
+      const c = (req.body as { cenario?: unknown } | undefined)?.cenario;
+      if (!cenarioCloneValido(c)) throw new HttpError(400, "Cenário desconhecido.");
+      trocarCenarioClone(c);
+      res.json({ cenario: c, cenarios: CENARIOS_CLONE });
+    }),
+  );
+
+  router.post(
+    "/api/projects/clone/:id/retomar",
+    h(async (req, res) => {
+      const trocarConta = (req.body as { trocarConta?: unknown } | undefined)?.trocarConta === true;
+      try {
+        res.json(retomarClone(String(req.params["id"]), trocarConta));
+      } catch (err) {
+        throw new HttpError(400, err instanceof Error ? err.message : "Não deu para tentar de novo.");
       }
     }),
   );

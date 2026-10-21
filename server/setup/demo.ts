@@ -3,8 +3,8 @@
  * cenários simulados, nos dois SOs, e instalar/login são fingidos com
  * progresso de verdade pelo SSE. NADA é executado nem gravado no sistema.
  */
-import type { SetupEstado, SetupItem, SetupItemId, SetupSO, SetupStatus } from "../../shared/types.js";
-import { itemBase, itensDoSO, prontoParaUsar } from "./detectar.js";
+import type { LoginGhStatus, SetupEstado, SetupItem, SetupItemId, SetupSO, SetupStatus } from "../../shared/types.js";
+import { DETALHE_GH_LOGIN, itemBase, itensDoSO, prontoParaUsar } from "./detectar.js";
 import { ErroHttp, validarCodigo, validarIdentidade } from "./comum.js";
 import type { MotorSetup } from "./comum.js";
 
@@ -17,6 +17,8 @@ export const CENARIOS = [
   { id: "codigo-invalido", rotulo: "Código do login não aceito" },
   { id: "identidade", rotulo: "Falta o nome no Git" },
   { id: "outra-janela", rotulo: "Outra janela instalando" },
+  { id: "gh-login", rotulo: "Falta entrar no GitHub (login por código)" },
+  { id: "gh-login-falhou", rotulo: "Login do GitHub falhou (passo a passo manual)" },
   { id: "tudo-pronto", rotulo: "Tudo pronto" },
 ] as const;
 
@@ -31,7 +33,7 @@ const VERSOES: Partial<Record<SetupItemId, string>> = { node: "24.11.0", git: "2
 function ok(id: SetupItemId, ident: { nome?: string; email?: string }): SetupItem {
   if (id === "claude_login") return itemBase(id, { estado: "ok", detalhe: "Claude conectado · sua assinatura" });
   if (id === "git_identidade") return itemBase(id, { estado: "ok", detalhe: `${ident.nome ?? "Ana Souza"} · ${ident.email ?? "ana@exemplo.com"}` });
-  if (id === "gh_login") return itemBase(id, { estado: "ok", detalhe: "GitHub conectado" });
+  if (id === "gh_login") return itemBase(id, { estado: "ok", detalhe: "GitHub conectado · ana-souza" });
   const v = VERSOES[id];
   return itemBase(id, { estado: "ok", detalhe: v ? `Pronto · v${v}` : "Pronto" });
 }
@@ -45,7 +47,7 @@ function faltando(id: SetupItemId): SetupItem {
     case "gh":
       return itemBase(id, { estado: "faltando", acao: "instalar", detalhe: "Opcional · pule se não usa o GitHub." });
     case "gh_login":
-      return itemBase(id, { estado: "faltando", acao: "manual", detalhe: "Opcional. Necessário para baixar repositórios privados. Para conectar, rode gh auth login uma vez no Terminal (o guia explica)." });
+      return itemBase(id, { estado: "faltando", acao: "login_gh", detalhe: DETALHE_GH_LOGIN });
     default:
       return itemBase(id, { estado: "faltando", acao: "instalar", detalhe: "Ainda não instalado." });
   }
@@ -65,6 +67,9 @@ export class MotorDemo implements MotorSetup {
   private instalando = false;
   private ocupado = false;
   private login: SetupStatus["login"];
+  private loginGh: LoginGhStatus | undefined;
+  private falharLoginGh = false;
+  private obsGh = new Set<(e: LoginGhStatus) => void>();
   private concluidoEm?: string;
   private timers = new Set<NodeJS.Timeout>();
   private ultimoStatus: SetupStatus | null = null;
@@ -94,6 +99,8 @@ export class MotorDemo implements MotorSetup {
     this.instalando = false;
     this.ocupado = false;
     this.login = undefined;
+    this.loginGh = undefined;
+    this.falharLoginGh = cenario === "gh-login-falhou";
     this.concluidoEm = undefined;
     this.ident = {};
     const ids = itensDoSO(so);
@@ -143,6 +150,12 @@ export class MotorDemo implements MotorSetup {
         set([...instaladores, "claude_login", "git_identidade", "gh", "gh_login"]);
         this.ocupado = true;
         break;
+      case "gh-login":
+      case "gh-login-falhou":
+        set(["gh_login"]);
+        this.ident = { nome: "Ana Souza", email: "ana@exemplo.com" };
+        this.itens.set("git_identidade", ok("git_identidade", this.ident));
+        break;
       case "tudo-pronto":
         set([]);
         break;
@@ -160,6 +173,7 @@ export class MotorDemo implements MotorSetup {
       instalando: this.instalando,
       ...(this.ocupado ? { ocupadoPorOutro: true } : {}),
       ...(this.login ? { login: this.login } : {}),
+      ...(this.loginGh ? { loginGh: this.loginGh } : {}),
       identidade: this.ident,
       ...(this.concluidoEm ? { concluidoEm: this.concluidoEm } : {}),
       mostrarAoAbrir: true,
@@ -277,6 +291,57 @@ export class MotorDemo implements MotorSetup {
   async cancelarLogin(): Promise<SetupStatus> {
     this.login = undefined;
     return this.publicar();
+  }
+
+  private mudarLoginGh(e: LoginGhStatus | undefined): void {
+    this.loginGh = e;
+    if (e) for (const fn of this.obsGh) fn(e);
+    this.publicar();
+  }
+
+  /** Simula o gh: código em ~1 s; "a pessoa digita" e o login termina sozinho em ~9 s. */
+  async iniciarLoginGh(): Promise<SetupStatus> {
+    if (this.itens.get("gh")?.estado !== "ok") throw new ErroHttp(409, "Instale o GitHub CLI primeiro.");
+    if (this.instalando) throw new ErroHttp(409, "Espere a instalação terminar para entrar no GitHub.");
+    if (this.loginGh?.ativo) return this.montar();
+    this.mudarItem("gh_login", "faltando", { acao: "login_gh", detalhe: DETALHE_GH_LOGIN });
+    this.mudarLoginGh({ ativo: true, fase: "abrindo", mensagem: "Pedindo um código ao GitHub…" });
+    this.agendar(this.passoMs * 3, () => {
+      this.mudarLoginGh({
+        ativo: true,
+        fase: "aguardando",
+        codigo: "WDJB-MJHT",
+        url: "https://github.com/login/device",
+        mensagem: "Digite o código na página do GitHub. Esta tela percebe sozinha quando você terminar.",
+      });
+      this.agendar(this.passoMs * 25, () => {
+        this.mudarLoginGh({ ativo: true, fase: "confirmando", mensagem: "Confirmando o login…" });
+        this.agendar(this.passoMs * 3, () => {
+          if (this.falharLoginGh) {
+            const mensagem = "O login do GitHub não terminou. Tente de novo.";
+            this.mudarItem("gh_login", "erro", { acao: "login_gh", detalhe: mensagem });
+            this.mudarLoginGh({ ativo: false, fase: "erro", mensagem });
+            return;
+          }
+          this.itens.set("gh_login", ok("gh_login", this.ident));
+          for (const fn of this.obsGh) fn({ ativo: false, fase: "ok", mensagem: "GitHub conectado · ana-souza" });
+          this.mudarLoginGh(undefined);
+        });
+      });
+    });
+    return this.montar();
+  }
+
+  async cancelarLoginGh(): Promise<SetupStatus> {
+    this.pararTudo();
+    if (this.loginGh) for (const fn of this.obsGh) fn({ ativo: false, fase: "cancelado" });
+    this.mudarLoginGh(undefined);
+    return this.montar();
+  }
+
+  observarLoginGh(fn: (e: LoginGhStatus) => void): () => void {
+    this.obsGh.add(fn);
+    return () => this.obsGh.delete(fn);
   }
 
   async salvarIdentidade(nome: string, email: string): Promise<SetupStatus> {

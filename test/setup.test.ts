@@ -253,7 +253,7 @@ describe("detecção por SO", () => {
     expect(i.claude_login?.detalhe).toContain("ana@exemplo.com");
     expect(d.identidade).toEqual({ nome: "Ana Souza", email: "ana@exemplo.com" });
     expect(i.gh?.estado).toBe("ok");
-    expect(i.gh_login).toMatchObject({ estado: "faltando", acao: "manual" });
+    expect(i.gh_login).toMatchObject({ estado: "faltando", acao: "login_gh" });
     expect(prontoParaUsar(d.itens)).toBe(true);
   });
 

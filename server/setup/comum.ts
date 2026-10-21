@@ -1,7 +1,7 @@
 /** Peças comuns ao motor real e ao de demonstração da preparação. */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { SetupItemId, SetupStatus } from "../../shared/types.js";
+import type { LoginGhStatus, SetupItemId, SetupStatus } from "../../shared/types.js";
 import { DATA_DIR } from "../config.js";
 
 export class ErroHttp extends Error {
@@ -16,6 +16,11 @@ export interface MotorSetup {
   iniciarLogin(): Promise<SetupStatus>;
   enviarCodigo(codigo: string): Promise<SetupStatus>;
   cancelarLogin(): Promise<SetupStatus>;
+  /** Login do GitHub por código (gh auth login --web). */
+  iniciarLoginGh(): Promise<SetupStatus>;
+  cancelarLoginGh(): Promise<SetupStatus>;
+  /** Avisa cada mudança do login do GitHub (o download espera por ele). Devolve o "parar de ouvir". */
+  observarLoginGh(fn: (e: LoginGhStatus) => void): () => void;
   salvarIdentidade(nome: string, email: string): Promise<SetupStatus>;
   concluir(): Promise<SetupStatus>;
   ultimo(): SetupStatus | null;

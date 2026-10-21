@@ -514,6 +514,8 @@ input::placeholder { color: var(--faint); }
 .sect span { font-size: 12px; color: var(--faint); }
 .repo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 34px; }
 .add-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 34px; }
+.add-grid > *, .repo-grid > * { min-width: 0; }
+.add-grid > .repo-card { grid-template-columns: minmax(0, 1fr); }
 .repo-card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -1526,8 +1528,8 @@ input::placeholder { color: var(--faint); }
 .pp-skel .sk-l.w40 { width: 40%; } .pp-skel .sk-l.w70 { width: 70%; }
 .pp-demo { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 8px 22px; background: var(--surface-2); border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
 .pp-demo b { color: var(--ink); font-weight: 600; }
-.pp-demo label { display: inline-flex; align-items: center; gap: 6px; }
-.pp-demo select { font-size: 12.5px; padding: 3px 26px 3px 8px; }
+.pp-demo label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.pp-demo select { font-size: 12.5px; padding: 3px 26px 3px 8px; min-width: 0; max-width: 100%; text-overflow: ellipsis; }
 .pp-jornada { margin: 0 0 22px; }
 .pp-jornada ol { list-style: none; margin: 0; padding: 0; display: flex; gap: 6px; }
 .pp-jornada li { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 8px; padding-top: 10px; border-top: 2px solid var(--line); font-size: 12px; color: var(--faint); }
@@ -1562,4 +1564,40 @@ input::placeholder { color: var(--faint); }
   .pp-ico.gira .spinner { animation: none; border: 0; width: auto; height: auto; }
   .pp-ico.gira .spinner::after { content: "…"; }
   .pp-rodape .spinner, .pp-espera .spinner { animation: none; }
+}
+
+/* ---------- GitHub mágico: checklist do download e login por código ---------- */
+.clone-lista { margin: 4px 0 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.clone-lista .pp-item { padding: 10px 12px; gap: 10px; }
+.clone-lista .pp-tit b { font-size: 13px; font-weight: 600; }
+.clone-passo.est-pendente .pp-tit b, .clone-passo.est-pulado .pp-tit b { color: var(--muted); font-weight: 500; }
+.clone-passo.est-pulado .pp-det { color: var(--faint); }
+.clone-passo.est-andando .pp-det, .clone-passo.est-aguardando .pp-det { color: var(--ink); font-variant-numeric: tabular-nums; }
+.clone-passo .progress { margin-top: 6px; }
+.clone-passo .pp-txt { min-width: 0; flex: 1; }
+.clone-demo-fim { margin-top: 8px; }
+.gh-card { gap: 8px; }
+.gh-card-tit { margin: 0; font-size: 12.5px; color: var(--muted); }
+.gh-codigo-linha { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gh-codigo { font-family: var(--mono); font-size: 28px; font-weight: 600; letter-spacing: 0.08em; color: var(--ink); font-variant-numeric: tabular-nums; user-select: all; line-height: 1.1; }
+.clone-erro .clone-erro-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.gh-pronto { display: grid; gap: 6px; justify-items: start; }
+.gh-pronto-tit { font-size: 12.5px; }
+.gh-pronto-txt { margin: 0; width: 100%; box-sizing: border-box; white-space: pre-wrap; font-family: var(--ui); font-size: 12.5px; line-height: 1.5; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; user-select: all; }
+.gh-manual { margin: 0; padding-left: 20px; display: grid; gap: 8px; font-size: 12.5px; line-height: 1.45; }
+.gh-cmd { display: flex; align-items: center; gap: 6px; margin-top: 4px; min-width: 0; }
+.gh-cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; user-select: all; }
+/* Toque: botões do login e da ajuda com 44px de alvo no celular. */
+@media (max-width: 560px), (pointer: coarse) {
+  .gh-card .btn, .clone-erro .btn, .gh-cmd .btn { min-height: 44px; }
+  .clone-erro summary { padding: 13px 0; }
+}
+@media (max-width: 560px) {
+  .gh-codigo { font-size: 22px; }
+  .clone-erro .clone-erro-acts { flex-direction: column; align-items: stretch; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .clone-passo .pp-ico.gira .spinner { animation: none; border: 0; width: auto; height: auto; }
+  .clone-passo .pp-ico.gira .spinner::after { content: "…"; }
+  .gh-card .spinner { animation: none; }
 }

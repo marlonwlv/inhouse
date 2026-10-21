@@ -272,6 +272,15 @@ export function localizarGh(m: Maquina): string | null {
   return m.existe(portatil) ? portatil : null;
 }
 
+/** Conta logada a partir da saída de `gh auth status` (formatos novo e antigo). */
+export function contaDoStatus(saida: string): string | undefined {
+  return (
+    /Logged in to \S+ account (\S+)/i.exec(saida)?.[1] ?? /Logged in to \S+ as (\S+)/i.exec(saida)?.[1]
+  )?.replace(/[()]/g, "");
+}
+
+export const DETALHE_GH_LOGIN = "Opcional. Necessário para baixar repositórios privados.";
+
 export async function detectarGh(m: Maquina): Promise<SetupItem[]> {
   const exe = localizarGh(m);
   if (!exe) {
@@ -284,14 +293,14 @@ export async function detectarGh(m: Maquina): Promise<SetupItem[]> {
   const gh = v.code === 0
     ? itemBase("gh", { estado: "ok", detalhe: `Pronto · v${versaoDe(v.stdout) ?? "?"}` })
     : itemBase("gh", { estado: "erro", acao: "instalar", detalhe: "O GitHub CLI não respondeu." });
-  const s = await m.exec(exe, ["auth", "status"], { timeoutMs: 10_000 });
+  const s = await m.exec(exe, ["auth", "status", "--hostname", "github.com"], {
+    timeoutMs: 10_000,
+    env: { ...m.env, GH_NO_UPDATE_NOTIFIER: "1", GH_PROMPT_DISABLED: "1" },
+  });
+  const conta = s.code === 0 ? contaDoStatus(`${s.stdout}\n${s.stderr}`) : undefined;
   const login = s.code === 0
-    ? itemBase("gh_login", { estado: "ok", detalhe: "GitHub conectado" })
-    : itemBase("gh_login", {
-        estado: "faltando",
-        acao: "manual",
-        detalhe: "Opcional. Necessário para baixar repositórios privados. Para conectar, rode gh auth login uma vez no Terminal (o guia explica).",
-      });
+    ? itemBase("gh_login", { estado: "ok", detalhe: conta ? `GitHub conectado · ${conta}` : "GitHub conectado" })
+    : itemBase("gh_login", { estado: "faltando", acao: "login_gh", detalhe: DETALHE_GH_LOGIN });
   return [gh, login];
 }
 

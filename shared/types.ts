@@ -308,7 +308,7 @@ export interface SetupItem {
   estado: SetupEstado;
   /** Versão encontrada, onde, ou o erro em português. */
   detalhe?: string;
-  acao?: "instalar" | "login" | "identidade" | "manual";
+  acao?: "instalar" | "login" | "login_gh" | "identidade" | "manual";
   progresso?: { mensagem: string; pct?: number };
   /** Últimas linhas da instalação (máx. 40). */
   log?: string[];
@@ -323,6 +323,8 @@ export interface SetupStatus {
   /** Outra janela/processo do InHouse segura a trava de instalação. */
   ocupadoPorOutro?: boolean;
   login?: { ativo: boolean; url?: string; pedeCodigo: boolean; mensagem?: string };
+  /** Login do GitHub por código (gh auth login --web), aqui e no download. */
+  loginGh?: LoginGhStatus;
   identidade?: { nome?: string; email?: string };
   /** Quando a pessoa concluiu a preparação (~/.inhouse/setup.json). */
   concluidoEm?: string;
@@ -331,10 +333,60 @@ export interface SetupStatus {
   verificadoEm: string;
 }
 
+export type FaseLoginGh = "abrindo" | "aguardando" | "confirmando" | "ok" | "erro" | "cancelado";
+
+/**
+ * Login do GitHub pelo "device code": o gh imprime um código (ABCD-1234), a
+ * pessoa digita em github.com/login/device e o gh percebe sozinho quando ela
+ * termina.
+ */
+export interface LoginGhStatus {
+  ativo: boolean;
+  fase: FaseLoginGh;
+  codigo?: string;
+  url?: string;
+  mensagem?: string;
+}
+
 // ---------- Download de repositório (POST /api/projects/clone) ----------
 
 /** Tipo da falha do clone (decide o que a UI oferece: login, pedir acesso, rede…). */
-export type TipoErroClone = "sem_login" | "sem_acesso" | "rede" | "timeout" | "disco" | "outro";
+export type TipoErroClone =
+  | "sem_login"
+  | "sem_acesso"
+  | "rede"
+  | "timeout"
+  | "disco"
+  | "login_falhou"
+  | "gh_falhou"
+  | "outro";
+
+/** Passos do checklist ao vivo do download, na ordem. */
+export type PassoCloneId = "gh" | "login" | "git" | "acesso" | "baixar";
+export type EstadoPassoClone = "pendente" | "andando" | "aguardando" | "ok" | "pulado" | "erro";
+
+export interface PassoClone {
+  id: PassoCloneId;
+  titulo: string;
+  estado: EstadoPassoClone;
+  detalhe?: string;
+  pct?: number;
+}
+
+/** O que a tela ensina quando o download falha. */
+export interface AjudaClone {
+  /** Conta do GitHub logada no InHouse. */
+  conta?: string;
+  /** "dono/repo" e o dono (pessoa ou organização). */
+  repo?: string;
+  dono?: string;
+  /** Texto pronto para pedir acesso (botão Copiar). */
+  pedidoAcesso?: string;
+  /** Oferece "Entrar com outra conta". */
+  podeTrocarConta?: boolean;
+  /** Passo a passo manual no Terminal (login automático falhou). */
+  manual?: { texto: string; comando?: string }[];
+}
 
 /**
  * O clone roda em segundo plano: um repositório grande leva minutos e um
@@ -344,9 +396,18 @@ export type TipoErroClone = "sem_login" | "sem_acesso" | "rede" | "timeout" | "d
 export interface CloneJob {
   id: string;
   name: string;
+  /** "dono/repo". */
+  repo?: string;
+  url?: string;
   estado: "baixando" | "ok" | "erro";
   project?: Project;
-  erro?: { tipo: TipoErroClone; mensagem: string; detalhe?: string };
+  /** Checklist ao vivo (instalar gh → login → ligar o Git → acesso → baixar). */
+  passos?: PassoClone[];
+  /** Código do login do GitHub enquanto o passo "login" espera a pessoa. */
+  login?: LoginGhStatus;
+  erro?: { tipo: TipoErroClone; mensagem: string; detalhe?: string; ajuda?: AjudaClone };
+  /** Modo demonstração: nada foi baixado de verdade. */
+  demo?: boolean;
 }
 
 // ---------- Eventos SSE (GET /api/events) ----------
@@ -374,7 +435,9 @@ export type ServerEvent =
 // GET  /api/state                       -> { projects, tasks, permissions, claude: {ok, version} }
 // GET  /api/events                      -> SSE de ServerEvent
 // POST /api/projects/clone              { url } -> CloneJob (202; roda em segundo plano, progresso via project_progress)
-// GET  /api/projects/clone/:id          -> CloneJob (fim via clone_status também)
+// GET  /api/projects/clone/:id          -> CloneJob (passos ao vivo via clone_status também)
+// POST /api/projects/clone/:id/retomar  { trocarConta? } -> CloneJob (Tentar de novo / Entrar com outra conta)
+// POST /api/projects/clone/demo         { cenario } -> { cenario } (só INHOUSE_SETUP_DEMO=1)
 // POST /api/projects/from-template     { name, template: "app-starter" } -> Project
 // POST /api/projects/open               { path } -> Project (registra pasta existente)
 // GET  /api/tasks/:id/transcript        -> TranscriptItem[]
@@ -407,6 +470,8 @@ export type ServerEvent =
 // POST /api/setup/claude/login          -> SetupStatus (abre o login; URL em login.url)
 // POST /api/setup/claude/codigo         { codigo } -> SetupStatus
 // POST /api/setup/claude/cancelar       -> SetupStatus
+// POST /api/setup/github/login          -> SetupStatus (login por código; código em loginGh.codigo)
+// POST /api/setup/github/cancelar       -> SetupStatus
 // POST /api/setup/identidade            { nome, email } -> SetupStatus (git config --global)
 // POST /api/setup/concluir              -> SetupStatus (409 se ainda falta algo)
 // POST /api/setup/demo                  { cenario, so } -> SetupStatus (só INHOUSE_SETUP_DEMO=1)

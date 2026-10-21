@@ -91,6 +91,8 @@ export function registrarRotasSetup(router: Router, motor: () => MotorSetup = mo
   router.post("/api/setup/claude/login", rota(async (_req, m) => m.iniciarLogin(), motor));
   router.post("/api/setup/claude/codigo", rota(async (req, m) => m.enviarCodigo(corpo(req)["codigo"] as string), motor));
   router.post("/api/setup/claude/cancelar", rota(async (_req, m) => m.cancelarLogin(), motor));
+  router.post("/api/setup/github/login", rota(async (_req, m) => m.iniciarLoginGh(), motor));
+  router.post("/api/setup/github/cancelar", rota(async (_req, m) => m.cancelarLoginGh(), motor));
   router.post(
     "/api/setup/identidade",
     rota(async (req, m) => {

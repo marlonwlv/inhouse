@@ -4,19 +4,20 @@
  * SSE (`setup_status`). Escolhe o motor real ou o de demonstração
  * (INHOUSE_SETUP_DEMO=1).
  */
-import type { SetupItem, SetupItemId, SetupStatus } from "../../shared/types.js";
+import type { LoginGhStatus, SetupItem, SetupItemId, SetupStatus } from "../../shared/types.js";
 import { zerarCacheClaudePath } from "../config.js";
 import { zerarCacheGitBash } from "../platform.js";
 import { aplicarAmbiente, pastaFerramentas } from "./ambiente.js";
 import { ErroHttp, gravarConcluido, lerConcluido, mostrarAoAbrir, validarCodigo, validarIdentidade } from "./comum.js";
 import type { MotorSetup } from "./comum.js";
 import { MotorDemo } from "./demo.js";
-import { comandoGit, detectarLoginClaude, detectarTudo, itemBase, localizarClaude, maquinaReal, prontoParaUsar } from "./detectar.js";
+import { comandoGit, contaDoStatus, detectarLoginClaude, detectarTudo, itemBase, localizarClaude, localizarGh, maquinaReal, prontoParaUsar } from "./detectar.js";
 import type { Deteccao, Maquina } from "./detectar.js";
 import { adquirirTrava, ErroSetup, executarPasso, itemInstalavel, matarFilhosDoSetup, planejar, redeReal, rodarReal } from "./instalar.js";
 import type { ContextoInstalacao, Rede, Rodar, Trava } from "./instalar.js";
 import { LoginClaude } from "./login.js";
 import type { EstadoLogin } from "./login.js";
+import { LoginGitHub } from "./loginGh.js";
 
 export { ErroHttp } from "./comum.js";
 
@@ -33,6 +34,7 @@ export interface DepsMotorReal {
   aoMudarFerramentas?: () => void;
   dataDir?: string;
   login?: LoginClaude;
+  loginGh?: LoginGitHub;
 }
 
 interface Sobrescrita {
@@ -53,6 +55,9 @@ export class MotorReal implements MotorSetup {
   private ocupadoPorOutro = false;
   private loginEstado: EstadoLogin | null = null;
   private login: LoginClaude;
+  private loginGh: LoginGitHub;
+  private loginGhEstado: LoginGhStatus | null = null;
+  private obsGh = new Set<(e: LoginGhStatus) => void>();
   private ultimoStatus: SetupStatus | null = null;
   private timerEmitir: NodeJS.Timeout | null = null;
   private ultimaEmissao = 0;
@@ -69,6 +74,22 @@ export class MotorReal implements MotorSetup {
           return (await detectarLoginClaude(this.m, exe)).estado === "ok";
         },
         aoMudar: (e) => this.aoMudarLogin(e),
+      });
+    this.loginGh =
+      deps.loginGh ??
+      new LoginGitHub({
+        env: this.m.env,
+        confirmar: async () => {
+          const gh = localizarGh(this.m);
+          if (!gh) return { logado: false };
+          const r = await this.m.exec(gh, ["auth", "status", "--hostname", "github.com"], {
+            timeoutMs: 10_000,
+            env: { ...this.m.env, GH_NO_UPDATE_NOTIFIER: "1", GH_PROMPT_DISABLED: "1" },
+          });
+          const conta = r.code === 0 ? contaDoStatus(`${r.stdout}\n${r.stderr}`) : undefined;
+          return { logado: r.code === 0, ...(conta ? { conta } : {}) };
+        },
+        aoMudar: (e) => this.aoMudarLoginGh(e),
       });
   }
 
@@ -94,6 +115,9 @@ export class MotorReal implements MotorSetup {
       if (it.id === "claude_login" && this.loginEstado?.fase === "erro" && !s) {
         return { ...it, estado: "erro" as const, acao: "login" as const, detalhe: this.loginEstado.mensagem };
       }
+      if (it.id === "gh_login" && this.loginGhEstado?.fase === "erro" && !s) {
+        return { ...it, estado: "erro" as const, acao: "login_gh" as const, detalhe: this.loginGhEstado.mensagem };
+      }
       if (!s) return it;
       return { ...it, estado: s.estado, detalhe: s.detalhe ?? it.detalhe, progresso: s.progresso, log: s.log.slice(-MAX_LOG), acao: it.acao ?? (s.estado === "erro" ? "instalar" : undefined) };
     });
@@ -101,6 +125,8 @@ export class MotorReal implements MotorSetup {
     const concluidoEm = lerConcluido(this.deps.dataDir);
     const l = this.loginEstado;
     const loginVisivel = l && (l.fase === "abrindo" || l.fase === "aguardando" || l.fase === "confirmando" || l.fase === "erro");
+    const g = this.loginGhEstado;
+    const ghVisivel = g && g.fase !== "ok" && g.fase !== "cancelado";
     return {
       so: this.m.so,
       itens,
@@ -108,6 +134,7 @@ export class MotorReal implements MotorSetup {
       instalando: this.instalando,
       ...(this.ocupadoPorOutro ? { ocupadoPorOutro: true } : {}),
       ...(loginVisivel ? { login: { ativo: this.login.ativo, url: l.url, pedeCodigo: l.pedeCodigo, mensagem: l.mensagem } } : {}),
+      ...(ghVisivel ? { loginGh: { ...g, ativo: this.loginGh.ativo } } : {}),
       identidade: d.identidade,
       ...(concluidoEm ? { concluidoEm } : {}),
       mostrarAoAbrir: mostrarAoAbrir(pronto, concluidoEm, this.deps.temProjetos?.() ?? false),
@@ -158,6 +185,7 @@ export class MotorReal implements MotorSetup {
     if (pedidos?.some((id) => !itemInstalavel(id))) throw new ErroHttp(400, "Um dos itens pedidos não existe ou não se instala.");
     if (this.instalando) throw new ErroHttp(409, "Já estou instalando. Espere terminar.");
     if (this.login.ativo) throw new ErroHttp(409, "Termine o login do Claude antes de instalar.");
+    if (this.loginGh.ativo) throw new ErroHttp(409, "Termine o login do GitHub antes de instalar.");
     const d = await this.detectar(true);
     const atual = this.montar(d);
     let passos;
@@ -263,6 +291,44 @@ export class MotorReal implements MotorSetup {
     return this.status();
   }
 
+  private aoMudarLoginGh(e: LoginGhStatus): void {
+    this.loginGhEstado = e;
+    for (const fn of this.obsGh) {
+      try {
+        fn(e);
+      } catch {
+        /* quem ouve não derruba o login */
+      }
+    }
+    if (e.fase === "ok") {
+      this.loginGhEstado = null;
+      this.ferramentasMudaram();
+      void this.emitirAgora(true).catch(() => undefined);
+      return;
+    }
+    if (e.fase === "cancelado") this.loginGhEstado = null;
+    this.emitir();
+  }
+
+  async iniciarLoginGh(): Promise<SetupStatus> {
+    if (this.instalando) throw new ErroHttp(409, "Espere a instalação terminar para entrar no GitHub.");
+    const gh = localizarGh(this.m);
+    if (!gh) throw new ErroHttp(409, "Instale o GitHub CLI primeiro.");
+    if (!this.loginGh.ativo) this.loginGh.iniciar(gh);
+    return this.status();
+  }
+
+  async cancelarLoginGh(): Promise<SetupStatus> {
+    this.loginGh.cancelar();
+    this.loginGhEstado = null;
+    return this.status();
+  }
+
+  observarLoginGh(fn: (e: LoginGhStatus) => void): () => void {
+    this.obsGh.add(fn);
+    return () => this.obsGh.delete(fn);
+  }
+
   async salvarIdentidade(nome: string, email: string): Promise<SetupStatus> {
     const v = validarIdentidade(nome, email);
     const d = await this.detectar(false);
@@ -284,6 +350,7 @@ export class MotorReal implements MotorSetup {
 
   encerrar(): void {
     this.login.cancelar();
+    this.loginGh.cancelar();
     matarFilhosDoSetup();
     if (this.timerEmitir) clearTimeout(this.timerEmitir);
   }

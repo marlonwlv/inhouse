@@ -8,21 +8,16 @@
  * push daquele projeto (e dos worktrees dele) também usam a conta do gh, sem
  * tocar no ~/.gitconfig da pessoa.
  */
-import { localizarGh, maquinaReal } from "../setup/detectar.js";
+import { contaDoStatus, localizarGh, maquinaReal } from "../setup/detectar.js";
 import type { Maquina } from "../setup/detectar.js";
+
+export { contaDoStatus };
 
 export interface EstadoGh {
   /** Caminho do executável do gh; null se não está instalado. */
   gh: string | null;
   logado: boolean;
   conta?: string;
-}
-
-/** Conta logada a partir da saída de `gh auth status` (formatos novo e antigo). */
-export function contaDoStatus(saida: string): string | undefined {
-  return (
-    /Logged in to \S+ account (\S+)/i.exec(saida)?.[1] ?? /Logged in to \S+ as (\S+)/i.exec(saida)?.[1]
-  )?.replace(/[()]/g, "");
 }
 
 export async function estadoGh(m: Maquina = maquinaReal()): Promise<EstadoGh> {
@@ -35,6 +30,24 @@ export async function estadoGh(m: Maquina = maquinaReal()): Promise<EstadoGh> {
   if (r.code !== 0) return { gh, logado: false };
   const conta = contaDoStatus(`${r.stdout}\n${r.stderr}`);
   return { gh, logado: true, ...(conta ? { conta } : {}) };
+}
+
+/** `gh auth token` responde: o git consegue usar a conta do gh. */
+export async function ghEntregaCredencial(gh: string, m: Maquina = maquinaReal()): Promise<boolean> {
+  const r = await m.exec(gh, ["auth", "token", "--hostname", "github.com"], {
+    timeoutMs: 10_000,
+    env: { ...m.env, GH_NO_UPDATE_NOTIFIER: "1", GH_PROMPT_DISABLED: "1" },
+  });
+  return r.code === 0 && r.stdout.trim().length > 0;
+}
+
+/** `gh repo view dono/repo`: a conta logada enxerga o repositório? */
+export async function ghVerRepo(gh: string, repo: string, m: Maquina = maquinaReal()): Promise<{ ok: boolean; stderr: string }> {
+  const r = await m.exec(gh, ["repo", "view", repo, "--json", "name"], {
+    timeoutMs: 30_000,
+    env: { ...m.env, GH_NO_UPDATE_NOTIFIER: "1", GH_PROMPT_DISABLED: "1" },
+  });
+  return { ok: r.code === 0, stderr: `${r.stderr}\n${r.code === 0 ? "" : r.stdout}`.trim() };
 }
 
 /**

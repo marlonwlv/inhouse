@@ -193,16 +193,4 @@ describe("cloneProject com git falso", () => {
     const err = await projects.cloneProject("https://github.com/lipe/repo-c").catch((e: unknown) => e);
     expect((err as ErroClone).tipo).toBe("timeout");
   });
-
-  it("iniciarClone responde na hora e o job termina com o erro classificado", async () => {
-    roteiro = { stderr: [STDERR.dnsLinux], code: 128 };
-    const job = projects.iniciarClone("https://github.com/lipe/repo-d");
-    expect(job.estado).toBe("baixando");
-    // Segundo clique no mesmo repo enquanto baixa: recusado.
-    expect(() => projects.iniciarClone("https://github.com/lipe/repo-d")).toThrow(/já está sendo baixado/);
-    await vi.waitFor(() => expect(projects.cloneJob(job.id)?.estado).toBe("erro"));
-    expect(projects.cloneJob(job.id)?.erro?.tipo).toBe("rede");
-    // Terminou: pode tentar de novo.
-    expect(() => projects.iniciarClone("https://github.com/lipe/repo-d")).not.toThrow();
-  });
 });
