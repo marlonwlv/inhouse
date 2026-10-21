@@ -52,15 +52,16 @@ async function doPublish(
   // (local ou remoto): empurra a branch da tarefa e abre um Pull Request revisável.
   if (project.originUrl) {
     const { prUrl, erro } = await publicarComoPR(task, project);
-    if (erro) {
-      sistema(
-        task.id,
-        `A branch foi enviada para o GitHub, mas o Pull Request não abriu: ${erro.mensagem} (branch "${task.branch}")`,
+    if (!prUrl) {
+      // Sem PR a tarefa não pode "concluir" e perder o espaço: falha visível e
+      // recuperável (Tentar de novo), com o motivo.
+      throw new Error(
+        `A branch foi enviada para o GitHub, mas o Pull Request não abriu. ${erro?.mensagem ?? "Tente de novo em instantes."}`,
       );
     }
     await stopPreview(task.id);
     await removeEspaco(project, task.worktreePath);
-    return prUrl ? { prUrl } : {};
+    return { prUrl };
   }
 
   // Caminho B — app de template sem origin (sandbox): merge --no-ff no main LOCAL.

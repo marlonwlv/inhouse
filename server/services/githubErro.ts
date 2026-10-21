@@ -33,7 +33,8 @@ export function classificarErroGitHub(err: unknown, repo?: string | null): ErroG
   const detalhe = texto.split("\n").map((l) => l.trim()).filter(Boolean).slice(-3).join(" · ").slice(0, 400);
   const alvo = repo ? `no repositório ${repo}` : "no repositório do projeto";
 
-  if (/ENOENT|command not found|não é reconhecido|is not recognized/i.test(texto)) {
+  // Só o gh ausente: `spawn git ENOENT` (ou pasta de trabalho sumida) não é isso.
+  if (/spawn gh(\.exe)? ENOENT|gh: command not found|'gh' não é reconhecido|'gh' is not recognized/i.test(texto)) {
     return {
       tipo: "sem_gh",
       detalhe,
@@ -41,8 +42,15 @@ export function classificarErroGitHub(err: unknown, repo?: string | null): ErroG
         "O GitHub CLI (gh) não está instalado neste computador, então o InHouse não consegue abrir nem acompanhar o Pull Request. Instale pela tela de preparo do InHouse (Preparar o computador) e faça o login do GitHub; depois tente de novo.",
     };
   }
+  if (/rate limit/i.test(texto)) {
+    return {
+      tipo: "outro",
+      detalhe,
+      mensagem: "O GitHub limitou os pedidos por alguns minutos. Espere um pouco e tente de novo.",
+    };
+  }
   if (
-    /Permission to .* denied|denied to |\b403\b|Write access to repository not granted|must have (push|write) access|not have permission|Resource not accessible|must be a collaborator/i.test(
+    /Permission to .* denied|denied to |HTTP 403|error: 403|Write access to repository not granted|must have (push|write) access|not have permission|Resource not accessible|must be a collaborator/i.test(
       texto,
     )
   ) {
@@ -53,7 +61,7 @@ export function classificarErroGitHub(err: unknown, repo?: string | null): ErroG
     };
   }
   if (
-    /gh auth login|not logged in|authentication required|Authentication failed|could not read Username|terminal prompts disabled|HTTP 401|Bad credentials|invalid credentials/i.test(
+    /gh auth login|not logged in|Permission denied \(publickey\)|Could not read from remote repository|authentication required|Authentication failed|could not read Username|terminal prompts disabled|HTTP 401|Bad credentials|invalid credentials/i.test(
       texto,
     )
   ) {

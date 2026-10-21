@@ -1568,7 +1568,8 @@ export function aplicarSondagem(taskId: string, s: Sondagem): void {
   const task = store.getTask(taskId);
   if (!task || !task.revisao || task.status === "concluida") return;
 
-  const vistos = new Set(task.revisao.vistos ?? []);
+  // Leu o PR: some o aviso de falha anterior (se cair de novo, avisa de novo).
+  const vistos = new Set((task.revisao.vistos ?? []).filter((v) => !v.startsWith("falha-sondagem:")));
   for (const ev of s.eventos) {
     if (vistos.has(ev.chave)) continue;
     vistos.add(ev.chave);

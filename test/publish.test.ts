@@ -124,6 +124,14 @@ describe("enviarParaRevisao — o PR não pode sumir em silêncio", () => {
   });
 });
 
+describe("publishTask com origin — sem PR não conclui", () => {
+  it("PR não abriu: lança com o motivo e NÃO apaga o espaço", async () => {
+    h.state.prCreateErr = "To get started with GitHub CLI, please run:  gh auth login";
+    h.state.prViewErr = "To get started with GitHub CLI, please run:  gh auth login";
+    await expect(publishTask(task(), project("https://github.com/acme/app.git"), true)).rejects.toThrow(/Pull Request não abriu.*GitHub/);
+  });
+});
+
 describe("classificarErroGitHub", () => {
   it("reconhece gh ausente, sem login, sem permissão e o resto", () => {
     expect(classificarErroGitHub(new Error("spawn gh ENOENT")).tipo).toBe("sem_gh");
@@ -132,6 +140,11 @@ describe("classificarErroGitHub", () => {
     expect(classificarErroGitHub(new Error("pull request create failed: GraphQL: must be a collaborator (createPullRequest)")).tipo).toBe("sem_permissao");
     expect(classificarErroGitHub(new Error("ERROR: Write access to repository not granted.")).tipo).toBe("sem_permissao");
     expect(classificarErroGitHub(new Error("Could not resolve host: github.com")).tipo).toBe("outro");
+    // git ausente ou pasta sumida NÃO é "gh não instalado".
+    expect(classificarErroGitHub(new Error("spawn git ENOENT")).tipo).toBe("outro");
+    expect(classificarErroGitHub(new Error("git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.")).tipo).toBe("sem_login");
+    expect(classificarErroGitHub(new Error("HTTP 403: API rate limit exceeded for user")).tipo).toBe("outro");
+    expect(classificarErroGitHub(new Error('a pull request for branch "x" already exists: https://github.com/a/b/pull/403')).tipo).toBe("outro");
   });
 
   it("repoDaUrl entende https e ssh", () => {

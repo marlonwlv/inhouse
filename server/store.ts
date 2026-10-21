@@ -67,7 +67,13 @@ export function load(): void {
         if (t.status === "rodando" || (t.status === "aguardando" && !aguardaGente(t.step))) {
           t.status = "falhou";
           t.error = ERRO_REINICIO;
-        } else if (t.status === "falhou" && t.step === "revisao" && t.error === ERRO_REINICIO) {
+        } else if (
+          t.status === "falhou" &&
+          t.step === "revisao" &&
+          t.error === ERRO_REINICIO &&
+          !t.arquivadaEm &&
+          existsSync(t.worktreePath)
+        ) {
           // Conserto: versões antigas derrubavam a Revisão em todo reinício
           // (sumia o "Ver no GitHub" e a sondagem parava). Volta a aguardar.
           t.status = "aguardando";
