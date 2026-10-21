@@ -290,7 +290,7 @@ export async function detectarGh(m: Maquina): Promise<SetupItem[]> {
     : itemBase("gh_login", {
         estado: "faltando",
         acao: "manual",
-        detalhe: "Opcional. Para conectar, rode gh auth login uma vez (o guia explica).",
+        detalhe: "Opcional. Necessário para baixar repositórios privados. Para conectar, rode gh auth login uma vez no Terminal (o guia explica).",
       });
   return [gh, login];
 }
