@@ -9,7 +9,7 @@
  */
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import type { EsforcoNivel, GateResult, Step, Task, TaskAction, TaskAnexo, TranscriptItem } from "../../shared/types.js";
-import { ESFORCO_NIVEIS, STEP_LABELS, isHumanStep, proximoStep, rodaDesign } from "../../shared/types.js";
+import { ESFORCO_NIVEIS, STEP_LABELS, aguardaGente, isHumanStep, proximoStep, rodaDesign } from "../../shared/types.js";
 import {
   createPermissionGate,
   createPreviewSetupGate,
@@ -43,7 +43,7 @@ import {
   mergeRevisao,
   publishTask,
 } from "../services/publish.js";
-import { sondarRevisao } from "../services/revisao.js";
+import { FalhaSondagem, sondarRevisao } from "../services/revisao.js";
 import type { Sondagem } from "../services/revisao.js";
 import { createEspaco, removeEspaco, slugify } from "../services/worktrees.js";
 import * as store from "../store.js";
@@ -1598,6 +1598,24 @@ export function aplicarSondagem(taskId: string, s: Sondagem): void {
   }
 }
 
+/**
+ * A sondagem não consegue ler o PR (gh ausente, sem login, sem permissão):
+ * avisa no chat UMA vez por motivo — sem isso o acompanhamento e as correções
+ * automáticas da revisão param em silêncio.
+ */
+export function avisarFalhaSondagem(taskId: string, falha: FalhaSondagem): void {
+  const task = store.getTask(taskId);
+  if (!task?.revisao) return;
+  const chave = `falha-sondagem:${falha.erro.tipo}`;
+  const vistos = task.revisao.vistos ?? [];
+  if (vistos.includes(chave)) return;
+  patch(taskId, { revisao: { ...task.revisao, vistos: [...vistos, chave].slice(-100) } });
+  sistema(
+    taskId,
+    `⚠ Não consigo acompanhar a revisão no GitHub: ${falha.erro.mensagem} Enquanto isso, os comentários do time não chegam aqui e os ajustes automáticos ficam parados.`,
+  );
+}
+
 /** Sonda os PRs de todas as tarefas em Revisão/Publicar (uma passada). */
 export async function sondarRevisoesPendentes(): Promise<void> {
   if (isFakeModelActive()) return;
@@ -1609,7 +1627,8 @@ export async function sondarRevisoesPendentes(): Promise<void> {
     try {
       const s = await sondarRevisao(t, project);
       if (s) aplicarSondagem(t.id, s);
-    } catch {
+    } catch (err) {
+      if (err instanceof FalhaSondagem) avisarFalhaSondagem(t.id, err);
       // próxima sondagem tenta de novo
     }
   }
@@ -1975,10 +1994,15 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
       if (!project) throw new Error("O projeto desta tarefa não foi encontrado.");
       patch(taskId, { status: "rodando", error: undefined });
       try {
-        const { prUrl } = await enviarParaRevisao(task, project);
+        const { prUrl, erro } = await enviarParaRevisao(task, project);
         if (!prUrl) {
-          patch(taskId, { status: "aguardando" });
-          sistema(taskId, "A branch subiu, mas o Pull Request não abriu — tente enviar de novo em instantes.");
+          // Sem PR não há "Ver no GitHub" nem acompanhamento da revisão: falha
+          // VISÍVEL com o motivo (sem gh, sem login, sem permissão de escrita),
+          // e "Tentar de novo" volta a aguardar o envio.
+          fail(
+            taskId,
+            `A branch subiu, mas o Pull Request não abriu. ${erro?.mensagem ?? "Tente enviar de novo em instantes."}`,
+          );
           break;
         }
         patch(taskId, {
@@ -2150,8 +2174,9 @@ export async function applyAction(taskId: string, action: TaskAction): Promise<T
         throw new Error("Só dá para tentar de novo quando a tarefa falhou.");
       }
       pausaManual.delete(taskId); // "Retomar" após pausa cai aqui; não deixa flag pendente
-      if (isHumanStep(task.step)) {
-        // Falha num passo humano (ex.: publish falhou ou o server reiniciou):
+      if (aguardaGente(task.step)) {
+        // Falha num passo humano ou na Revisão (ex.: publish/envio ao GitHub
+        // falhou ou o server reiniciou):
         // volta a aguardar a ação da pessoa.
         patch(taskId, { status: "aguardando", error: undefined, pausadaPorTempo: undefined, pausadaManual: undefined });
         sistema(taskId, "Pronto — a tarefa voltou a aguardar a sua ação.");

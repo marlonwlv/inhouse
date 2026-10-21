@@ -10,6 +10,8 @@ import { withProjectLock } from "./locks.js";
 import { RunError, git, gitCommit, run, tryGit } from "./proc.js";
 import { stopPreview } from "./preview.js";
 import { removeEspaco } from "./worktrees.js";
+import { classificarErroGitHub, repoDaUrl } from "./githubErro.js";
+import type { ErroGitHub } from "./githubErro.js";
 
 function sistema(taskId: string, text: string): void {
   const item = { kind: "system" as const, text, at: new Date().toISOString() };
@@ -49,7 +51,13 @@ async function doPublish(
   // Caminho A — repo real com origin (ex.: produção): PR-only. NUNCA toca o main
   // (local ou remoto): empurra a branch da tarefa e abre um Pull Request revisável.
   if (project.originUrl) {
-    const prUrl = await publicarComoPR(task, project);
+    const { prUrl, erro } = await publicarComoPR(task, project);
+    if (erro) {
+      sistema(
+        task.id,
+        `A branch foi enviada para o GitHub, mas o Pull Request não abriu: ${erro.mensagem} (branch "${task.branch}")`,
+      );
+    }
     await stopPreview(task.id);
     await removeEspaco(project, task.worktreePath);
     return prUrl ? { prUrl } : {};
@@ -108,7 +116,7 @@ async function doPublish(
  * do time) precisa da branch checked-out, e a pessoa pode seguir testando.
  * A limpeza acontece no merge (mergeRevisao/limparAposMerge).
  */
-export function enviarParaRevisao(task: Task, project: Project): Promise<{ prUrl?: string }> {
+export function enviarParaRevisao(task: Task, project: Project): Promise<ResultadoPR> {
   if (isFakeModelActive()) {
     return Promise.resolve({ prUrl: "https://github.com/fake/app/pull/1" });
   }
@@ -118,8 +126,7 @@ export function enviarParaRevisao(task: Task, project: Project): Promise<{ prUrl
       await git(task.worktreePath, "add", "-A");
       await gitCommit(task.worktreePath, `Tarefa: ${task.title}`);
     }
-    const prUrl = await publicarComoPR(task, project);
-    return prUrl ? { prUrl } : {};
+    return publicarComoPR(task, project);
   });
 }
 
@@ -163,8 +170,8 @@ export function empurrarAjustesRevisao(task: Task, project: Project): Promise<vo
     try {
       await git(task.worktreePath, "push");
     } catch (err) {
-      const detalhe = err instanceof RunError ? err.stderr.trim() || err.message : String(err);
-      throw new Error(`Não foi possível enviar os ajustes para o GitHub: ${detalhe}`);
+      const e = classificarErroGitHub(err, repoDaUrl(project.originUrl));
+      throw new Error(e.tipo === "outro" ? `Não foi possível enviar os ajustes para o GitHub: ${e.detalhe}` : e.mensagem);
     }
     if (task.prUrl) {
       try {
@@ -191,14 +198,31 @@ export async function limparAposMerge(task: Task, project: Project): Promise<voi
   }
 }
 
-/** Empurra a branch da tarefa (do próprio espaço) e abre um PR — sem tocar o main. */
-async function publicarComoPR(task: Task, project: Project): Promise<string | undefined> {
+/** Resultado de push + PR: o link, ou o motivo traduzido de não ter link. */
+export interface ResultadoPR {
+  prUrl?: string;
+  erro?: ErroGitHub;
+}
+
+const RE_PR = /https:\/\/github\.com\/\S+\/pull\/\d+/;
+
+/**
+ * Empurra a branch da tarefa (do próprio espaço) e abre um PR — sem tocar o main.
+ * Se o PR não abrir, tenta achar um PR já aberto para a branch (reenvio depois
+ * de uma falha anterior); sem link, devolve o motivo em vez de engolir.
+ */
+async function publicarComoPR(task: Task, project: Project): Promise<ResultadoPR> {
+  const repo = repoDaUrl(project.originUrl);
   try {
     await git(task.worktreePath, "push", "-u", "origin", task.branch);
   } catch (err) {
-    const detalhe = err instanceof RunError ? err.stderr.trim() || err.message : String(err);
-    throw new Error(`Não foi possível enviar a branch para o GitHub: ${detalhe}`);
+    const e = classificarErroGitHub(err, repo);
+    throw new Error(
+      e.tipo === "outro" ? `Não foi possível enviar a branch para o GitHub: ${e.detalhe}` : e.mensagem,
+      { cause: err },
+    );
   }
+  let erroCriar: unknown;
   try {
     const { stdout } = await run(
       "gh",
@@ -216,17 +240,27 @@ async function publicarComoPR(task: Task, project: Project): Promise<string | un
       ],
       { cwd: task.worktreePath },
     );
-    const m = /https:\/\/github\.com\/\S+\/pull\/\d+/.exec(stdout);
-    if (m) sistema(task.id, `Pull request criado: ${m[0]}`);
-    else sistema(task.id, "Pull request criado no GitHub.");
-    return m?.[0];
+    const m = RE_PR.exec(stdout);
+    if (m) {
+      sistema(task.id, `Pull request criado: ${m[0]}`);
+      return { prUrl: m[0] };
+    }
+    erroCriar = new Error(`gh pr create não devolveu o link do PR: ${stdout.trim().slice(0, 200)}`);
   } catch (err) {
-    // A branch já subiu; o PR pode ter falhado (gh deslogado, PR já aberto).
-    const detalhe = err instanceof RunError ? err.stderr.trim() || err.message : String(err);
-    sistema(
-      task.id,
-      `A branch foi enviada para o GitHub, mas não deu para abrir o Pull Request automaticamente (${detalhe}). Abra o PR a partir da branch "${task.branch}".`,
-    );
-    return undefined;
+    erroCriar = err;
   }
+  // Um PR para esta branch pode já existir (envio anterior que perdeu o link).
+  try {
+    const { stdout } = await run("gh", ["pr", "view", task.branch, "--json", "url,state", "--jq", 'select(.state=="OPEN") | .url'], {
+      cwd: task.worktreePath,
+    });
+    const m = RE_PR.exec(stdout);
+    if (m) {
+      sistema(task.id, `Pull request já estava aberto: ${m[0]}`);
+      return { prUrl: m[0] };
+    }
+  } catch {
+    // sem PR aberto (ou gh indisponível): vale o erro do create
+  }
+  return { erro: classificarErroGitHub(erroCriar, repo) };
 }

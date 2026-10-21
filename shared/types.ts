@@ -600,6 +600,15 @@ export function isHumanStep(s: Step): boolean {
   return (HUMAN_STEPS as readonly string[]).includes(s);
 }
 
+/**
+ * O passo fica parado esperando gente (a pessoa ou o time), sem processo vivo?
+ * Os passos humanos + a Revisão (aguarda o envio ou o time no GitHub). Usado
+ * para não tratar essa espera como "trabalho interrompido" num reinício.
+ */
+export function aguardaGente(s: Step): boolean {
+  return isHumanStep(s) || s === "revisao";
+}
+
 /** Esta task roda a fase de design + protótipo? (override do usuário vence a heurística) */
 export function rodaDesign(t: Pick<Task, "design" | "precisaDesign">): boolean {
   return t.design === "sim" || (t.design !== "nao" && Boolean(t.precisaDesign));

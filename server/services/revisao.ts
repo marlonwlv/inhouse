@@ -5,7 +5,21 @@
  * Sem webhooks: o Inhouse é local — polling barato (1 tarefa por vez, ~60s).
  */
 import type { Project, RevisaoPendencia, Task } from "../../shared/types.js";
+import { classificarErroGitHub } from "./githubErro.js";
+import type { ErroGitHub } from "./githubErro.js";
 import { run } from "./proc.js";
+
+/**
+ * A sondagem não consegue ler o PR por um motivo que NÃO se resolve sozinho
+ * (gh ausente, sem login, sem permissão) — a máquina avisa a pessoa uma vez,
+ * em vez de as correções automáticas pararem em silêncio.
+ */
+export class FalhaSondagem extends Error {
+  constructor(readonly erro: ErroGitHub) {
+    super(erro.mensagem);
+    this.name = "FalhaSondagem";
+  }
+}
 
 export interface EventoRevisao {
   /** Assinatura estável para dedupe entre sondagens (vai para revisao.vistos). */
@@ -67,8 +81,10 @@ export async function sondarRevisao(task: Task, project: Project): Promise<Sonda
       { cwd: project.path },
     );
     pr = JSON.parse(stdout) as GhPrView;
-  } catch {
-    return null; // offline/deslogado: tenta de novo na próxima
+  } catch (err) {
+    const e = classificarErroGitHub(err, `${partes.owner}/${partes.repo}`);
+    if (e.tipo !== "outro") throw new FalhaSondagem(e);
+    return null; // offline/instável: tenta de novo na próxima
   }
 
   const eventos: EventoRevisao[] = [];

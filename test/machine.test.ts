@@ -50,6 +50,7 @@ const h = vi.hoisted(() => {
     stepDuranteConversa: undefined as string | undefined,
     // Revisão da engenharia (mock)
     enviarRevisaoCalls: [] as string[],
+    enviarRevisaoResultado: undefined as undefined | { prUrl?: string; erro?: { tipo: string; mensagem: string; detalhe: string } },
     mergeRevisaoCalls: [] as string[],
     empurrarAjustesCalls: [] as string[],
   };
@@ -216,7 +217,7 @@ vi.mock("../server/services/publish.js", () => ({
   publishTask: h.publishTask,
   enviarParaRevisao: async (t: { id: string }) => {
     h.state.enviarRevisaoCalls.push(t.id);
-    return { prUrl: "https://github.com/acme/app/pull/42" };
+    return h.state.enviarRevisaoResultado ?? { prUrl: "https://github.com/acme/app/pull/42" };
   },
   mergeRevisao: async (t: { id: string }) => {
     h.state.mergeRevisaoCalls.push(t.id);
@@ -237,7 +238,8 @@ process.env.INHOUSE_DATA_DIR = join(TMP, "data");
 process.env.INHOUSE_PROJECTS_DIR = join(TMP, "projects");
 
 const store = await import("../server/store.js");
-const { applyAction, aplicarSondagem, startPreparacao, startTask, steer } = await import("../server/workflow/machine.js");
+const { applyAction, aplicarSondagem, avisarFalhaSondagem, startPreparacao, startTask, steer } = await import("../server/workflow/machine.js");
+const { FalhaSondagem } = await import("../server/services/revisao.js");
 const { GATE_FIX_SAFETY_ROUNDS } = await import("../server/config.js");
 const coleta = await import("../server/eval/coleta.js");
 
@@ -1083,6 +1085,38 @@ describe("machine: revisão da engenharia (PR + acompanhamento + festa)", () => 
     expect(depois.step).toBe("revisao");
     // O espaço NÃO foi removido (o loop de ajustes precisa dele até o merge).
     expect(h.state.removeEspacoCalls.length).toBe(0);
+  });
+
+  it("PR não abriu: falha VISÍVEL com o motivo (não segue sem link) e Tentar de novo volta a aguardar", async () => {
+    const t = await ateRevisao();
+    h.state.enviarRevisaoResultado = {
+      erro: { tipo: "sem_login", mensagem: "O InHouse não está conectado à sua conta do GitHub neste computador.", detalhe: "gh auth login" },
+    };
+    try {
+      await applyAction(t.id, { action: "enviar_revisao" });
+    } finally {
+      h.state.enviarRevisaoResultado = undefined;
+    }
+    const falhou = store.getTask(t.id)!;
+    expect(falhou.status).toBe("falhou");
+    expect(falhou.error).toMatch(/Pull Request não abriu.*conta do GitHub/);
+    expect(falhou.prUrl).toBeUndefined();
+    expect(falhou.revisao).toBeUndefined();
+
+    await applyAction(t.id, { action: "retry" });
+    expect(store.getTask(t.id)?.status).toBe("aguardando");
+    await applyAction(t.id, { action: "enviar_revisao" });
+    expect(store.getTask(t.id)?.prUrl).toBe("https://github.com/acme/app/pull/42");
+  });
+
+  it("sondagem sem acesso ao GitHub: avisa no chat UMA vez (correções não param em silêncio)", async () => {
+    const t = await ateRevisao();
+    await applyAction(t.id, { action: "enviar_revisao" });
+    const falha = new FalhaSondagem({ tipo: "sem_login", mensagem: "Faça o login do GitHub.", detalhe: "" });
+    avisarFalhaSondagem(t.id, falha);
+    avisarFalhaSondagem(t.id, falha);
+    const avisos = store.transcriptRead(t.id).filter((i) => i.kind === "system" && "text" in i && /Não consigo acompanhar a revisão/.test(i.text));
+    expect(avisos.length).toBe(1);
   });
 
   it("sondagem: ajustes pedidos → 'Pedir para o Claude ajustar' empurra pro PR", async () => {
