@@ -10,6 +10,7 @@ import { withProjectLock } from "./locks.js";
 import { RunError, git, gitCommit, run, tryGit } from "./proc.js";
 import { stopPreview } from "./preview.js";
 import { removeEspaco } from "./worktrees.js";
+import { guardarPendencias, listaCurta } from "./pastaPrincipal.js";
 import { classificarErroGitHub, repoDaUrl } from "./githubErro.js";
 import type { ErroGitHub } from "./githubErro.js";
 
@@ -65,6 +66,27 @@ async function doPublish(
   }
 
   // Caminho B — app de template sem origin (sandbox): merge --no-ff no main LOCAL.
+  // Pasta principal suja (ex.: preparação instalou deps / criou .env) NUNCA
+  // pode virar beco sem saída: o que é local (segredos, node_modules) passa a
+  // ser ignorado e o resto é GUARDADO num commit identificável antes do merge —
+  // nada se perde e tudo fica recuperável no histórico.
+  let guardado;
+  try {
+    guardado = await guardarPendencias(project.path, "Alterações pendentes da pasta principal (guardadas pelo Inhouse)");
+  } catch (err) {
+    throw new Error(
+      "A pasta principal do projeto tem alterações que o Inhouse não conseguiu guardar sozinho. Nada foi apagado. Fale com o time técnico.",
+      { cause: err },
+    );
+  }
+  if (guardado) {
+    sistema(
+      task.id,
+      guardado.como === "commit"
+        ? `A pasta principal tinha alterações soltas (${listaCurta(guardado.arquivos)}). Guardei tudo no histórico antes de publicar — nada foi perdido.`
+        : `A pasta principal tinha alterações soltas (${listaCurta(guardado.arquivos)}). Guardei tudo à parte, num lugar seguro, antes de publicar — nada foi perdido.`,
+    );
+  }
   const branchAtual = await tryGit(project.path, "rev-parse", "--abbrev-ref", "HEAD");
   if (branchAtual !== project.defaultBranch) {
     try {
@@ -76,17 +98,23 @@ async function doPublish(
       );
     }
   }
-  // NÃO auto-commitar o working tree do main — recusa se estiver sujo, para nunca
-  // engolir trabalho não salvo de ninguém.
+  // Rede de segurança: depois de guardar, a pasta tem que estar limpa (senão o
+  // merge poderia misturar as mudanças). Mensagem leiga, sem pedir git.
   const sujoMain = await git(project.path, "status", "--porcelain");
   if (sujoMain.length > 0) {
     throw new Error(
-      "Há alterações não salvas na pasta principal do projeto. Guarde ou descarte essas alterações antes de publicar.",
+      "A pasta principal do projeto ainda tem alterações que o Inhouse não conseguiu guardar. Nada foi apagado. Fale com o time técnico.",
     );
   }
+  // Máquina de quem não é dev costuma não ter user.name/email: o merge --no-ff
+  // cria commit e falharia. Usa a identidade padrão do builder (como gitCommit).
+  const temIdentidade =
+    (await tryGit(project.path, "config", "user.name")) && (await tryGit(project.path, "config", "user.email"));
+  const identidade = temIdentidade ? [] : ["-c", "user.name=Inhouse", "-c", "user.email=inhouse@localhost"];
   try {
     await git(
       project.path,
+      ...identidade,
       "merge",
       "--no-ff",
       task.branch,
