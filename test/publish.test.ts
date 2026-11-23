@@ -1,6 +1,6 @@
 /**
  * Segurança do publish: repo com origin = PR-only (não toca o main);
- * app de template com main sujo = recusa (não engole trabalho).
+ * app de template com main sujo = guarda as pendências (sem perder nada) e publica.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Project, Task } from "../shared/types.js";
@@ -46,6 +46,13 @@ vi.mock("../server/events.js", () => ({ broadcast: () => {}, addClient: () => {}
 vi.mock("../server/store.js", () => ({ transcriptAppend: () => {} }));
 vi.mock("../server/services/preview.js", () => ({ stopPreview: async () => {} }));
 vi.mock("../server/services/worktrees.js", () => ({ removeEspaco: async () => {} }));
+vi.mock("../server/services/pastaPrincipal.js", () => ({
+  guardarPendencias: async (cwd: string, msg: string) => {
+    h.state.calls.push({ fn: "guardarPendencias", cwd, args: [msg] });
+    return null;
+  },
+  listaCurta: (a: string[]) => a.join(", "),
+}));
 vi.mock("../server/services/locks.js", () => ({ withProjectLock: (_id: string, fn: () => unknown) => fn() }));
 
 import { classificarErroGitHub, repoDaUrl } from "../server/services/githubErro.js";
@@ -81,11 +88,18 @@ describe("publishTask — segurança", () => {
     expect(h.state.calls.some((c) => c.cwd === "/tmp/main")).toBe(false);
   });
 
-  it("app sem origin com main sujo: RECUSA (não auto-commita, não engole trabalho)", async () => {
+  it("app sem origin: guarda as pendências da pasta principal ANTES do merge", async () => {
+    await publishTask(task(), project(), false);
+    const iGuarda = h.state.calls.findIndex((c) => c.fn === "guardarPendencias" && c.cwd === "/tmp/main");
+    const iMerge = h.state.calls.findIndex((c) => c.args.includes("merge"));
+    expect(iGuarda).toBeGreaterThanOrEqual(0);
+    expect(iGuarda).toBeLessThan(iMerge);
+  });
+
+  it("app sem origin com main AINDA sujo depois de guardar: não faz merge e explica sem jargão", async () => {
     h.state.mainSujo = true;
-    await expect(publishTask(task(), project(), false)).rejects.toThrow(/não salvas/i);
-    // Não deve ter commitado nada no main.
-    expect(h.state.calls.some((c) => c.fn === "gitCommit" && c.cwd === "/tmp/main")).toBe(false);
+    await expect(publishTask(task(), project(), false)).rejects.toThrow(/Nada foi apagado/);
+    expect(h.state.calls.some((c) => c.args.includes("merge"))).toBe(false);
   });
 
   it("app sem origin com main limpo: faz merge --no-ff no main local", async () => {

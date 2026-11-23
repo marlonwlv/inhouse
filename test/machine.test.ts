@@ -28,6 +28,7 @@ const h = vi.hoisted(() => {
     // Quando true, a fase de CORREÇÃO de gates devolve "CONSERTO: impossivel"
     // (o agente declara que não resolve sozinho) em vez de seguir tentando.
     fixDesiste: false,
+    guardarCalls: [] as { path: string; msg: string }[],
     prepPronto: true,
     espPorte: "media" as "simples" | "media" | "grande",
     espUi: false,
@@ -226,6 +227,14 @@ vi.mock("../server/services/publish.js", () => ({
   empurrarAjustesRevisao: async (t: { id: string }) => {
     h.state.empurrarAjustesCalls.push(t.id);
   },
+}));
+vi.mock("../server/services/pastaPrincipal.js", () => ({
+  guardarPendencias: async (path: string, msg: string) => {
+    h.state.guardarCalls.push({ path, msg });
+    return { arquivos: ["package-lock.json"], como: "commit" };
+  },
+  protegerArquivosLocais: async () => {},
+  listaCurta: (a: string[]) => a.join(", "),
 }));
 vi.mock("../server/events.js", () => ({ broadcast: () => {}, addClient: () => {} }));
 // A máquina resolve as skills pelo workflow ativo; aqui testamos as transições, não
@@ -709,6 +718,13 @@ describe("machine: preparação do repositório", () => {
     expect(t.worktreePath).toBe(project.path); // no checkout principal, não num espaço
     await esperaStep(t.id, "concluida");
     expect(store.getProject("p1")?.preparado).toBeTruthy();
+  });
+
+  it("ao terminar, guarda o que a preparação mudou na pasta principal (senão o publicar travava)", async () => {
+    h.state.guardarCalls = [];
+    const t = await startPreparacao("p1");
+    await esperaStep(t.id, "concluida");
+    expect(h.state.guardarCalls).toEqual([{ path: project.path, msg: "Preparação do InHouse" }]);
   });
 
   it("sem 'PREPARADO: sim' não marca o projeto (ainda falta algo do sistema)", async () => {

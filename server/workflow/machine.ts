@@ -43,6 +43,8 @@ import {
   mergeRevisao,
   publishTask,
 } from "../services/publish.js";
+import { guardarPendencias, listaCurta, protegerArquivosLocais } from "../services/pastaPrincipal.js";
+import { withProjectLock } from "../services/locks.js";
 import { FalhaSondagem, sondarRevisao } from "../services/revisao.js";
 import type { Sondagem } from "../services/revisao.js";
 import { createEspaco, removeEspaco, slugify } from "../services/worktrees.js";
@@ -1831,6 +1833,7 @@ async function runPreparacao(taskId: string): Promise<boolean> {
     return false;
   }
 
+  await arrumarAposPreparacao(taskId);
   patch(taskId, { step: "concluida", status: "concluida" });
   if (parsePreparado(r.finalText)) {
     const p = store.updateProject(task.projectId, { preparado: new Date().toISOString() });
@@ -1840,6 +1843,34 @@ async function runPreparacao(taskId: string): Promise<boolean> {
     sistema(taskId, "Preparação concluída, mas ainda falta algo (veja o resumo acima). Rode de novo depois de resolver.");
   }
   return true;
+}
+
+/**
+ * A preparação roda na pasta principal e deixa rastros (lockfile novo, .env
+ * copiado). Sem arrumar, a pasta ficava suja para sempre e o publish recusava.
+ * Segredos/gerados → ignorados localmente (.git/info/exclude, nunca commitados);
+ * o resto, em app sem origin → commit "Preparação do InHouse". Em repo com
+ * origin só ignora: o main local não ganha commits que o GitHub não tem (o
+ * Caminho A publica por PR a partir do espaço e não olha a pasta principal).
+ * Melhor esforço: a preparação já deu certo, e o publish tem a mesma rede.
+ */
+async function arrumarAposPreparacao(taskId: string): Promise<void> {
+  const task = store.getTask(taskId);
+  const project = task && store.getProject(task.projectId);
+  if (!task || !project || isFakeModelActive()) return;
+  try {
+    // Mesmo lock do publish/createEspaco: uma operação git por vez no repo.
+    const g = await withProjectLock(project.id, async () => {
+      if (project.originUrl) {
+        await protegerArquivosLocais(project.path);
+        return null;
+      }
+      return guardarPendencias(project.path, "Preparação do InHouse");
+    });
+    if (g) sistema(taskId, `Salvei no histórico do projeto o que a preparação mudou (${listaCurta(g.arquivos)}).`);
+  } catch {
+    // o publish tenta de novo antes de juntar as mudanças
+  }
 }
 
 /** Aplica uma ação humana, validando a transição pelo passo/status atual. */
