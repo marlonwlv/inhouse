@@ -37,6 +37,7 @@ Cada plano abre com um cabeçalho: **título · categoria · data (YYYY-MM-DD) �
 - [Estabilidade: espaço, sobrecarga e modelo/effort](features/estabilidade-espaco-sobrecarga-modelo.md) — numeração de espaço monotônica (fim da worktree destruída no reuso); isolar dev + limitador global de concorrência + restart sem órfãos (fim do EAGAIN/ETXTBSY sob carga); e chip de modelo(s)+effort na tarefa. **Status: Em andamento** (2026-08-09).
 
 ### bugs
+- [Verificações falham só por estourar 5 min](bugs/verificacoes-estouram-5-minutos.md) — limite fixo de 5 min derrubava suítes grandes de monorepo e o Claude tentava "consertar" testes que passavam; agora 30 min por padrão, configurável (`verificacoes.timeoutMinutos`), estouro marcado como tempo (sem auto-conserto) e corte derruba a árvore de processos. **Status: Concluído** (2026-11-23).
 - [Publicar trava com pasta principal suja](bugs/publicar-trava-pasta-principal-suja.md) — a preparação deixava lockfile/.env soltos na pasta principal e o publish (app sem GitHub) recusava para sempre; agora .env/gerados ficam ignorados localmente e o resto é guardado num commit antes do merge. **Status: Concluído** (2026-11-23).
 
 ### design

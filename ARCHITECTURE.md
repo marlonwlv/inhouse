@@ -47,6 +47,10 @@ espec → plano → aprovacao(H) → execucao → verificacoes → teste(H) → 
   tsconfig.json, `npx tsc --noEmit`. Gate que não existe é pulado (não é falha).
   Falhou → até 2 rodadas de auto-correção (resume com os erros) → re-roda gates.
   Ainda falhou → status "falhou" com botão retry.
+  Cada gate tem limite de tempo (padrão 30 min; `verificacoes.timeoutMinutos` no
+  inhouse.config.json, 1–240) e roda em grupo de processos próprio: no estouro a árvore inteira
+  cai e o resultado sai `timedOut`. Se as únicas falhas forem estouro de tempo, não há
+  auto-correção — a tarefa para com a mensagem "foi só o tempo" e o retry re-roda os gates.
 - **teste** (humano): usuário abre preview e aprova (approve_test) ou request_changes{msg}
   (volta pra execucao com a mensagem).
 - **publicar** (humano): merge da branch no main (git merge --no-ff no checkout principal).

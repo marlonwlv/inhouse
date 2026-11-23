@@ -5,7 +5,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { InhouseConfig, Porte, PreviewConfig, SkillStepConfig } from "../../shared/types.js";
+import type { InhouseConfig, Porte, PreviewConfig, SkillStepConfig, VerificacoesConfig } from "../../shared/types.js";
 import { DATA_DIR } from "../config.js";
 
 const CONFIG_FILE = "inhouse.config.json";
@@ -83,6 +83,27 @@ export function sanitizePreview(raw: unknown): PreviewConfig | undefined {
     out.timeoutMs = Math.round(o.timeoutMs);
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** Limite padrão de cada verificação automática (TypeScript/Lint/Testes). */
+export const VERIFICACAO_TIMEOUT_PADRAO_MIN = 30;
+const VERIFICACAO_TIMEOUT_MAX_MIN = 240;
+
+/** Sanitiza o bloco `verificacoes` (só `timeoutMinutos` por ora, 1–240). */
+export function sanitizeVerificacoes(raw: unknown): VerificacoesConfig | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const t = (raw as Record<string, unknown>).timeoutMinutos;
+  if (typeof t !== "number" || !Number.isFinite(t) || t < 1 || t > VERIFICACAO_TIMEOUT_MAX_MIN) return undefined;
+  return { timeoutMinutos: Math.round(t) };
+}
+
+/**
+ * Limite de tempo (ms) de cada verificação: `verificacoes.timeoutMinutos` da
+ * cascata de config (espaço → pasta principal → global) ou o padrão de 30 min.
+ */
+export function timeoutVerificacoesMs(worktreePath: string, pastaPrincipal?: string): number {
+  const min = loadConfigCascata(worktreePath, pastaPrincipal)?.verificacoes?.timeoutMinutos;
+  return (min ?? VERIFICACAO_TIMEOUT_PADRAO_MIN) * 60_000;
 }
 
 /** Sanitiza um bloco `skills` inteiro (usado pela biblioteca de workflows). */
@@ -187,8 +208,13 @@ export function loadConfigFile(file: string): InhouseConfig | null {
     const detalhamento = sanitizePlano(skills.detalhamento);
     const verificacoes = sanitizeSteps(skills.verificacoes);
     const preview = sanitizePreview(raw.preview);
-    if (!plano && !plano_produto && !detalhamento && !verificacoes && !preview) return null;
-    return { skills: { plano, plano_produto, detalhamento, verificacoes }, ...(preview ? { preview } : {}) };
+    const ajustesVerificacoes = sanitizeVerificacoes(raw.verificacoes);
+    if (!plano && !plano_produto && !detalhamento && !verificacoes && !preview && !ajustesVerificacoes) return null;
+    return {
+      skills: { plano, plano_produto, detalhamento, verificacoes },
+      ...(preview ? { preview } : {}),
+      ...(ajustesVerificacoes ? { verificacoes: ajustesVerificacoes } : {}),
+    };
   } catch (err) {
     console.warn(`[config] ${file} inválido — ignorando:`, err instanceof Error ? err.message : err);
     return null;

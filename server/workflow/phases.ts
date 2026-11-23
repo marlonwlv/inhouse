@@ -235,7 +235,13 @@ export function execucaoPrompt(task: Task): string {
 export function fixGatesPrompt(_task: Task, gates: GateResult[]): string {
   const blocos = gates
     .filter((g) => !g.ok)
-    .map((g) => `### ${g.name} (comando: ${g.command})\n${g.output ?? "(sem saída registrada)"}`)
+    .map((g) =>
+      g.timedOut
+        ? `### ${g.name} (comando: ${g.command}) — NÃO FALHOU: só passou do limite de tempo e foi interrompida.\n` +
+          "Não tente consertar esta (nem rodando por partes): ela volta a rodar sozinha depois.\n" +
+          (g.output ?? "")
+        : `### ${g.name} (comando: ${g.command})\n${g.output ?? "(sem saída registrada)"}`,
+    )
     .join("\n\n");
   return [
     "As verificações automáticas do projeto falharam. Corrija os problemas apontados abaixo.",

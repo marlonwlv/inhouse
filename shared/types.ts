@@ -104,6 +104,8 @@ export interface GateResult {
   /** Últimas linhas do output quando falhou (truncado). */
   output?: string;
   durationMs: number;
+  /** A verificação foi interrompida por passar do limite de tempo (não é falha do comando). */
+  timedOut?: boolean;
 }
 
 /** Porte da tarefa, julgado na espec (triagem): decide quais skills de plano rodam. */
@@ -550,6 +552,13 @@ export interface InhouseConfig {
   };
   /** Como subir o preview deste projeto (opcional; auto-detecção cobre o resto). */
   preview?: PreviewConfig;
+  /** Ajustes das verificações automáticas (TypeScript/Lint/Testes). */
+  verificacoes?: VerificacoesConfig;
+}
+
+export interface VerificacoesConfig {
+  /** Limite de tempo de CADA verificação, em minutos (padrão: 30; aceita 1–240). */
+  timeoutMinutos?: number;
 }
 
 // ---------- Workflows (biblioteca configurável) ----------
