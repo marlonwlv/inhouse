@@ -12,7 +12,12 @@ vi.mock("../server/events.js", () => ({ broadcast: vi.fn(), addClient: vi.fn() }
 vi.mock("../server/store.js", () => ({ transcriptAppend: vi.fn() }));
 
 import { broadcast } from "../server/events.js";
-import { detectGates, runGates } from "../server/services/gates.js";
+import { detectGates, mensagemTempoEsgotado, runGates } from "../server/services/gates.js";
+import {
+  VERIFICACAO_TIMEOUT_PADRAO_MIN,
+  sanitizeVerificacoes,
+  timeoutVerificacoesMs,
+} from "../server/workflow/config.js";
 
 /** Cria um diretório temporário com os arquivos dados (caminhos relativos). */
 function fixture(files: Record<string, string>): string {
@@ -133,6 +138,42 @@ describe("runGates", () => {
       delete process.env.ANTHROPIC_API_KEY;
       delete process.env.ANTHROPIC_AUTH_TOKEN;
     }
+  });
+
+  it("estouro de tempo vira timedOut com mensagem clara (não é falha de teste)", async () => {
+    const dir = fixture({
+      "package.json": JSON.stringify({
+        name: "fixture",
+        version: "1.0.0",
+        scripts: { test: 'node -e "console.log(\'rodando\'); setTimeout(() => {}, 60000)"' },
+      }),
+    });
+
+    const results = await runGates("t-timeout", dir, { timeoutMs: 1500 });
+    expect(results).toHaveLength(1);
+    const r = results[0]!;
+    expect(r.ok).toBe(false);
+    expect(r.timedOut).toBe(true);
+    expect(r.output).toContain("Tempo esgotado");
+    expect(r.output).toContain("NÃO quer dizer que algo falhou");
+    expect(r.durationMs).toBeLessThan(30_000);
+  }, 20_000);
+
+  it("usa verificacoes.timeoutMinutos do inhouse.config.json do projeto", () => {
+    const dir = fixture({ "inhouse.config.json": JSON.stringify({ verificacoes: { timeoutMinutos: 45 } }) });
+    expect(timeoutVerificacoesMs(dir)).toBe(45 * 60_000);
+    // Pasta principal vale quando o espaço não tem o arquivo.
+    const vazio = fixture({ "package.json": "{}" });
+    expect(timeoutVerificacoesMs(vazio, dir)).toBe(45 * 60_000);
+  });
+
+  it("limite padrão é 30 min; valor fora de 1–240 é ignorado", () => {
+    expect(sanitizeVerificacoes({ timeoutMinutos: 0 })).toBeUndefined();
+    expect(sanitizeVerificacoes({ timeoutMinutos: 999 })).toBeUndefined();
+    expect(sanitizeVerificacoes({ timeoutMinutos: "20" })).toBeUndefined();
+    expect(sanitizeVerificacoes({ timeoutMinutos: 20.4 })).toEqual({ timeoutMinutos: 20 });
+    expect(VERIFICACAO_TIMEOUT_PADRAO_MIN).toBe(30);
+    expect(mensagemTempoEsgotado(30 * 60_000)).toContain("30 minutos");
   });
 
   it("comando que nem existe conta como falha, não como exceção", async () => {

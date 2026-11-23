@@ -1710,7 +1710,11 @@ function statusChip(t) {
 function gateChips(t) {
   if (!t.gates || t.gates.length === 0) return `<span class="chip">Sem verificações automáticas</span>`;
   return t.gates
-    .map((g) => `<span class="chip ${g.ok ? "ok" : "bad"}">${esc(g.name)} ${g.ok ? "✓" : "✗"}</span>`)
+    .map((g) =>
+      g.timedOut
+        ? `<span class="chip bad" title="Não terminou a tempo — não é erro de teste">${esc(g.name)} ⏱</span>`
+        : `<span class="chip ${g.ok ? "ok" : "bad"}">${esc(g.name)} ${g.ok ? "✓" : "✗"}</span>`,
+    )
     .join("");
 }
 

@@ -28,6 +28,8 @@ const h = vi.hoisted(() => {
     // Quando true, a fase de CORREÇÃO de gates devolve "CONSERTO: impossivel"
     // (o agente declara que não resolve sozinho) em vez de seguir tentando.
     fixDesiste: false,
+    // Quando true, os gates "estouram o tempo" (timedOut) em vez de reprovar.
+    gatesTimeout: false,
     guardarCalls: [] as { path: string; msg: string }[],
     prepPronto: true,
     espPorte: "media" as "simples" | "media" | "grande",
@@ -134,6 +136,19 @@ const h = vi.hoisted(() => {
     },
     async runGates(): Promise<GateResult[]> {
       state.gateRuns++;
+      if (state.gatesTimeout) {
+        return [
+          { name: "TypeScript", command: "npm run typecheck", ok: true, durationMs: 1 },
+          {
+            name: "Testes",
+            command: "npm run test",
+            ok: false,
+            timedOut: true,
+            output: "Tempo esgotado: a verificação passou do limite de 30 minutos e foi interrompida.",
+            durationMs: 30 * 60_000,
+          },
+        ];
+      }
       return state.gatesOk
         ? [{ name: "TypeScript", command: "npm run typecheck", ok: true, durationMs: 1 }]
         : [
@@ -179,6 +194,7 @@ vi.mock("../server/claude/runner.js", () => ({
 }));
 vi.mock("../server/services/gates.js", () => ({
   runGates: h.runGates,
+  duracaoLegivel: (ms: number) => `${Math.round(ms / 60_000)} minutos`,
   detectGates: () => [],
 }));
 vi.mock("../server/services/worktrees.js", () => ({
@@ -282,6 +298,7 @@ beforeEach(() => {
   h.state.gateRuns = 0;
   h.state.execFilesTouched = true;
   h.state.fixDesiste = false;
+  h.state.gatesTimeout = false;
   h.state.prepPronto = true;
   h.state.espPorte = "media";
   h.state.espUi = false;
@@ -542,6 +559,32 @@ describe("machine: verificações e retry", () => {
     expect(h.state.gateRuns).toBe(1);
     const execs = h.state.calls.filter((c) => c.permissionMode === "acceptEdits");
     expect(execs).toHaveLength(2); // execução inicial + 1 correção que desistiu
+  });
+
+  it("verificação que só estourou o tempo: não chama o Claude para consertar e explica que foi o tempo", async () => {
+    const t = await criaTaskEmAprovacao();
+    h.state.gatesTimeout = true;
+    await applyAction(t.id, { action: "approve_plan" });
+
+    await vi.waitFor(() => {
+      expect(store.getTask(t.id)?.status).toBe("falhou");
+    }, { timeout: 3000 });
+
+    const falhada = store.getTask(t.id)!;
+    expect(falhada.step).toBe("verificacoes");
+    expect(falhada.error).toMatch(/Testes não terminou dentro do limite de 30 minutos/);
+    expect(falhada.error).toMatch(/Nenhum teste falhou/);
+    expect(falhada.gates.find((g) => g.name === "Testes")?.timedOut).toBe(true);
+    // Nenhuma rodada de conserto: só a execução inicial chamou o Claude em acceptEdits.
+    const execs = h.state.calls.filter((c) => c.permissionMode === "acceptEdits");
+    expect(execs).toHaveLength(1);
+    expect(h.state.gateRuns).toBe(1);
+
+    // Tentar de novo com a suíte terminando a tempo segue para o teste.
+    h.state.gatesTimeout = false;
+    await applyAction(t.id, { action: "retry" });
+    const depois = await esperaStep(t.id, "teste");
+    expect(depois.status).toBe("aguardando");
   });
 
   it("retry após falhar re-roda a auto-correção do zero", async () => {
@@ -1019,7 +1062,29 @@ describe("machine: porteira viva (conversa sem sair da etapa)", () => {
     expect(h.state.stopPreviewCalls.length).toBe(stops); // preview nunca caiu
   });
 
-  it("pergunta na aprovação: plano intacto, sem replano", async () => {
+  it("Rodar verificações agora com estouro de tempo: para com a mensagem de tempo, sem escalar nem consertar", async () => {
+    const t = await ateTeste();
+    store.updateTask(t.id, { autoAprovar: true });
+    h.state.conversaTrabalha = true;
+    h.state.conversaTaskId = t.id;
+    await steer(t.id, "ajusta o cabeçalho");
+    await esperaStatus(t.id, "aguardando");
+    h.state.conversaTrabalha = false;
+    h.state.conversaTaskId = undefined;
+    const execs = h.state.calls.filter((c) => c.permissionMode === "acceptEdits").length;
+    const runs = h.state.gateRuns;
+
+    h.state.gatesTimeout = true;
+    await applyAction(t.id, { action: "rodar_verificacoes" });
+    await esperaStatus(t.id, "falhou");
+    const falhada = store.getTask(t.id)!;
+    expect(falhada.step).toBe("verificacoes");
+    expect(falhada.error).toMatch(/foi só o tempo/);
+    expect(h.state.gateRuns - runs).toBe(1); // não escalou para a verificação completa
+    expect(h.state.calls.filter((c) => c.permissionMode === "acceptEdits").length).toBe(execs);
+  });
+
+    it("pergunta na aprovação: plano intacto, sem replano", async () => {
     const t = await criaTaskEmAprovacao();
     const planoAntes = store.getTask(t.id)?.plan;
     h.state.calls.length = 0;

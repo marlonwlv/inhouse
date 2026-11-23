@@ -21,7 +21,7 @@ import { abortPhase, runPhase } from "../claude/runner.js";
 import { GATE_FIX_SAFETY_ROUNDS } from "../config.js";
 import { isFakeModelActive } from "../debug/flag.js";
 import { broadcast } from "../events.js";
-import { runGates } from "../services/gates.js";
+import { duracaoLegivel, runGates } from "../services/gates.js";
 import {
   adicionarHealthPath,
   aprenderReceita,
@@ -648,11 +648,19 @@ async function runVerificacaoLeve(
 
   sistema(taskId, "Conferindo a mudança (verificação rápida, sem derrubar o preview)…");
   patch(taskId, { step: "verificacoes", status: "rodando", error: undefined });
-  const results = await runGates(taskId, task.worktreePath);
+  const results = await runGates(taskId, task.worktreePath, { pastaPrincipal: project?.path });
   if (cancelada(taskId)) return false;
   const anteriores = (store.getTask(taskId)?.gates ?? []).filter((g) => !results.some((r) => r.name === g.name));
   patch(taskId, { gates: [...results, ...anteriores] });
-  if (results.some((g) => !g.ok)) {
+  const falhasLeve = results.filter((g) => !g.ok);
+  if (falhasLeve.length > 0 && falhasLeve.every((g) => g.timedOut)) {
+    // Só tempo: escalar re-rodaria a mesma suíte longa e pediria conserto de
+    // código que não quebrou. Para aqui com a mensagem de tempo.
+    patch(taskId, { step: "verificacoes" });
+    fail(taskId, `${mensagemSoTempo(falhasLeve)} Clique em "Tentar de novo".`);
+    return false;
+  }
+  if (falhasLeve.length > 0) {
     sistema(taskId, "A mudança quebrou uma verificação do projeto — indo para a verificação completa (o preview fica no ar).");
     // Escala SEM derrubar o preview; código mudou no conserto → re-aprovação
     // humana: pousa sempre no teste, mesmo que a origem fosse o Aprovar.
@@ -1172,7 +1180,9 @@ async function runVerificacoes(
     sistema(taskId, round === 0 ? "Rodando as verificações automáticas…" : "Reconferindo as verificações após a correção…");
 
     // 1) Gates do projeto — sempre re-rodam (rede de segurança barata).
-    const results = await runGates(taskId, task.worktreePath);
+    const results = await runGates(taskId, task.worktreePath, {
+      pastaPrincipal: store.getProject(task.projectId)?.path,
+    });
     if (cancelada(taskId)) return false;
     // Preserva os skill-gates já aprovados na visão da tarefa (a UI segue mostrando-os).
     patch(taskId, { gates: [...results, ...passados.values()] });
@@ -1210,6 +1220,18 @@ async function runVerificacoes(
       return runPreviewCheck(taskId);
     }
 
+    // 2b) Só estouro de tempo (nenhuma verificação reprovou de fato): não adianta o
+    // Claude "consertar" código que não está quebrado — gastaria tokens e terminaria
+    // em "impossível". Devolve à pessoa dizendo que foi TEMPO, não teste falhando.
+    if (falhas.every((g) => g.timedOut)) {
+      patch(taskId, { step: "verificacoes" });
+      fail(
+        taskId,
+        `${mensagemSoTempo(falhas)} Clique em "Tentar de novo" (às vezes o computador estava ocupado). Se acontecer sempre, peça para aumentar o limite das verificações deste projeto (verificacoes.timeoutMinutos no inhouse.config.json).`,
+      );
+      return false;
+    }
+
     // 3) Teto de segurança: só para impedir loop infinito quando o agente insiste
     // sem convergir e sem desistir. NÃO é o critério normal de parada.
     if (round >= GATE_FIX_SAFETY_ROUNDS) {
@@ -1238,6 +1260,18 @@ async function runVerificacoes(
     }
     // conserto.desistiu === false → volta ao topo e re-roda os gates para confirmar.
   }
+}
+
+/** "A verificação Testes não terminou dentro do limite de 30 minutos…" (só estouro de tempo). */
+function mensagemSoTempo(falhas: GateResult[]): string {
+  const nomes = falhas.map((g) => g.name).join(", ");
+  const limite = Math.max(...falhas.map((g) => g.durationMs));
+  const plural = falhas.length > 1;
+  return (
+    `${plural ? "As verificações" : "A verificação"} ${nomes} não ${plural ? "terminaram" : "terminou"} dentro do limite de ` +
+    `${duracaoLegivel(limite)} e ${plural ? "foram interrompidas" : "foi interrompida"}. Nenhum teste falhou por causa disso: ` +
+    "foi só o tempo."
+  );
 }
 
 /**
@@ -1464,14 +1498,17 @@ async function finalizarAjustesRevisao(taskId: string, voltarPara: Step): Promis
   const project = task ? store.getProject(task.projectId) : undefined;
   if (!task || !project || cancelada(taskId)) return false;
 
-  const results = await runGates(taskId, task.worktreePath);
+  const results = await runGates(taskId, task.worktreePath, { pastaPrincipal: project.path });
   if (cancelada(taskId)) return false;
   const anteriores = (store.getTask(taskId)?.gates ?? []).filter((g) => !results.some((r) => r.name === g.name));
   patch(taskId, { gates: [...results, ...anteriores] });
-  if (results.some((g) => !g.ok)) {
+  const falhasAjuste = results.filter((g) => !g.ok);
+  if (falhasAjuste.length > 0) {
     sistema(
       taskId,
-      "Os ajustes quebraram uma verificação do projeto — ainda NÃO enviei ao time. Converse comigo aqui para corrigir e peça de novo.",
+      falhasAjuste.every((g) => g.timedOut)
+        ? `${mensagemSoTempo(falhasAjuste)} Ainda NÃO enviei ao time — peça de novo para tentar outra vez.`
+        : "Os ajustes quebraram uma verificação do projeto — ainda NÃO enviei ao time. Converse comigo aqui para corrigir e peça de novo.",
     );
     patch(taskId, { step: voltarPara, status: "aguardando" });
     return false;
